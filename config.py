@@ -39,9 +39,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     # --- Trading fees ---
-    # Applied per transaction in simulation mode (mirrors Binance maker/taker fee).
-    # 0.0015 = 0.15% per trade (deducted from USDT, invisible to strategies).
-    simulation_fee_rate: float = Field(default=0.0015, description="Fee rate per trade (0.0015 = 0.15%)")
+    # Applied per transaction in simulation mode.
+    # 0.0011 = 0.11% per trade — covers Binance fee (~0.10%) plus a small
+    # slippage buffer (real execution price differs from candle close).
+    # Deducted from USDT, invisible to strategies.
+    simulation_fee_rate: float = Field(default=0.0011, description="Fee rate per trade (0.0011 = 0.11%)")
 
     # --- Portfolio snapshot interval (seconds) ---
     snapshot_interval_seconds: int = Field(default=60)

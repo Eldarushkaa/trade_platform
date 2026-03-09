@@ -8,7 +8,7 @@ Run with:
 
 Adding a new bot:
     1. Create strategies/my_bot.py subclassing BaseStrategy
-    2. Import it below and add to REGISTERED_BOTS
+    2. Import it below and add to STRATEGY_CLASSES
     3. Restart — the bot appears on the dashboard automatically
 
 Data flow:
@@ -19,6 +19,11 @@ Data flow:
                 → CandleAggregator.on_tick()    (builds 1-min OHLC candles)
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
+
+Bot instances (3 strategies × 3 coins = 9 bots):
+    rsi_btc, rsi_eth, rsi_sol       — Wilder RSI + trend filter
+    ma_btc, ma_eth, ma_sol          — MACD crossover + histogram
+    bb_btc, bb_eth, bb_sol          — Bollinger Band mean reversion
 """
 import asyncio
 import logging
@@ -38,15 +43,24 @@ from data.price_cache import price_cache
 from data.candle_aggregator import CandleAggregator
 
 # ------------------------------------------------------------------
-# Import and register your bots here
+# Import strategy classes
 # ------------------------------------------------------------------
 from strategies.example_rsi_bot import RSIBot
 from strategies.example_ma_crossover import MACrossoverBot
+from strategies.bollinger_bot import BollingerBot
 
-REGISTERED_BOTS = [
-    RSIBot,
-    MACrossoverBot,
-]
+# ------------------------------------------------------------------
+# Configuration: coins to trade and strategies to run
+# ------------------------------------------------------------------
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+STRATEGY_CLASSES = [RSIBot, MACrossoverBot, BollingerBot]
+
+# Build 9 bot classes: one per strategy × symbol combination
+REGISTERED_BOTS = []
+for strategy_cls in STRATEGY_CLASSES:
+    for sym in SYMBOLS:
+        REGISTERED_BOTS.append(strategy_cls.for_symbol(sym))
 
 # ------------------------------------------------------------------
 # Configure logging
@@ -73,7 +87,8 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Starting Trade Platform in [{settings.trading_mode.upper()}] mode | "
         f"Fee: {settings.simulation_fee_rate * 100:.3f}% | "
-        f"Candle interval: 1m"
+        f"Candle interval: 1m | "
+        f"Bots: {len(REGISTERED_BOTS)} ({len(STRATEGY_CLASSES)} strategies × {len(SYMBOLS)} coins)"
     )
 
     # 1. Initialize database (runs migrations automatically)
@@ -86,9 +101,10 @@ async def lifespan(app: FastAPI):
     # 3. Start all bots
     if REGISTERED_BOTS:
         await bot_manager.start_all()
-        logger.info(f"Started {len(REGISTERED_BOTS)} bot(s)")
+        logger.info(f"Started {len(REGISTERED_BOTS)} bot(s): "
+                     f"{', '.join(b.name for b in REGISTERED_BOTS)}")
     else:
-        logger.info("No bots registered. Add bots to REGISTERED_BOTS in main.py")
+        logger.info("No bots registered. Add bots to STRATEGY_CLASSES in main.py")
 
     # 4. Wire data pipeline:
     #    PriceCache → BotManager (engine price updates)
@@ -128,7 +144,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Trade Platform",
     description="Crypto trading bot simulation platform",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -168,6 +184,8 @@ async def health():
         "mode": settings.trading_mode,
         "fee_rate_pct": settings.simulation_fee_rate * 100,
         "candle_interval": "1m",
+        "symbols": SYMBOLS,
+        "strategies": [cls.__name__ for cls in STRATEGY_CLASSES],
         "bots": bot_manager.list_bots(),
     }
 

@@ -29,6 +29,7 @@ class SnapshotOut(BaseModel):
     asset_balance: float
     asset_symbol: str
     total_value_usdt: float
+    asset_price: Optional[float] = None
     timestamp: datetime
 
 
@@ -75,6 +76,7 @@ async def get_portfolio_history(
             asset_balance=s.asset_balance,
             asset_symbol=s.asset_symbol,
             total_value_usdt=s.total_value_usdt,
+            asset_price=s.asset_price,
             timestamp=s.timestamp,
         )
         for s in snapshots

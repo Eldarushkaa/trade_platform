@@ -41,4 +41,5 @@ class PortfolioSnapshot:
     asset_symbol: str            # e.g. "BTC"
     total_value_usdt: float      # usdt_balance + asset_balance * current_price
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    id: Optional[int] = None     # auto-assigned by DB
+    asset_price: Optional[float] = None   # latest coin price at snapshot time
+    id: Optional[int] = None              # auto-assigned by DB

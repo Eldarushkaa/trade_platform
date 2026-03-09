@@ -175,8 +175,8 @@ async def insert_snapshot(snap: PortfolioSnapshot) -> None:
     await db.execute(
         """
         INSERT INTO portfolio_snapshots
-            (bot_id, usdt_balance, asset_balance, asset_symbol, total_value_usdt, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (bot_id, usdt_balance, asset_balance, asset_symbol, total_value_usdt, asset_price, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             snap.bot_id,
@@ -184,6 +184,7 @@ async def insert_snapshot(snap: PortfolioSnapshot) -> None:
             snap.asset_balance,
             snap.asset_symbol,
             snap.total_value_usdt,
+            snap.asset_price,
             _dt_to_str(snap.timestamp),
         ),
     )
@@ -214,6 +215,7 @@ async def get_snapshots_for_bot(
             asset_balance=row["asset_balance"],
             asset_symbol=row["asset_symbol"],
             total_value_usdt=row["total_value_usdt"],
+            asset_price=row["asset_price"] if "asset_price" in row.keys() else None,
             timestamp=_str_to_dt(row["timestamp"]),
         )
         for row in rows
@@ -237,5 +239,6 @@ async def get_latest_snapshot(bot_id: str) -> Optional[PortfolioSnapshot]:
         asset_balance=row["asset_balance"],
         asset_symbol=row["asset_symbol"],
         total_value_usdt=row["total_value_usdt"],
+        asset_price=row["asset_price"] if "asset_price" in row.keys() else None,
         timestamp=_str_to_dt(row["timestamp"]),
     )

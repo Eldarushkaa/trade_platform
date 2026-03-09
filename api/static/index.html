@@ -131,8 +131,18 @@
       <div class="stats-grid" id="stats-grid"></div>
 
       <div class="chart-wrap">
-        <h2 style="margin-bottom:12px">Portfolio Value (USDT)</h2>
-        <canvas id="portfolio-chart" height="80"></canvas>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h2>Portfolio Value &amp; Coin Price</h2>
+          <div style="display:flex;gap:16px;font-size:12px;color:var(--muted)">
+            <span style="display:flex;align-items:center;gap:5px">
+              <span style="display:inline-block;width:14px;height:3px;background:#6c63ff;border-radius:2px"></span> Portfolio (USDT)
+            </span>
+            <span style="display:flex;align-items:center;gap:5px" id="price-legend">
+              <span style="display:inline-block;width:14px;height:3px;background:#f5a623;border-radius:2px"></span> <span id="price-legend-label">Coin Price</span>
+            </span>
+          </div>
+        </div>
+        <canvas id="portfolio-chart" height="100"></canvas>
       </div>
 
       <div class="trades-wrap">
@@ -279,37 +289,165 @@
   async function loadHistory(name) {
     try {
       const snaps = await get(`${API}/portfolio/${name}/history?limit=200`);
-      const labels = snaps.map(s => new Date(s.timestamp).toLocaleTimeString());
-      const values = snaps.map(s => s.total_value_usdt);
+
+      if (snaps.length === 0) {
+        const ctx = document.getElementById('portfolio-chart').getContext('2d');
+        if (portfolioChart) { portfolioChart.destroy(); portfolioChart = null; }
+        return;
+      }
+
+      // ── Build point objects {x, y} using ISO timestamp as x ─────────────
+      // This lets Chart.js use a time-aware x-axis without a date adapter.
+      // We convert to "minutes since first snapshot" for uniform spacing.
+      const t0 = new Date(snaps[0].timestamp).getTime();
+
+      // Detect gap threshold: if time between two snapshots is > 3× the
+      // typical interval, insert a null to break the line (shown as dashed gap).
+      // Determine typical interval from median of first 10 deltas
+      const deltas = [];
+      for (let i = 1; i < Math.min(snaps.length, 11); i++) {
+        deltas.push(new Date(snaps[i].timestamp) - new Date(snaps[i-1].timestamp));
+      }
+      deltas.sort((a,b)=>a-b);
+      const medianDelta = deltas.length ? deltas[Math.floor(deltas.length/2)] : 30000;
+      const gapThreshold = Math.max(medianDelta * 3, 120000); // at least 2 min
+
+      // Build arrays, inserting null sentinels at gaps
+      const labels = [];
+      const values = [];
+      const prices = [];
+
+      for (let i = 0; i < snaps.length; i++) {
+        const s = snaps[i];
+        const d = new Date(s.timestamp);
+
+        // Insert gap sentinel if there's a big jump since last point
+        if (i > 0) {
+          const prev = new Date(snaps[i-1].timestamp);
+          if ((d - prev) > gapThreshold) {
+            // Add a null data point to break the line visually
+            const midMs = prev.getTime() + (d - prev) / 2;
+            const mid = new Date(midMs);
+            labels.push(fmtTime(mid));
+            values.push(null);
+            prices.push(null);
+          }
+        }
+
+        labels.push(fmtTime(d));
+        values.push(s.total_value_usdt);
+        prices.push(s.asset_price ?? null);
+      }
+
+      const hasPriceData = prices.some(p => p !== null);
+
+      // Update legend
+      const assetSym = snaps[0].asset_symbol || 'Coin';
+      document.getElementById('price-legend-label').textContent = assetSym + ' Price';
+      document.getElementById('price-legend').style.display = hasPriceData ? 'flex' : 'none';
 
       const ctx = document.getElementById('portfolio-chart').getContext('2d');
       if (portfolioChart) portfolioChart.destroy();
+
+      // Segment callback: dashed line when bridging a null gap
+      const dashedSegment = (ctx, def) =>
+        (ctx.p0.skip || ctx.p1.skip) ? [4, 4] : def;
 
       portfolioChart = new Chart(ctx, {
         type: 'line',
         data: {
           labels,
-          datasets: [{
-            label: 'Total Value (USDT)',
-            data: values,
-            borderColor: '#6c63ff',
-            backgroundColor: 'rgba(108,99,255,0.08)',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: true,
-            tension: 0.3,
-          }]
+          datasets: [
+            {
+              label: 'Portfolio (USDT)',
+              data: values,
+              borderColor: '#6c63ff',
+              backgroundColor: 'rgba(108,99,255,0.08)',
+              borderWidth: 2,
+              pointRadius: 0,
+              fill: true,
+              tension: 0.3,
+              spanGaps: true,
+              yAxisID: 'yPortfolio',
+              segment: {
+                borderDash: ctx => dashedSegment(ctx, []),
+                borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(108,99,255,0.3)' : '#6c63ff',
+              }
+            },
+            {
+              label: 'Coin Price',
+              data: prices,
+              borderColor: '#f5a623',
+              backgroundColor: 'rgba(245,166,35,0.05)',
+              borderWidth: 1.5,
+              pointRadius: 0,
+              fill: false,
+              tension: 0.2,
+              spanGaps: true,
+              yAxisID: 'yPrice',
+              segment: {
+                borderDash: ctx => dashedSegment(ctx, []),
+                borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(245,166,35,0.3)' : '#f5a623',
+              }
+            }
+          ]
         },
         options: {
           responsive: true,
-          plugins: { legend: { display: false } },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              filter: item => item.parsed.y !== null,
+              callbacks: {
+                label: ctx => {
+                  const v = ctx.parsed.y;
+                  if (v === null || v === undefined) return null;
+                  const label = ctx.dataset.label;
+                  return label === 'Portfolio (USDT)'
+                    ? `Portfolio: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+                    : `${assetSym} Price: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                }
+              }
+            }
+          },
           scales: {
-            x: { display: snaps.length < 50, ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
-            y: { ticks: { color: '#8892a4', callback: v => '$' + v.toFixed(0) }, grid: { color: '#2a2d3a' } }
+            x: {
+              display: true,
+              ticks: {
+                color: '#8892a4',
+                maxTicksLimit: 10,
+                maxRotation: 0,
+              },
+              grid: { color: '#2a2d3a' }
+            },
+            yPortfolio: {
+              type: 'linear',
+              position: 'left',
+              ticks: {
+                color: '#8892a4',
+                callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0})
+              },
+              grid: { color: '#2a2d3a' }
+            },
+            yPrice: {
+              type: 'linear',
+              position: 'right',
+              display: hasPriceData,
+              ticks: {
+                color: '#f5a623',
+                callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0})
+              },
+              grid: { drawOnChartArea: false }
+            }
           }
         }
       });
     } catch (e) { console.warn('loadHistory', e); }
+  }
+
+  function fmtTime(d) {
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
   }
 
   async function loadTrades(name) {

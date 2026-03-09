@@ -219,6 +219,7 @@ class SimulationEngine(BaseOrderEngine):
             asset_balance=state["asset_balance"],
             asset_symbol=state["asset_symbol"],
             total_value_usdt=state["total_value_usdt"],
+            asset_price=current_price if current_price else None,
             timestamp=datetime.utcnow(),
         )
         await repo.insert_snapshot(snap)

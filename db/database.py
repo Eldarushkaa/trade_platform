@@ -81,6 +81,7 @@ async def _create_tables() -> None:
             asset_balance   REAL NOT NULL,
             asset_symbol    TEXT NOT NULL,
             total_value_usdt REAL NOT NULL,
+            asset_price     REAL,
             timestamp       TEXT NOT NULL
         );
 
@@ -89,11 +90,16 @@ async def _create_tables() -> None:
     """)
 
     # --- Additive migrations (safe to run on existing DBs) ---
-    # Add fee_usdt column if it doesn't exist (introduced in v0.2)
     async with db.execute("PRAGMA table_info(trades)") as cursor:
         columns = {row["name"] async for row in cursor}
     if "fee_usdt" not in columns:
         await db.execute("ALTER TABLE trades ADD COLUMN fee_usdt REAL")
         logger.info("Migration applied: added 'fee_usdt' column to trades table")
+
+    async with db.execute("PRAGMA table_info(portfolio_snapshots)") as cursor:
+        snap_cols = {row["name"] async for row in cursor}
+    if "asset_price" not in snap_cols:
+        await db.execute("ALTER TABLE portfolio_snapshots ADD COLUMN asset_price REAL")
+        logger.info("Migration applied: added 'asset_price' column to portfolio_snapshots table")
 
     await db.commit()
