@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Trade Platform Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d27;
+      --border: #2a2d3a;
+      --accent: #6c63ff;
+      --green: #00c896;
+      --red: #ff4d6d;
+      --yellow: #f5a623;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    header h1 { font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+    header h1 span { color: var(--accent); }
+    #mode-badge {
+      padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      background: #1e3a5f; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px;
+    }
+    #refresh-info { color: var(--muted); font-size: 12px; }
+
+    .layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; padding: 20px 24px; }
+
+    /* --- Sidebar: Bots List --- */
+    .sidebar h2, .main-panel h2 { font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 1px; color: var(--muted); margin-bottom: 12px; }
+
+    .bot-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px; margin-bottom: 10px; cursor: pointer; transition: border-color .2s;
+    }
+    .bot-card:hover, .bot-card.active { border-color: var(--accent); }
+    .bot-card .bot-name { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+    .bot-card .bot-symbol { color: var(--muted); font-size: 12px; }
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px;
+    }
+    .status-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.stopped { background: var(--muted); }
+
+    .btn {
+      border: none; border-radius: 6px; padding: 6px 14px; font-size: 12px;
+      font-weight: 600; cursor: pointer; transition: opacity .2s;
+    }
+    .btn:hover { opacity: .8; }
+    .btn-start { background: var(--green); color: #000; }
+    .btn-stop  { background: var(--red);   color: #fff; }
+    .bot-actions { margin-top: 10px; display: flex; gap: 8px; }
+
+    /* --- Main panel --- */
+    .main-panel { min-width: 0; }
+
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+    }
+    .stat-card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
+    .stat-card .value { font-size: 20px; font-weight: 700; }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .neutral  { color: var(--text); }
+
+    /* --- Chart area --- */
+    .chart-wrap {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; margin-bottom: 20px;
+    }
+    canvas { width: 100% !important; }
+
+    /* --- Trades table --- */
+    .trades-wrap {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    }
+    .trades-header { padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 16px; text-align: left; }
+    th { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+         border-bottom: 1px solid var(--border); }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    td.buy  { color: var(--green); font-weight: 600; }
+    td.sell { color: var(--red);   font-weight: 600; }
+    td.pnl-pos { color: var(--green); }
+    td.pnl-neg { color: var(--red); }
+
+    #no-bot { padding: 60px; text-align: center; color: var(--muted); }
+    #loading { color: var(--muted); font-style: italic; padding: 10px 0; }
+
+    @media (max-width: 768px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🤖 Trade <span>Platform</span></h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <span id="refresh-info">Auto-refresh: 5s</span>
+    <span id="mode-badge">simulation</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <h2>Bots</h2>
+    <div id="bots-list"><div id="loading">Loading...</div></div>
+  </aside>
+
+  <!-- Main panel -->
+  <main class="main-panel">
+    <div id="no-bot">← Select a bot to view details</div>
+    <div id="bot-detail" style="display:none">
+      <h2 id="detail-title">Portfolio</h2>
+      <div class="stats-grid" id="stats-grid"></div>
+
+      <div class="chart-wrap">
+        <h2 style="margin-bottom:12px">Portfolio Value (USDT)</h2>
+        <canvas id="portfolio-chart" height="80"></canvas>
+      </div>
+
+      <div class="trades-wrap">
+        <div class="trades-header">Recent Trades</div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th><th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="trades-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Lightweight chart via Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const API = '/api';
+  let selectedBot = null;
+  let portfolioChart = null;
+
+  // ── Fetch helpers ──────────────────────────────────────────────
+  async function get(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status} ${url}`);
+    return r.json();
+  }
+
+  async function post(url) {
+    const r = await fetch(url, { method: 'POST' });
+    return r.json();
+  }
+
+  // ── Sidebar: list all bots ─────────────────────────────────────
+  async function loadBots() {
+    try {
+      const bots = await get(`${API}/bots`);
+
+      // update mode badge from health
+      try {
+        const h = await get('/health');
+        document.getElementById('mode-badge').textContent = h.mode;
+      } catch {}
+
+      const container = document.getElementById('bots-list');
+      container.innerHTML = '';
+
+      if (bots.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:13px">No bots registered.<br>Add bots in main.py</div>';
+        return;
+      }
+
+      bots.forEach(bot => {
+        const card = document.createElement('div');
+        card.className = 'bot-card' + (selectedBot === bot.name ? ' active' : '');
+        card.dataset.name = bot.name;
+        card.innerHTML = `
+          <div class="bot-name">
+            <span class="status-dot ${bot.is_running ? 'running' : 'stopped'}"></span>
+            ${bot.name}
+          </div>
+          <div class="bot-symbol">${bot.symbol}</div>
+          <div class="bot-actions">
+            ${bot.is_running
+              ? `<button class="btn btn-stop"  onclick="controlBot('${bot.name}','stop');event.stopPropagation()">■ Stop</button>`
+              : `<button class="btn btn-start" onclick="controlBot('${bot.name}','start');event.stopPropagation()">▶ Start</button>`
+            }
+          </div>`;
+        card.addEventListener('click', () => selectBot(bot.name));
+        container.appendChild(card);
+      });
+    } catch (e) {
+      console.error('loadBots error', e);
+    }
+  }
+
+  async function controlBot(name, action) {
+    await post(`${API}/bots/${name}/${action}`);
+    await loadBots();
+    if (selectedBot === name) await loadBotDetail(name);
+  }
+
+  // ── Main panel: bot detail ─────────────────────────────────────
+  function selectBot(name) {
+    selectedBot = name;
+    document.getElementById('no-bot').style.display = 'none';
+    document.getElementById('bot-detail').style.display = 'block';
+    document.getElementById('detail-title').textContent = name;
+    loadBotDetail(name);
+    // Mark active
+    document.querySelectorAll('.bot-card').forEach(c =>
+      c.classList.toggle('active', c.dataset.name === name));
+  }
+
+  async function loadBotDetail(name) {
+    await Promise.all([
+      loadPortfolio(name),
+      loadHistory(name),
+      loadTrades(name),
+    ]);
+  }
+
+  async function loadPortfolio(name) {
+    try {
+      const p = await get(`${API}/portfolio/${name}`);
+      const grid = document.getElementById('stats-grid');
+
+      const sign = v => v >= 0 ? 'positive' : 'negative';
+      grid.innerHTML = `
+        <div class="stat-card">
+          <div class="label">USDT Balance</div>
+          <div class="value neutral">$${fmt(p.usdt_balance)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">${p.asset_symbol} Held</div>
+          <div class="value neutral">${p.asset_balance.toFixed(6)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Total Value</div>
+          <div class="value neutral">$${fmt(p.total_value_usdt)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Realized P&L</div>
+          <div class="value ${sign(p.realized_pnl)}">${p.realized_pnl >= 0 ? '+' : ''}$${fmt(p.realized_pnl)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Unrealized P&L</div>
+          <div class="value ${sign(p.unrealized_pnl)}">${p.unrealized_pnl >= 0 ? '+' : ''}$${fmt(p.unrealized_pnl)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Return</div>
+          <div class="value ${sign(p.return_pct)}">${p.return_pct >= 0 ? '+' : ''}${p.return_pct.toFixed(2)}%</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Trades</div>
+          <div class="value neutral">${p.trade_count}</div>
+        </div>`;
+    } catch (e) { console.warn('loadPortfolio', e); }
+  }
+
+  async function loadHistory(name) {
+    try {
+      const snaps = await get(`${API}/portfolio/${name}/history?limit=200`);
+      const labels = snaps.map(s => new Date(s.timestamp).toLocaleTimeString());
+      const values = snaps.map(s => s.total_value_usdt);
+
+      const ctx = document.getElementById('portfolio-chart').getContext('2d');
+      if (portfolioChart) portfolioChart.destroy();
+
+      portfolioChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Total Value (USDT)',
+            data: values,
+            borderColor: '#6c63ff',
+            backgroundColor: 'rgba(108,99,255,0.08)',
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.3,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { display: snaps.length < 50, ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+            y: { ticks: { color: '#8892a4', callback: v => '$' + v.toFixed(0) }, grid: { color: '#2a2d3a' } }
+          }
+        }
+      });
+    } catch (e) { console.warn('loadHistory', e); }
+  }
+
+  async function loadTrades(name) {
+    try {
+      const trades = await get(`${API}/trades/${name}?limit=50`);
+      const tbody = document.getElementById('trades-body');
+      tbody.innerHTML = '';
+
+      if (trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">No trades yet</td></tr>';
+        return;
+      }
+
+      trades.forEach(t => {
+        const pnl = t.realized_pnl;
+        const pnlStr = pnl != null
+          ? `<span class="${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnl >= 0 ? '+' : ''}$${fmt(pnl)}</span>`
+          : '—';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>#${t.id}</td>
+          <td class="${t.side.toLowerCase()}">${t.side}</td>
+          <td>$${fmt(t.price)}</td>
+          <td>${t.quantity.toFixed(6)}</td>
+          <td>${pnlStr}</td>
+          <td style="color:var(--muted)">${new Date(t.timestamp).toLocaleString()}</td>`;
+        tbody.appendChild(tr);
+      });
+    } catch (e) { console.warn('loadTrades', e); }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────
+  function fmt(n) {
+    return Math.abs(n) >= 1000
+      ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : n.toFixed(2);
+  }
+
+  // ── Auto-refresh loop ──────────────────────────────────────────
+  async function refresh() {
+    await loadBots();
+    if (selectedBot) await loadBotDetail(selectedBot);
+  }
+
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>
