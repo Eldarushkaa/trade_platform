@@ -68,7 +68,8 @@ class BacktestResult:
     final_balance: float = 0.0
     net_pnl: float = 0.0
     return_pct: float = 0.0
-    trade_count: int = 0
+    total_trades: int = 0        # all trades (open + close)
+    trade_count: int = 0         # closing trades only (have realized_pnl)
     win_count: int = 0
     loss_count: int = 0
     win_rate: float = 0.0
@@ -94,6 +95,7 @@ class BacktestResult:
             "final_balance": round(self.final_balance, 2),
             "net_pnl": round(self.net_pnl, 2),
             "return_pct": round(self.return_pct, 2),
+            "total_trades": self.total_trades,
             "trade_count": self.trade_count,
             "win_count": self.win_count,
             "loss_count": self.loss_count,
@@ -125,6 +127,7 @@ def _compute_metrics(result: BacktestResult) -> None:
     result.return_pct = (result.net_pnl / result.initial_balance) * 100
 
     # --- Win/loss analysis ---
+    result.total_trades = len(result.trades)
     closing_trades = [t for t in result.trades if t.get("realized_pnl") is not None]
     result.trade_count = len(closing_trades)
 
@@ -276,8 +279,8 @@ async def run_backtest(
     trade_index = [0]  # mutable counter
     original_place_order = engine.place_order
 
-    async def intercepting_place_order(bot_id_, symbol_, side, quantity, price):
-        order_result = await original_place_order(bot_id_, symbol_, side, quantity, price)
+    async def intercepting_place_order(bot_id, symbol, side, quantity, price):
+        order_result = await original_place_order(bot_id, symbol, side, quantity, price)
         trade_index[0] += 1
         result.trades.append({
             "index": trade_index[0],
@@ -294,6 +297,7 @@ async def run_backtest(
     engine.place_order = intercepting_place_order
 
     # --- Replay candles (wrapped in try/finally to always restore repo) ---
+    error_count = [0]
     try:
         for i, row in enumerate(candle_rows):
             candle = Candle(
@@ -315,7 +319,9 @@ async def run_backtest(
             try:
                 await bot.on_candle(candle)
             except Exception as e:
-                logger.warning(f"Backtest candle {i} error: {e}")
+                error_count[0] += 1
+                if error_count[0] <= 5:  # Log first 5 errors with traceback
+                    logger.error(f"Backtest candle {i} error: {e}", exc_info=True)
 
             result.candles_processed = i + 1
 
@@ -332,6 +338,9 @@ async def run_backtest(
         final_state = await engine.get_portfolio_state(bot.name)
         result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
         result.liquidations = final_state.get("liquidation_count", 0)
+
+        if error_count[0] > 0:
+            logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
     finally:
         # --- Always restore original insert_trade ---
         _repo_module.insert_trade = _original_insert_trade

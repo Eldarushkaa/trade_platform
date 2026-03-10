@@ -543,6 +543,15 @@
     document.getElementById('no-bot').style.display = 'none';
     document.getElementById('bot-detail').style.display = 'block';
     document.getElementById('detail-title').textContent = name;
+
+    // Reset backtest UI
+    document.getElementById('bt-results').style.display = 'none';
+    document.getElementById('bt-opt-results').style.display = 'none';
+    document.getElementById('bt-status').textContent = '';
+    document.getElementById('bt-metrics').innerHTML = '';
+    if (_backtestChart) { _backtestChart.destroy(); _backtestChart = null; }
+    _lastOptResult = null;
+
     loadBotDetail(name);
     // Mark active
     document.querySelectorAll('.bot-card').forEach(c =>
@@ -1201,8 +1210,8 @@
         <div class="value negative">-${r.max_drawdown_pct.toFixed(2)}%</div>
       </div>
       <div class="bt-metric">
-        <div class="label">Trades</div>
-        <div class="value neutral">${r.trade_count}</div>
+        <div class="label">Trades (total/closed)</div>
+        <div class="value neutral">${r.total_trades || r.trade_count} / ${r.trade_count}</div>
       </div>
       <div class="bt-metric">
         <div class="label">Win Rate</div>
