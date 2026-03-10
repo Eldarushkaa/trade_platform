@@ -182,6 +182,8 @@ async def health():
     return {
         "status": "ok",
         "mode": settings.trading_mode,
+        "market_type": settings.market_type,
+        "leverage": settings.leverage,
         "fee_rate_pct": settings.simulation_fee_rate * 100,
         "candle_interval": "1m",
         "symbols": SYMBOLS,

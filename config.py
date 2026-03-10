@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # "live"       = real Binance orders (Phase 5)
     trading_mode: Literal["simulation", "live"] = "simulation"
 
+    # --- Market Type ---
+    # "futures" = USDT-M perpetual futures (leverage, short positions)
+    # "spot"    = legacy spot trading (LONG only, no leverage)
+    market_type: Literal["futures", "spot"] = "futures"
+
     # --- Binance API ---
     binance_api_key: str = Field(default="", description="Binance API key")
     binance_api_secret: str = Field(default="", description="Binance API secret")
@@ -31,6 +36,9 @@ class Settings(BaseSettings):
     # --- Virtual Portfolio Starting Balance ---
     initial_usdt_balance: float = Field(default=10_000.0, description="Starting USDT per bot")
 
+    # --- Futures Settings ---
+    leverage: int = Field(default=3, description="Futures leverage multiplier (3x = liquidation at ~33% move)")
+
     # --- Server ---
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000)
@@ -39,11 +47,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     # --- Trading fees ---
-    # Applied per transaction in simulation mode.
-    # 0.0011 = 0.11% per trade — covers Binance fee (~0.10%) plus a small
-    # slippage buffer (real execution price differs from candle close).
-    # Deducted from USDT, invisible to strategies.
-    simulation_fee_rate: float = Field(default=0.0011, description="Fee rate per trade (0.0011 = 0.11%)")
+    # Binance Futures taker fee: 0.05% (we always simulate market orders).
+    # This is roughly half of the spot fee (0.10%).
+    # 0.0005 = 0.05% per trade (deducted from USDT, invisible to strategies).
+    simulation_fee_rate: float = Field(default=0.0005, description="Fee rate per trade (0.0005 = 0.05%)")
 
     # --- Portfolio snapshot interval (seconds) ---
     snapshot_interval_seconds: int = Field(default=60)

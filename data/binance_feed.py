@@ -21,7 +21,8 @@ from data.price_cache import PriceCache, price_cache as default_cache
 
 logger = logging.getLogger(__name__)
 
-BINANCE_WS_BASE = "wss://stream.binance.com:9443/stream"
+# Futures WebSocket endpoint — same aggTrade format as spot, different server
+BINANCE_WS_BASE = "wss://fstream.binance.com/stream"
 RECONNECT_DELAY_SECONDS = 5
 MAX_RECONNECT_ATTEMPTS = 10
 

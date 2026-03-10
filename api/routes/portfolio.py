@@ -1,7 +1,7 @@
 """
 API routes for portfolio data.
 
-GET /api/portfolio/{bot_name}          — current live portfolio state
+GET /api/portfolio/{bot_name}          — current live portfolio state (futures)
 GET /api/portfolio/{bot_name}/history  — historical snapshots (for charting)
 """
 from fastapi import APIRouter, HTTPException, Query
@@ -37,7 +37,14 @@ class SnapshotOut(BaseModel):
 async def get_portfolio(bot_name: str):
     """
     Return the current live portfolio state for a bot.
-    Includes unrealized P&L based on the latest price.
+
+    Futures fields returned:
+      - position_side (LONG / SHORT / NONE)
+      - position_qty, entry_price
+      - leverage, margin_locked, liquidation_price, margin_ratio
+      - realized_pnl, unrealized_pnl, net_pnl
+      - total_value_usdt, return_pct
+      - trade_count, total_fees_paid, liquidation_count
     """
     if _engine is None:
         raise HTTPException(status_code=503, detail="Engine not available")

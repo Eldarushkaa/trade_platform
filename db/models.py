@@ -27,8 +27,9 @@ class TradeRecord:
     quantity: float
     price: float
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    realized_pnl: Optional[float] = None   # filled on SELL
+    realized_pnl: Optional[float] = None   # filled on position close
     fee_usdt: Optional[float] = None       # trading fee deducted by SimulationEngine
+    position_side: str = "LONG"             # "OPEN_LONG", "CLOSE_LONG", "OPEN_SHORT", "CLOSE_SHORT"
     id: Optional[int] = None               # auto-assigned by DB
 
 

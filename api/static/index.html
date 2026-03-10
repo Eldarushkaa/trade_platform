@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Trade Platform Dashboard</title>
+  <title>Trade Platform — Futures Dashboard</title>
   <style>
     :root {
       --bg: #0f1117;
@@ -13,6 +13,7 @@
       --green: #00c896;
       --red: #ff4d6d;
       --yellow: #f5a623;
+      --orange: #ff8c42;
       --text: #e2e8f0;
       --muted: #8892a4;
     }
@@ -29,6 +30,10 @@
     #mode-badge {
       padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
       background: #1e3a5f; color: #60a5fa; text-transform: uppercase; letter-spacing: 1px;
+    }
+    #market-badge {
+      padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      background: #2d1f4e; color: #a78bfa; text-transform: uppercase; letter-spacing: 1px;
     }
     #refresh-info { color: var(--muted); font-size: 12px; }
 
@@ -76,6 +81,33 @@
     .negative { color: var(--red); }
     .neutral  { color: var(--text); }
 
+    /* Position badge */
+    .pos-badge {
+      display: inline-block; padding: 3px 10px; border-radius: 4px;
+      font-size: 13px; font-weight: 700; letter-spacing: 1px;
+    }
+    .pos-badge.long  { background: rgba(0,200,150,0.15); color: var(--green); }
+    .pos-badge.short { background: rgba(255,77,109,0.15); color: var(--red); }
+    .pos-badge.none  { background: rgba(136,146,164,0.15); color: var(--muted); }
+
+    /* Margin ratio bar */
+    .margin-bar-bg {
+      width: 100%; height: 6px; border-radius: 3px; background: var(--border); margin-top: 6px;
+    }
+    .margin-bar-fill {
+      height: 100%; border-radius: 3px; transition: width .3s, background .3s;
+    }
+
+    /* --- Position info row --- */
+    .position-row {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; margin-bottom: 20px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px;
+      align-items: center;
+    }
+    .position-row .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 4px; }
+    .position-row .val { font-size: 16px; font-weight: 600; }
+
     /* --- Chart area --- */
     .chart-wrap {
       background: var(--card); border: 1px solid var(--border); border-radius: 10px;
@@ -98,6 +130,16 @@
     td.pnl-pos { color: var(--green); }
     td.pnl-neg { color: var(--red); }
 
+    /* Action badges in trades table */
+    .action-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    }
+    .action-badge.open-long   { background: rgba(0,200,150,0.15); color: var(--green); }
+    .action-badge.close-long  { background: rgba(0,200,150,0.08); color: #6dd8b7; }
+    .action-badge.open-short  { background: rgba(255,77,109,0.15); color: var(--red); }
+    .action-badge.close-short { background: rgba(255,77,109,0.08); color: #ff9daf; }
+
     #no-bot { padding: 60px; text-align: center; color: var(--muted); }
     #loading { color: var(--muted); font-style: italic; padding: 10px 0; }
 
@@ -110,8 +152,9 @@
 
 <header>
   <h1>🤖 Trade <span>Platform</span></h1>
-  <div style="display:flex;gap:16px;align-items:center">
+  <div style="display:flex;gap:12px;align-items:center">
     <span id="refresh-info">Auto-refresh: 5s</span>
+    <span id="market-badge">futures</span>
     <span id="mode-badge">simulation</span>
   </div>
 </header>
@@ -128,6 +171,11 @@
     <div id="no-bot">← Select a bot to view details</div>
     <div id="bot-detail" style="display:none">
       <h2 id="detail-title">Portfolio</h2>
+
+      <!-- Position info row -->
+      <div class="position-row" id="position-row"></div>
+
+      <!-- Stats cards -->
       <div class="stats-grid" id="stats-grid"></div>
 
       <div class="chart-wrap">
@@ -140,6 +188,12 @@
             <span style="display:flex;align-items:center;gap:5px" id="price-legend">
               <span style="display:inline-block;width:14px;height:3px;background:#f5a623;border-radius:2px"></span> <span id="price-legend-label">Coin Price</span>
             </span>
+            <span style="display:flex;align-items:center;gap:5px" id="long-legend">
+              <span style="display:inline-block;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid #00c896"></span> Long
+            </span>
+            <span style="display:flex;align-items:center;gap:5px" id="short-legend">
+              <span style="display:inline-block;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:10px solid #ff4d6d"></span> Short
+            </span>
           </div>
         </div>
         <canvas id="portfolio-chart" height="100"></canvas>
@@ -150,7 +204,7 @@
         <table>
           <thead>
             <tr>
-              <th>#</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th><th>Time</th>
+              <th>#</th><th>Action</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th><th>Time</th>
             </tr>
           </thead>
           <tbody id="trades-body"></tbody>
@@ -188,6 +242,7 @@
       try {
         const h = await get('/health');
         document.getElementById('mode-badge').textContent = h.mode;
+        document.getElementById('market-badge').textContent = h.market_type || 'futures';
       } catch {}
 
       const container = document.getElementById('bots-list');
@@ -251,17 +306,82 @@
   async function loadPortfolio(name) {
     try {
       const p = await get(`${API}/portfolio/${name}`);
-      const grid = document.getElementById('stats-grid');
-
       const sign = v => v >= 0 ? 'positive' : 'negative';
+
+      // ── Position info row ──────────────────────────────
+      const posRow = document.getElementById('position-row');
+      const side = p.position_side || 'NONE';
+      const badgeClass = side === 'LONG' ? 'long' : side === 'SHORT' ? 'short' : 'none';
+      const hasPosition = side !== 'NONE' && p.position_qty > 0;
+
+      // Margin ratio color: green < 0.3, yellow 0.3-0.6, orange 0.6-0.8, red > 0.8
+      const mr = p.margin_ratio || 0;
+      let mrColor = 'var(--green)';
+      if (mr >= 0.8) mrColor = 'var(--red)';
+      else if (mr >= 0.6) mrColor = 'var(--orange)';
+      else if (mr >= 0.3) mrColor = 'var(--yellow)';
+
+      if (hasPosition) {
+        posRow.style.display = 'grid';
+        posRow.innerHTML = `
+          <div>
+            <div class="label">Position</div>
+            <div class="val"><span class="pos-badge ${badgeClass}">${side}</span></div>
+          </div>
+          <div>
+            <div class="label">Size</div>
+            <div class="val">${p.position_qty.toFixed(6)}</div>
+          </div>
+          <div>
+            <div class="label">Entry Price</div>
+            <div class="val">$${fmt(p.entry_price)}</div>
+          </div>
+          <div>
+            <div class="label">Leverage</div>
+            <div class="val">${p.leverage}×</div>
+          </div>
+          <div>
+            <div class="label">Margin Locked</div>
+            <div class="val">$${fmt(p.margin_locked)}</div>
+          </div>
+          <div>
+            <div class="label">Liq. Price</div>
+            <div class="val" style="color:var(--red)">$${fmt(p.liquidation_price)}</div>
+          </div>
+          <div>
+            <div class="label">Margin Ratio</div>
+            <div class="val" style="color:${mrColor}">${(mr * 100).toFixed(1)}%</div>
+            <div class="margin-bar-bg">
+              <div class="margin-bar-fill" style="width:${Math.min(mr * 100, 100)}%;background:${mrColor}"></div>
+            </div>
+          </div>
+          <div>
+            <div class="label">Unrealized P&L</div>
+            <div class="val ${sign(p.unrealized_pnl)}">${p.unrealized_pnl >= 0 ? '+' : ''}$${fmt(p.unrealized_pnl)}</div>
+          </div>`;
+      } else {
+        posRow.style.display = 'grid';
+        posRow.innerHTML = `
+          <div>
+            <div class="label">Position</div>
+            <div class="val"><span class="pos-badge none">NONE</span></div>
+          </div>
+          <div>
+            <div class="label">Leverage</div>
+            <div class="val">${p.leverage || '—'}×</div>
+          </div>
+          <div>
+            <div class="label">Status</div>
+            <div class="val" style="color:var(--muted)">Waiting for signal...</div>
+          </div>`;
+      }
+
+      // ── Stats grid ─────────────────────────────────────
+      const grid = document.getElementById('stats-grid');
       grid.innerHTML = `
         <div class="stat-card">
-          <div class="label">USDT Balance</div>
+          <div class="label">Free USDT</div>
           <div class="value neutral">$${fmt(p.usdt_balance)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">${p.asset_symbol} Held</div>
-          <div class="value neutral">${p.asset_balance.toFixed(6)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Total Value</div>
@@ -272,8 +392,8 @@
           <div class="value ${sign(p.realized_pnl)}">${p.realized_pnl >= 0 ? '+' : ''}$${fmt(p.realized_pnl)}</div>
         </div>
         <div class="stat-card">
-          <div class="label">Unrealized P&L</div>
-          <div class="value ${sign(p.unrealized_pnl)}">${p.unrealized_pnl >= 0 ? '+' : ''}$${fmt(p.unrealized_pnl)}</div>
+          <div class="label">Net P&L (after fees)</div>
+          <div class="value ${sign(p.net_pnl)}">${p.net_pnl >= 0 ? '+' : ''}$${fmt(p.net_pnl)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Return</div>
@@ -282,13 +402,25 @@
         <div class="stat-card">
           <div class="label">Trades</div>
           <div class="value neutral">${p.trade_count}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Fees Paid</div>
+          <div class="value" style="color:var(--yellow)">$${fmt(p.total_fees_paid)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Liquidations</div>
+          <div class="value ${p.liquidation_count > 0 ? 'negative' : 'neutral'}">${p.liquidation_count}</div>
         </div>`;
     } catch (e) { console.warn('loadPortfolio', e); }
   }
 
   async function loadHistory(name) {
     try {
-      const snaps = await get(`${API}/portfolio/${name}/history?limit=200`);
+      // Fetch snapshots and trades in parallel
+      const [snaps, trades] = await Promise.all([
+        get(`${API}/portfolio/${name}/history?limit=200`),
+        get(`${API}/trades/${name}?limit=200`).catch(() => []),
+      ]);
 
       if (snaps.length === 0) {
         const ctx = document.getElementById('portfolio-chart').getContext('2d');
@@ -296,60 +428,101 @@
         return;
       }
 
-      // ── Build point objects {x, y} using ISO timestamp as x ─────────────
-      // This lets Chart.js use a time-aware x-axis without a date adapter.
-      // We convert to "minutes since first snapshot" for uniform spacing.
       const t0 = new Date(snaps[0].timestamp).getTime();
 
-      // Detect gap threshold: if time between two snapshots is > 3× the
-      // typical interval, insert a null to break the line (shown as dashed gap).
-      // Determine typical interval from median of first 10 deltas
+      // Detect gap threshold
       const deltas = [];
       for (let i = 1; i < Math.min(snaps.length, 11); i++) {
         deltas.push(new Date(snaps[i].timestamp) - new Date(snaps[i-1].timestamp));
       }
       deltas.sort((a,b)=>a-b);
       const medianDelta = deltas.length ? deltas[Math.floor(deltas.length/2)] : 30000;
-      const gapThreshold = Math.max(medianDelta * 3, 120000); // at least 2 min
+      const gapThreshold = Math.max(medianDelta * 3, 120000);
 
-      // Build arrays, inserting null sentinels at gaps
+      // Build arrays with timestamps for matching, inserting null sentinels at gaps
       const labels = [];
       const values = [];
       const prices = [];
+      const snapTimestamps = [];   // ms timestamps for each label index
 
       for (let i = 0; i < snaps.length; i++) {
         const s = snaps[i];
         const d = new Date(s.timestamp);
 
-        // Insert gap sentinel if there's a big jump since last point
         if (i > 0) {
           const prev = new Date(snaps[i-1].timestamp);
           if ((d - prev) > gapThreshold) {
-            // Add a null data point to break the line visually
             const midMs = prev.getTime() + (d - prev) / 2;
             const mid = new Date(midMs);
             labels.push(fmtTime(mid));
             values.push(null);
             prices.push(null);
+            snapTimestamps.push(midMs);
           }
         }
 
         labels.push(fmtTime(d));
         values.push(s.total_value_usdt);
         prices.push(s.asset_price ?? null);
+        snapTimestamps.push(d.getTime());
       }
 
       const hasPriceData = prices.some(p => p !== null);
 
-      // Update legend
+      // ── Build trade marker datasets ──────────────────────
+      // Map each trade to the nearest chart label index by timestamp
+      const longData = new Array(labels.length).fill(null);
+      const shortData = new Array(labels.length).fill(null);
+      const longMeta = {};   // index → trade info for tooltip
+      const shortMeta = {};
+
+      if (trades.length > 0) {
+        // Chart timespan
+        const chartStart = snapTimestamps[0];
+        const chartEnd = snapTimestamps[snapTimestamps.length - 1];
+
+        trades.forEach(t => {
+          const tMs = new Date(t.timestamp).getTime();
+          // Only include trades within the chart timespan
+          if (tMs < chartStart || tMs > chartEnd) return;
+
+          // Find nearest label index
+          let bestIdx = 0;
+          let bestDist = Infinity;
+          for (let i = 0; i < snapTimestamps.length; i++) {
+            const dist = Math.abs(snapTimestamps[i] - tMs);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestIdx = i;
+            }
+          }
+
+          const action = (t.position_side || '').toUpperCase();
+          const isLong = action.includes('LONG');
+          const isShort = action.includes('SHORT');
+          const isOpen = action.startsWith('OPEN');
+
+          if (isLong || action === 'BUY') {
+            longData[bestIdx] = t.price;
+            longMeta[bestIdx] = { action: action || 'BUY', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
+          } else if (isShort || action === 'SELL') {
+            shortData[bestIdx] = t.price;
+            shortMeta[bestIdx] = { action: action || 'SELL', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
+          }
+        });
+      }
+
+      const hasTradeMarkers = longData.some(v => v !== null) || shortData.some(v => v !== null);
+
       const assetSym = snaps[0].asset_symbol || 'Coin';
       document.getElementById('price-legend-label').textContent = assetSym + ' Price';
       document.getElementById('price-legend').style.display = hasPriceData ? 'flex' : 'none';
+      document.getElementById('long-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
+      document.getElementById('short-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
 
       const ctx = document.getElementById('portfolio-chart').getContext('2d');
       if (portfolioChart) portfolioChart.destroy();
 
-      // Segment callback: dashed line when bridging a null gap
       const dashedSegment = (ctx, def) =>
         (ctx.p0.skip || ctx.p1.skip) ? [4, 4] : def;
 
@@ -389,6 +562,38 @@
                 borderDash: ctx => dashedSegment(ctx, []),
                 borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(245,166,35,0.3)' : '#f5a623',
               }
+            },
+            // ── LONG trade markers (green ▲) ──
+            {
+              label: 'Long',
+              data: longData,
+              borderColor: '#00c896',
+              backgroundColor: '#00c896',
+              pointRadius: longData.map(v => v !== null ? 7 : 0),
+              pointHoverRadius: longData.map(v => v !== null ? 9 : 0),
+              pointStyle: 'triangle',
+              pointRotation: 0,
+              borderWidth: 2,
+              showLine: false,
+              fill: false,
+              yAxisID: 'yPrice',
+              order: -1,
+            },
+            // ── SHORT trade markers (red ▼) ──
+            {
+              label: 'Short',
+              data: shortData,
+              borderColor: '#ff4d6d',
+              backgroundColor: '#ff4d6d',
+              pointRadius: shortData.map(v => v !== null ? 7 : 0),
+              pointHoverRadius: shortData.map(v => v !== null ? 9 : 0),
+              pointStyle: 'triangle',
+              pointRotation: 180,
+              borderWidth: 2,
+              showLine: false,
+              fill: false,
+              yAxisID: 'yPrice',
+              order: -1,
             }
           ]
         },
@@ -400,13 +605,28 @@
             tooltip: {
               filter: item => item.parsed.y !== null,
               callbacks: {
-                label: ctx => {
-                  const v = ctx.parsed.y;
+                label: tooltipCtx => {
+                  const v = tooltipCtx.parsed.y;
                   if (v === null || v === undefined) return null;
-                  const label = ctx.dataset.label;
-                  return label === 'Portfolio (USDT)'
-                    ? `Portfolio: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
-                    : `${assetSym} Price: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                  const dsLabel = tooltipCtx.dataset.label;
+                  const idx = tooltipCtx.dataIndex;
+
+                  if (dsLabel === 'Portfolio (USDT)') {
+                    return `Portfolio: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                  }
+                  if (dsLabel === 'Coin Price') {
+                    return `${assetSym}: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                  }
+
+                  // Trade markers
+                  const meta = dsLabel === 'Long' ? longMeta[idx] : shortMeta[idx];
+                  if (!meta) return null;
+                  const actionLabel = meta.action.replace('_', ' ');
+                  let line = `${actionLabel} @ $${fmt(meta.price)} × ${meta.qty.toFixed(6)}`;
+                  if (meta.pnl != null) {
+                    line += ` | P&L: ${meta.pnl >= 0 ? '+' : ''}$${fmt(meta.pnl)}`;
+                  }
+                  return line;
                 }
               }
             }
@@ -433,7 +653,7 @@
             yPrice: {
               type: 'linear',
               position: 'right',
-              display: hasPriceData,
+              display: hasPriceData || hasTradeMarkers,
               ticks: {
                 color: '#f5a623',
                 callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0})
@@ -457,7 +677,7 @@
       tbody.innerHTML = '';
 
       if (trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">No trades yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No trades yet</td></tr>';
         return;
       }
 
@@ -466,9 +686,16 @@
         const pnlStr = pnl != null
           ? `<span class="${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnl >= 0 ? '+' : ''}$${fmt(pnl)}</span>`
           : '—';
+
+        // Action badge (OPEN_LONG, CLOSE_LONG, OPEN_SHORT, CLOSE_SHORT)
+        const action = t.position_side || t.side;
+        const actionClass = action.replace('_', '-').toLowerCase();
+        const actionLabel = action.replace('_', ' ');
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>#${t.id}</td>
+          <td><span class="action-badge ${actionClass}">${actionLabel}</span></td>
           <td class="${t.side.toLowerCase()}">${t.side}</td>
           <td>$${fmt(t.price)}</td>
           <td>${t.quantity.toFixed(6)}</td>
@@ -481,6 +708,7 @@
 
   // ── Helpers ────────────────────────────────────────────────────
   function fmt(n) {
+    if (n === null || n === undefined) return '0.00';
     return Math.abs(n) >= 1000
       ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : n.toFixed(2);

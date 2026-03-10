@@ -22,6 +22,7 @@ class TradeOut(BaseModel):
     price: float
     realized_pnl: Optional[float]
     fee_usdt: Optional[float]
+    position_side: str = "LONG"
     timestamp: datetime
 
 
@@ -54,6 +55,7 @@ async def get_trades(
             price=t.price,
             realized_pnl=t.realized_pnl,
             fee_usdt=t.fee_usdt,
+            position_side=t.position_side,
             timestamp=t.timestamp,
         )
         for t in trades

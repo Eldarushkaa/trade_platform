@@ -107,8 +107,8 @@ async def insert_trade(trade: TradeRecord) -> int:
     db = get_db()
     cursor = await db.execute(
         """
-        INSERT INTO trades (bot_id, side, symbol, quantity, price, realized_pnl, fee_usdt, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO trades (bot_id, side, symbol, quantity, price, realized_pnl, fee_usdt, position_side, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             trade.bot_id,
@@ -118,6 +118,7 @@ async def insert_trade(trade: TradeRecord) -> int:
             trade.price,
             trade.realized_pnl,
             trade.fee_usdt,
+            trade.position_side,
             _dt_to_str(trade.timestamp),
         ),
     )
@@ -150,6 +151,7 @@ async def get_trades_for_bot(
             price=row["price"],
             realized_pnl=row["realized_pnl"],
             fee_usdt=row["fee_usdt"],
+            position_side=row["position_side"] if "position_side" in row.keys() else "LONG",
             timestamp=_str_to_dt(row["timestamp"]),
         )
         for row in rows

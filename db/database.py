@@ -66,8 +66,9 @@ async def _create_tables() -> None:
             symbol          TEXT NOT NULL,
             quantity        REAL NOT NULL,
             price           REAL NOT NULL,
-            realized_pnl    REAL,                   -- NULL for BUY, set on SELL
+            realized_pnl    REAL,                   -- NULL for open, set on close
             fee_usdt        REAL,                   -- trading fee deducted by SimulationEngine
+            position_side   TEXT DEFAULT 'LONG',    -- 'OPEN_LONG', 'CLOSE_LONG', 'OPEN_SHORT', 'CLOSE_SHORT'
             timestamp       TEXT NOT NULL
         );
 
@@ -95,6 +96,9 @@ async def _create_tables() -> None:
     if "fee_usdt" not in columns:
         await db.execute("ALTER TABLE trades ADD COLUMN fee_usdt REAL")
         logger.info("Migration applied: added 'fee_usdt' column to trades table")
+    if "position_side" not in columns:
+        await db.execute("ALTER TABLE trades ADD COLUMN position_side TEXT DEFAULT 'LONG'")
+        logger.info("Migration applied: added 'position_side' column to trades table")
 
     async with db.execute("PRAGMA table_info(portfolio_snapshots)") as cursor:
         snap_cols = {row["name"] async for row in cursor}
