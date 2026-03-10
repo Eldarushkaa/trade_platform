@@ -232,10 +232,13 @@ async def run_backtest(
 
     # --- Create isolated engine + portfolio ---
     engine = SimulationEngine()
-    engine.register_bot(bot_id, symbol, initial_usdt=balance)
 
     # --- Create fresh strategy instance ---
     bot = strategy_class(engine=engine)
+
+    # Register portfolio under the strategy's actual name (bot.name)
+    # because strategies call self.engine.place_order(self.name, ...)
+    engine.register_bot(bot.name, symbol, initial_usdt=balance)
 
     # Apply param overrides
     if params:
@@ -258,6 +261,17 @@ async def run_backtest(
         initial_balance=balance,
     )
 
+    # --- Patch repo.insert_trade to prevent DB contamination ---
+    # The SimulationEngine calls repo.insert_trade() on every order.
+    # In backtest mode, we intercept and skip the DB write.
+    import db.repository as _repo_module
+    _original_insert_trade = _repo_module.insert_trade
+
+    async def _noop_insert_trade(trade):
+        return -1  # fake trade ID, no DB write
+
+    _repo_module.insert_trade = _noop_insert_trade
+
     # --- Track trades by intercepting engine ---
     trade_index = [0]  # mutable counter
     original_place_order = engine.place_order
@@ -279,44 +293,48 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
-    # --- Replay candles ---
-    for i, row in enumerate(candle_rows):
-        candle = Candle(
-            symbol=symbol,
-            interval_seconds=60,
-            open=row["open"],
-            high=row["high"],
-            low=row["low"],
-            close=row["close"],
-            volume=row["volume"],
-            open_time=row["open_time"] / 1000.0,    # convert ms → seconds
-            close_time=row["close_time"] / 1000.0,
-        )
+    # --- Replay candles (wrapped in try/finally to always restore repo) ---
+    try:
+        for i, row in enumerate(candle_rows):
+            candle = Candle(
+                symbol=symbol,
+                interval_seconds=60,
+                open=row["open"],
+                high=row["high"],
+                low=row["low"],
+                close=row["close"],
+                volume=row["volume"],
+                open_time=row["open_time"] / 1000.0,    # convert ms → seconds
+                close_time=row["close_time"] / 1000.0,
+            )
 
-        # Update engine price (for liquidation checks etc.)
-        engine.update_price(symbol, candle.close)
+            # Update engine price (for liquidation checks etc.)
+            engine.update_price(symbol, candle.close)
 
-        # Feed candle to strategy
-        try:
-            await bot.on_candle(candle)
-        except Exception as e:
-            logger.warning(f"Backtest candle {i} error: {e}")
+            # Feed candle to strategy
+            try:
+                await bot.on_candle(candle)
+            except Exception as e:
+                logger.warning(f"Backtest candle {i} error: {e}")
 
-        result.candles_processed = i + 1
+            result.candles_processed = i + 1
 
-        # Record equity point at intervals
-        if i % equity_interval == 0 or i == len(candle_rows) - 1:
-            state = await engine.get_portfolio_state(bot_id)
-            result.equity_curve.append({
-                "time": row["open_time"],
-                "value": round(state["total_value_usdt"], 2),
-                "price": round(candle.close, 2),
-            })
+            # Record equity point at intervals
+            if i % equity_interval == 0 or i == len(candle_rows) - 1:
+                state = await engine.get_portfolio_state(bot.name)
+                result.equity_curve.append({
+                    "time": row["open_time"],
+                    "value": round(state["total_value_usdt"], 2),
+                    "price": round(candle.close, 2),
+                })
 
-    # --- Final state ---
-    final_state = await engine.get_portfolio_state(bot_id)
-    result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
-    result.liquidations = final_state.get("liquidation_count", 0)
+        # --- Final state ---
+        final_state = await engine.get_portfolio_state(bot.name)
+        result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
+        result.liquidations = final_state.get("liquidation_count", 0)
+    finally:
+        # --- Always restore original insert_trade ---
+        _repo_module.insert_trade = _original_insert_trade
 
     result.duration_seconds = time.monotonic() - start_time
 
