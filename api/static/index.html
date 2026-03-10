@@ -222,6 +222,63 @@
     .llm-log-entry .actions { color: var(--muted); }
     .llm-log-entry .ts { color: var(--muted); font-size: 10px; }
 
+    /* --- Backtest panel --- */
+    .backtest-section {
+      margin-top: 20px; background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
+    }
+    .backtest-header {
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      font-weight: 600; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; user-select: none; transition: background .15s;
+    }
+    .backtest-header:hover { background: rgba(255,255,255,.02); }
+    .backtest-body { padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height .4s ease, padding .3s ease; }
+    .backtest-body.open { max-height: 3000px; padding: 16px; }
+    .backtest-download-row {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px;
+    }
+    .backtest-download-row .data-info { color: var(--muted); font-size: 11px; margin-left: 8px; }
+    .bt-btn {
+      border: none; border-radius: 6px; padding: 7px 14px; font-size: 12px;
+      font-weight: 600; cursor: pointer; transition: opacity .2s;
+    }
+    .bt-btn:hover { opacity: .8; }
+    .bt-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .bt-btn-dl { background: var(--accent); color: #fff; }
+    .bt-btn-run { background: var(--green); color: #000; }
+    .bt-btn-opt { background: var(--yellow); color: #000; }
+    .bt-btn-apply { background: var(--green); color: #000; font-size: 11px; padding: 5px 12px; }
+
+    .bt-actions-row { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+    .bt-status { color: var(--muted); font-size: 12px; font-style: italic; }
+
+    .bt-metrics {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;
+      margin-bottom: 14px;
+    }
+    .bt-metric {
+      background: var(--bg); border-radius: 6px; padding: 10px;
+    }
+    .bt-metric .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+    .bt-metric .value { font-size: 16px; font-weight: 700; }
+
+    .bt-chart-wrap {
+      margin-bottom: 14px; background: var(--bg); border-radius: 8px; padding: 12px;
+    }
+
+    .bt-opt-results {
+      margin-top: 14px; background: var(--bg); border-radius: 8px; padding: 14px;
+    }
+    .bt-opt-results h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); margin-bottom: 10px; }
+    .bt-param-compare {
+      display: grid; grid-template-columns: 1fr auto auto auto; gap: 6px 16px;
+      font-size: 12px; margin-bottom: 12px;
+    }
+    .bt-param-compare .hdr { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+    .bt-param-compare .changed { color: var(--yellow); font-weight: 700; }
+
     @media (max-width: 768px) {
       .layout { grid-template-columns: 1fr; }
     }
@@ -334,6 +391,56 @@
           <tbody id="trades-body"></tbody>
         </table>
       </div>
+
+      <!-- Backtest & Optimization Section -->
+      <div class="backtest-section" id="backtest-section">
+        <div class="backtest-header" onclick="toggleBacktest()">
+          <span>📊 Backtest &amp; Optimization <span id="bt-data-badge" style="color:var(--muted);font-weight:400;font-size:11px"></span></span>
+          <span class="chevron" id="bt-chevron">▶</span>
+        </div>
+        <div class="backtest-body" id="backtest-body">
+
+          <!-- Download row -->
+          <div class="backtest-download-row">
+            <span style="font-size:12px;font-weight:600;color:var(--muted)">Historical Data:</span>
+            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(1)">📥 1 Day</button>
+            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(2)">📥 2 Days</button>
+            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(7)">📥 7 Days</button>
+            <span class="data-info" id="bt-data-info">No data</span>
+          </div>
+
+          <!-- Backtest actions -->
+          <div class="bt-actions-row">
+            <button class="bt-btn bt-btn-run" id="bt-run-btn" onclick="runBacktest()" disabled>▶ Run Backtest</button>
+            <button class="bt-btn bt-btn-opt" id="bt-opt-btn" onclick="runOptimize()" disabled>🧠 Optimize (50 iter)</button>
+            <span class="bt-status" id="bt-status"></span>
+          </div>
+
+          <!-- Backtest results (hidden until run) -->
+          <div id="bt-results" style="display:none">
+            <div class="bt-metrics" id="bt-metrics"></div>
+            <div class="bt-chart-wrap">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:12px;font-weight:600;color:var(--muted)">BACKTEST EQUITY CURVE</span>
+                <div style="display:flex;gap:12px;font-size:11px;color:var(--muted)">
+                  <span style="display:flex;align-items:center;gap:4px">
+                    <span style="display:inline-block;width:12px;height:3px;background:#6c63ff;border-radius:2px"></span> Equity
+                  </span>
+                  <span style="display:flex;align-items:center;gap:4px">
+                    <span style="display:inline-block;width:12px;height:3px;background:#f5a623;border-radius:2px"></span> Price
+                  </span>
+                </div>
+              </div>
+              <canvas id="bt-chart" height="80"></canvas>
+            </div>
+          </div>
+
+          <!-- Optimization results (hidden until optimize) -->
+          <div id="bt-opt-results" style="display:none"></div>
+
+        </div>
+      </div>
+
     </div>
   </main>
 </div>
@@ -346,6 +453,9 @@
   let portfolioChart = null;
   let _paramsCache = {};         // param_name → {value, default, type, ...}
   let _settingsOpen = false;
+  let _backtestOpen = false;
+  let _backtestChart = null;
+  let _lastOptResult = null;     // cached optimization result for "Apply" button
 
   // ── Fetch helpers ──────────────────────────────────────────────
   async function get(url) {
@@ -362,6 +472,15 @@
   async function put(url, body) {
     const r = await fetch(url, {
       method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { ok: r.ok, status: r.status, data: await r.json() };
+  }
+
+  async function postJson(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
@@ -976,6 +1095,373 @@
   function hideToast() {
     const el = document.getElementById('settings-toast');
     el.className = 'settings-toast';
+  }
+
+  // ── Backtest & Optimization ────────────────────────────────────
+
+  function toggleBacktest() {
+    _backtestOpen = !_backtestOpen;
+    document.getElementById('backtest-body').classList.toggle('open', _backtestOpen);
+    document.getElementById('bt-chevron').classList.toggle('open', _backtestOpen);
+    if (_backtestOpen) loadDataStatus();
+  }
+
+  async function loadDataStatus() {
+    try {
+      const d = await get(`${API}/backtest/data-status`);
+      const info = document.getElementById('bt-data-info');
+      const badge = document.getElementById('bt-data-badge');
+      const total = d.total_candles || 0;
+
+      if (total > 0) {
+        // Show info for the selected bot's symbol or just total
+        const syms = Object.entries(d.symbols).filter(([,v]) => v.count > 0);
+        const parts = syms.map(([s, v]) => `${s}: ${v.count} (${v.days}d)`);
+        info.textContent = parts.join(' · ');
+        badge.textContent = `(${total} candles stored)`;
+        document.getElementById('bt-run-btn').disabled = false;
+        document.getElementById('bt-opt-btn').disabled = false;
+      } else {
+        info.textContent = 'No data — download first';
+        badge.textContent = '';
+        document.getElementById('bt-run-btn').disabled = true;
+        document.getElementById('bt-opt-btn').disabled = true;
+      }
+    } catch (e) { console.warn('loadDataStatus', e); }
+  }
+
+  async function downloadHistory(days) {
+    const btns = document.querySelectorAll('.bt-btn-dl');
+    btns.forEach(b => { b.disabled = true; });
+    document.getElementById('bt-data-info').textContent = `Downloading ${days}d of data...`;
+
+    try {
+      const resp = await postJson(`${API}/backtest/download`, { days });
+      if (resp.ok) {
+        const total = resp.data.results.reduce((s, r) => s + (r.candles_downloaded || 0), 0);
+        document.getElementById('bt-data-info').textContent = `✓ Downloaded ${total} candles`;
+      } else {
+        document.getElementById('bt-data-info').textContent = `✗ ${resp.data.detail || 'Error'}`;
+      }
+    } catch (e) {
+      document.getElementById('bt-data-info').textContent = `✗ ${e.message}`;
+    }
+
+    btns.forEach(b => { b.disabled = false; });
+    await loadDataStatus();
+  }
+
+  async function runBacktest() {
+    if (!selectedBot) return;
+    const btn = document.getElementById('bt-run-btn');
+    const status = document.getElementById('bt-status');
+    btn.disabled = true;
+    status.textContent = '⏳ Running backtest...';
+    document.getElementById('bt-results').style.display = 'none';
+    document.getElementById('bt-opt-results').style.display = 'none';
+
+    try {
+      const resp = await postJson(`${API}/backtest/run`, { bot_id: selectedBot });
+      if (!resp.ok) {
+        status.textContent = `✗ ${resp.data.detail || 'Error'}`;
+        btn.disabled = false;
+        return;
+      }
+      const r = resp.data;
+      status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s`;
+
+      renderBacktestResults(r);
+    } catch (e) {
+      status.textContent = `✗ ${e.message}`;
+    }
+    btn.disabled = false;
+  }
+
+  function renderBacktestResults(r) {
+    document.getElementById('bt-results').style.display = 'block';
+
+    // Metrics grid
+    const sign = v => v >= 0 ? 'positive' : 'negative';
+    const metricsEl = document.getElementById('bt-metrics');
+    metricsEl.innerHTML = `
+      <div class="bt-metric">
+        <div class="label">Return</div>
+        <div class="value ${sign(r.return_pct)}">${r.return_pct >= 0 ? '+' : ''}${r.return_pct.toFixed(2)}%</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Net P&L</div>
+        <div class="value ${sign(r.net_pnl)}">${r.net_pnl >= 0 ? '+' : ''}$${fmt(r.net_pnl)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Sharpe Ratio</div>
+        <div class="value ${r.sharpe_ratio >= 1 ? 'positive' : r.sharpe_ratio >= 0 ? 'neutral' : 'negative'}">${r.sharpe_ratio.toFixed(2)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Max Drawdown</div>
+        <div class="value negative">-${r.max_drawdown_pct.toFixed(2)}%</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Trades</div>
+        <div class="value neutral">${r.trade_count}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Win Rate</div>
+        <div class="value ${r.win_rate >= 50 ? 'positive' : 'negative'}">${r.win_rate.toFixed(1)}%</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Profit Factor</div>
+        <div class="value ${r.profit_factor >= 1 ? 'positive' : 'negative'}">${r.profit_factor === Infinity ? '∞' : r.profit_factor.toFixed(2)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Fees Paid</div>
+        <div class="value" style="color:var(--yellow)">$${fmt(r.total_fees)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Liquidations</div>
+        <div class="value ${r.liquidations > 0 ? 'negative' : 'neutral'}">${r.liquidations}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Win Streak</div>
+        <div class="value positive">${r.longest_win_streak}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="label">Loss Streak</div>
+        <div class="value negative">${r.longest_loss_streak}</div>
+      </div>`;
+
+    // Equity chart
+    renderBacktestChart(r.equity_curve);
+  }
+
+  function renderBacktestChart(curve) {
+    if (!curve || curve.length === 0) return;
+
+    const labels = curve.map(p => {
+      const d = new Date(p.time);
+      return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    });
+    const values = curve.map(p => p.value);
+    const prices = curve.map(p => p.price);
+
+    const ctx = document.getElementById('bt-chart').getContext('2d');
+    if (_backtestChart) _backtestChart.destroy();
+
+    _backtestChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Equity (USDT)',
+            data: values,
+            borderColor: '#6c63ff',
+            backgroundColor: 'rgba(108,99,255,0.08)',
+            borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3,
+            yAxisID: 'yEq',
+          },
+          {
+            label: 'Coin Price',
+            data: prices,
+            borderColor: '#f5a623',
+            borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2,
+            yAxisID: 'yPr',
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const v = ctx.parsed.y;
+                if (ctx.dataset.label.startsWith('Equity'))
+                  return `Equity: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                return `Price: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#8892a4', maxTicksLimit: 8, maxRotation: 0 },
+            grid: { color: '#2a2d3a' }
+          },
+          yEq: {
+            type: 'linear', position: 'left',
+            ticks: { color: '#8892a4', callback: v => '$'+v.toLocaleString('en-US',{maximumFractionDigits:0}) },
+            grid: { color: '#2a2d3a' }
+          },
+          yPr: {
+            type: 'linear', position: 'right',
+            ticks: { color: '#f5a623', callback: v => '$'+v.toLocaleString('en-US',{maximumFractionDigits:0}) },
+            grid: { drawOnChartArea: false }
+          }
+        }
+      }
+    });
+  }
+
+  async function runOptimize() {
+    if (!selectedBot) return;
+    const btn = document.getElementById('bt-opt-btn');
+    const status = document.getElementById('bt-status');
+    btn.disabled = true;
+    btn.textContent = '⏳ Optimizing...';
+    status.textContent = 'Optimization running (may take 30-120 seconds)...';
+    document.getElementById('bt-opt-results').style.display = 'none';
+
+    try {
+      // Start optimization (returns task_id)
+      const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: 50 });
+      if (!startResp.ok) {
+        status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
+        btn.disabled = false;
+        btn.textContent = '🧠 Optimize (50 iter)';
+        return;
+      }
+
+      const taskId = startResp.data.task_id;
+
+      // Poll for completion
+      let done = false;
+      while (!done) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+          status.textContent = `⏳ ${poll.progress?.msg || 'Running...'}`;
+          if (poll.status === 'completed') {
+            done = true;
+            renderOptResults(poll.result);
+            status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s`;
+          } else if (poll.status === 'error') {
+            done = true;
+            status.textContent = `✗ ${poll.error}`;
+          }
+        } catch (e) {
+          console.warn('poll error', e);
+        }
+      }
+    } catch (e) {
+      status.textContent = `✗ ${e.message}`;
+    }
+
+    btn.disabled = false;
+    btn.textContent = '🧠 Optimize (50 iter)';
+  }
+
+  function renderOptResults(r) {
+    _lastOptResult = r;
+    const wrap = document.getElementById('bt-opt-results');
+    wrap.style.display = 'block';
+
+    const sign = v => v >= 0 ? 'positive' : 'negative';
+    const imp = r.improvement || {};
+
+    // Build param comparison table
+    let paramRows = '';
+    const allKeys = new Set([...Object.keys(r.current_params || {}), ...Object.keys(r.best_params || {})]);
+    allKeys.forEach(key => {
+      const cur = r.current_params?.[key];
+      const best = r.best_params?.[key];
+      const changed = cur !== best;
+      paramRows += `
+        <div>${key.replace(/_/g, ' ')}</div>
+        <div>${cur ?? '—'}</div>
+        <div class="${changed ? 'changed' : ''}">${best ?? '—'}</div>
+        <div class="${changed ? 'changed' : ''}">${changed ? '⚡' : '✓'}</div>`;
+    });
+
+    wrap.innerHTML = `
+      <div class="bt-opt-results">
+        <h4>🧠 Optimization Results</h4>
+        <div class="bt-metrics" style="margin-bottom:14px">
+          <div class="bt-metric">
+            <div class="label">Best Sharpe</div>
+            <div class="value ${sign(r.best_sharpe)}">${r.best_sharpe.toFixed(2)}</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Current Sharpe</div>
+            <div class="value ${sign(r.current_sharpe)}">${r.current_sharpe.toFixed(2)}</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Sharpe Δ</div>
+            <div class="value ${sign(imp.sharpe_delta || 0)}">${(imp.sharpe_delta||0) >= 0 ? '+' : ''}${(imp.sharpe_delta||0).toFixed(2)}</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Best Return</div>
+            <div class="value ${sign(r.best_return_pct)}">${r.best_return_pct >= 0 ? '+' : ''}${r.best_return_pct.toFixed(2)}%</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Max Drawdown</div>
+            <div class="value negative">-${r.best_max_drawdown.toFixed(2)}%</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Win Rate</div>
+            <div class="value ${r.best_win_rate >= 50 ? 'positive' : 'negative'}">${r.best_win_rate.toFixed(1)}%</div>
+          </div>
+          <div class="bt-metric">
+            <div class="label">Iterations</div>
+            <div class="value neutral">${r.iterations_run}/${r.max_iterations}</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:12px;font-size:12px;font-weight:600;color:var(--muted)">PARAMETER COMPARISON</div>
+        <div class="bt-param-compare">
+          <div class="hdr">Parameter</div>
+          <div class="hdr">Current</div>
+          <div class="hdr">Optimized</div>
+          <div class="hdr"></div>
+          ${paramRows}
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button class="bt-btn bt-btn-apply" onclick="applyOptParams()">✅ Apply Optimized Params</button>
+          <button class="bt-btn bt-btn-run" onclick="runBacktestWithOpt()" style="font-size:11px;padding:5px 12px">▶ Backtest with Optimized</button>
+        </div>
+      </div>`;
+  }
+
+  async function applyOptParams() {
+    if (!_lastOptResult || !selectedBot) return;
+    const params = _lastOptResult.best_params;
+    try {
+      const resp = await put(`${API}/bots/${selectedBot}/params`, params);
+      if (resp.ok) {
+        showToast(`✓ Applied ${Object.keys(resp.data.applied).length} optimized param(s)`, 'success');
+        await loadParams(selectedBot);
+      } else {
+        showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`✗ ${e.message}`, 'error');
+    }
+  }
+
+  async function runBacktestWithOpt() {
+    if (!_lastOptResult || !selectedBot) return;
+    const btn = document.getElementById('bt-run-btn');
+    const status = document.getElementById('bt-status');
+    btn.disabled = true;
+    status.textContent = '⏳ Running backtest with optimized params...';
+
+    try {
+      const resp = await postJson(`${API}/backtest/run`, {
+        bot_id: selectedBot,
+        params: _lastOptResult.best_params,
+      });
+      if (resp.ok) {
+        status.textContent = `✓ ${resp.data.candles_processed} candles in ${resp.data.duration_seconds}s (optimized params)`;
+        renderBacktestResults(resp.data);
+      } else {
+        status.textContent = `✗ ${resp.data.detail || 'Error'}`;
+      }
+    } catch (e) {
+      status.textContent = `✗ ${e.message}`;
+    }
+    btn.disabled = false;
   }
 
   // ── LLM Agent panel ────────────────────────────────────────────

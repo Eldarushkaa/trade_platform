@@ -106,6 +106,20 @@ async def _create_tables() -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_llm_decisions_ts ON llm_decisions(timestamp);
+
+        CREATE TABLE IF NOT EXISTS historical_candles (
+            symbol          TEXT NOT NULL,
+            open_time       INTEGER NOT NULL,     -- UTC epoch milliseconds
+            open            REAL NOT NULL,
+            high            REAL NOT NULL,
+            low             REAL NOT NULL,
+            close           REAL NOT NULL,
+            volume          REAL NOT NULL,
+            close_time      INTEGER NOT NULL,     -- UTC epoch milliseconds
+            PRIMARY KEY (symbol, open_time)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hist_symbol ON historical_candles(symbol);
     """)
 
     # --- Additive migrations (safe to run on existing DBs) ---

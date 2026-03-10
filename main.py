@@ -163,14 +163,17 @@ from api.routes import bots as bots_router
 from api.routes import trades as trades_router
 from api.routes import portfolio as portfolio_router
 from api.routes import llm as llm_router
+from api.routes import backtest as backtest_router
 
 bots_router.set_bot_manager(bot_manager)
 portfolio_router.set_engine(simulation_engine)
+backtest_router.set_dependencies(bot_manager, SYMBOLS)
 
 app.include_router(bots_router.router, prefix="/api")
 app.include_router(trades_router.router, prefix="/api")
 app.include_router(portfolio_router.router, prefix="/api")
 app.include_router(llm_router.router, prefix="/api")
+app.include_router(backtest_router.router, prefix="/api")
 
 # ------------------------------------------------------------------
 # Serve static dashboard

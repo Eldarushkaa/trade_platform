@@ -328,3 +328,104 @@ async def get_llm_decisions(limit: int = 20) -> list[dict]:
                 "error_message": row["error_message"],
             })
     return rows
+
+
+# ------------------------------------------------------------------
+# Historical candles
+# ------------------------------------------------------------------
+
+async def save_historical_candles(rows: list[tuple]) -> int:
+    """
+    Bulk-insert historical candles. Each row is a tuple:
+        (symbol, open_time_ms, open, high, low, close, volume, close_time_ms)
+    Uses INSERT OR REPLACE so re-downloads overwrite cleanly.
+    Returns number of rows inserted.
+    """
+    db = get_db()
+    await db.executemany(
+        """INSERT OR REPLACE INTO historical_candles
+           (symbol, open_time, open, high, low, close, volume, close_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    await db.commit()
+    return len(rows)
+
+
+async def get_historical_candles(
+    symbol: str,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> list[dict]:
+    """
+    Fetch historical candles for a symbol, sorted by open_time ASC.
+    Optionally filter by time range (epoch milliseconds).
+    """
+    db = get_db()
+    query = "SELECT * FROM historical_candles WHERE symbol = ?"
+    params: list = [symbol]
+
+    if start_ms is not None:
+        query += " AND open_time >= ?"
+        params.append(start_ms)
+    if end_ms is not None:
+        query += " AND open_time <= ?"
+        params.append(end_ms)
+
+    query += " ORDER BY open_time ASC"
+
+    async with db.execute(query, params) as cursor:
+        rows = []
+        async for row in cursor:
+            rows.append({
+                "symbol": row["symbol"],
+                "open_time": row["open_time"],
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
+                "close_time": row["close_time"],
+            })
+    return rows
+
+
+async def count_historical_candles(symbol: str) -> int:
+    """Return the number of stored historical candles for a symbol."""
+    db = get_db()
+    async with db.execute(
+        "SELECT COUNT(*) as cnt FROM historical_candles WHERE symbol = ?",
+        (symbol,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row["cnt"] if row else 0
+
+
+async def get_historical_range(symbol: str) -> dict | None:
+    """
+    Return the time range of stored candles for a symbol.
+    Returns {min_time, max_time, count} or None.
+    """
+    db = get_db()
+    async with db.execute(
+        """SELECT MIN(open_time) as min_t, MAX(open_time) as max_t, COUNT(*) as cnt
+           FROM historical_candles WHERE symbol = ?""",
+        (symbol,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if not row or row["cnt"] == 0:
+        return None
+    return {
+        "min_time": row["min_t"],
+        "max_time": row["max_t"],
+        "count": row["cnt"],
+    }
+
+
+async def delete_historical_candles(symbol: str) -> int:
+    """Delete all historical candles for a symbol. Returns deleted count."""
+    db = get_db()
+    count = await count_historical_candles(symbol)
+    await db.execute("DELETE FROM historical_candles WHERE symbol = ?", (symbol,))
+    await db.commit()
+    return count
