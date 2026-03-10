@@ -53,7 +53,7 @@ class BacktestRequest(BaseModel):
 
 class OptimizeRequest(BaseModel):
     bot_id: str
-    iterations: int = 50               # max optimization iterations
+    iterations: int = 500              # max optimization iterations (100/500/1000)
 
 
 # ------------------------------------------------------------------
@@ -167,7 +167,7 @@ async def optimize_endpoint(req: OptimizeRequest):
     """
     strategy_class, symbol, current_params = _get_bot_info(req.bot_id)
 
-    iterations = max(10, min(req.iterations, 500))
+    iterations = max(10, min(req.iterations, 2000))
     task_id = f"opt_{req.bot_id}"
 
     # Check if already running

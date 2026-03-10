@@ -84,6 +84,15 @@ class BacktestResult:
     longest_loss_streak: int = 0
 
     def to_dict(self) -> dict:
+        def _safe(v):
+            """Replace inf/nan with JSON-safe values."""
+            if isinstance(v, float):
+                if math.isinf(v):
+                    return 9999.99 if v > 0 else -9999.99
+                if math.isnan(v):
+                    return 0.0
+            return v
+
         return {
             "bot_id": self.bot_id,
             "symbol": self.symbol,
@@ -94,18 +103,18 @@ class BacktestResult:
             "initial_balance": self.initial_balance,
             "final_balance": round(self.final_balance, 2),
             "net_pnl": round(self.net_pnl, 2),
-            "return_pct": round(self.return_pct, 2),
+            "return_pct": round(_safe(self.return_pct), 2),
             "total_trades": self.total_trades,
             "trade_count": self.trade_count,
             "win_count": self.win_count,
             "loss_count": self.loss_count,
-            "win_rate": round(self.win_rate, 1),
-            "avg_win": round(self.avg_win, 4),
-            "avg_loss": round(self.avg_loss, 4),
-            "profit_factor": round(self.profit_factor, 2),
-            "sharpe_ratio": round(self.sharpe_ratio, 2),
-            "max_drawdown_pct": round(self.max_drawdown_pct, 2),
-            "total_fees": round(self.total_fees, 4),
+            "win_rate": round(_safe(self.win_rate), 1),
+            "avg_win": round(_safe(self.avg_win), 4),
+            "avg_loss": round(_safe(self.avg_loss), 4),
+            "profit_factor": round(_safe(self.profit_factor), 2),
+            "sharpe_ratio": round(_safe(self.sharpe_ratio), 2),
+            "max_drawdown_pct": round(_safe(self.max_drawdown_pct), 2),
+            "total_fees": round(_safe(self.total_fees), 4),
             "liquidations": self.liquidations,
             "longest_win_streak": self.longest_win_streak,
             "longest_loss_streak": self.longest_loss_streak,

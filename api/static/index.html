@@ -298,6 +298,10 @@
 <div class="layout">
   <!-- Sidebar -->
   <aside class="sidebar">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <button class="bt-btn bt-btn-dl" onclick="downloadHistory(7)" style="font-size:11px;padding:5px 10px">📥 Download 7d Data</button>
+      <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
+    </div>
     <h2>Bots</h2>
     <div id="bots-list"><div id="loading">Loading...</div></div>
 
@@ -400,19 +404,15 @@
         </div>
         <div class="backtest-body" id="backtest-body">
 
-          <!-- Download row -->
-          <div class="backtest-download-row">
-            <span style="font-size:12px;font-weight:600;color:var(--muted)">Historical Data:</span>
-            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(1)">📥 1 Day</button>
-            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(2)">📥 2 Days</button>
-            <button class="bt-btn bt-btn-dl" onclick="downloadHistory(7)">📥 7 Days</button>
-            <span class="data-info" id="bt-data-info">No data</span>
-          </div>
-
           <!-- Backtest actions -->
           <div class="bt-actions-row">
             <button class="bt-btn bt-btn-run" id="bt-run-btn" onclick="runBacktest()" disabled>▶ Run Backtest</button>
-            <button class="bt-btn bt-btn-opt" id="bt-opt-btn" onclick="runOptimize()" disabled>🧠 Optimize (50 iter)</button>
+            <button class="bt-btn bt-btn-opt" id="bt-opt-btn" onclick="runOptimize()" disabled>🧠 Optimize</button>
+            <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;">
+              <option value="100">100 iter (quick)</option>
+              <option value="500" selected>500 iter</option>
+              <option value="1000">1000 iter (deep)</option>
+            </select>
             <span class="bt-status" id="bt-status"></span>
           </div>
 
@@ -1317,18 +1317,19 @@
     if (!selectedBot) return;
     const btn = document.getElementById('bt-opt-btn');
     const status = document.getElementById('bt-status');
+    const iters = parseInt(document.getElementById('bt-opt-iters').value) || 200;
     btn.disabled = true;
     btn.textContent = '⏳ Optimizing...';
-    status.textContent = 'Optimization running (may take 30-120 seconds)...';
+    status.textContent = `Optimization running (${iters} iterations)...`;
     document.getElementById('bt-opt-results').style.display = 'none';
 
     try {
       // Start optimization (returns task_id)
-      const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: 50 });
+      const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: iters });
       if (!startResp.ok) {
         status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
         btn.disabled = false;
-        btn.textContent = '🧠 Optimize (50 iter)';
+        btn.textContent = '🧠 Optimize';
         return;
       }
 
@@ -1358,7 +1359,7 @@
     }
 
     btn.disabled = false;
-    btn.textContent = '🧠 Optimize (50 iter)';
+    btn.textContent = '🧠 Optimize';
   }
 
   function renderOptResults(r) {
@@ -1625,6 +1626,7 @@
   }
 
   refresh();
+  loadDataStatus();  // show data status in sidebar on load
   setInterval(refresh, 5000);
 </script>
 </body>

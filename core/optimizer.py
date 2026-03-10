@@ -57,7 +57,27 @@ class OptimizationResult:
         # All trials (for analysis)
         self.trials: list[dict] = []
 
+    @staticmethod
+    def _safe(v):
+        """Replace inf/nan with JSON-safe values."""
+        if isinstance(v, float):
+            if math.isinf(v):
+                return 9999.99 if v > 0 else -9999.99
+            if math.isnan(v):
+                return 0.0
+        return v
+
+    def _safe_trial(self, t: dict) -> dict:
+        """Sanitize a trial dict so all floats are JSON-safe."""
+        return {k: self._safe(v) if isinstance(v, float) else v for k, v in t.items()}
+
     def to_dict(self) -> dict:
+        s = self._safe
+        best_sharpe = s(self.best_sharpe)
+        current_sharpe = s(self.current_sharpe)
+        best_return = s(self.best_return_pct)
+        current_return = s(self.current_return_pct)
+
         return {
             "bot_id": self.bot_id,
             "symbol": self.symbol,
@@ -67,22 +87,24 @@ class OptimizationResult:
             "duration_seconds": round(self.duration_seconds, 1),
             "objective": self.objective,
             "best_params": self.best_params,
-            "best_sharpe": round(self.best_sharpe, 2),
-            "best_return_pct": round(self.best_return_pct, 2),
-            "best_max_drawdown": round(self.best_max_drawdown, 2),
-            "best_win_rate": round(self.best_win_rate, 1),
-            "best_profit_factor": round(self.best_profit_factor, 2),
+            "best_sharpe": round(best_sharpe, 2),
+            "best_return_pct": round(best_return, 2),
+            "best_max_drawdown": round(s(self.best_max_drawdown), 2),
+            "best_win_rate": round(s(self.best_win_rate), 1),
+            "best_profit_factor": round(s(self.best_profit_factor), 2),
             "best_trade_count": self.best_trade_count,
             "current_params": self.current_params,
-            "current_sharpe": round(self.current_sharpe, 2),
-            "current_return_pct": round(self.current_return_pct, 2),
+            "current_sharpe": round(current_sharpe, 2),
+            "current_return_pct": round(current_return, 2),
             "improvement": {
-                "sharpe_delta": round(self.best_sharpe - self.current_sharpe, 2),
-                "return_delta": round(self.best_return_pct - self.current_return_pct, 2),
+                "sharpe_delta": round(s(best_sharpe - current_sharpe), 2),
+                "return_delta": round(s(best_return - current_return), 2),
             },
-            "top_trials": sorted(
-                self.trials, key=lambda t: t["sharpe"], reverse=True
-            )[:10],
+            "top_trials": [
+                self._safe_trial(t) for t in sorted(
+                    self.trials, key=lambda t: t["sharpe"], reverse=True
+                )[:10]
+            ],
         }
 
 
@@ -126,7 +148,7 @@ async def optimize_params(
     symbol: str,
     strategy_class: type,
     current_params: dict | None = None,
-    max_iterations: int = 50,
+    max_iterations: int = 500,
     initial_balance: float | None = None,
     progress_callback=None,
 ) -> OptimizationResult:
@@ -138,6 +160,11 @@ async def optimize_params(
         2. Random search phase (60% of budget) — explore the space
         3. Mutation phase (40% of budget) — refine around best found
         4. Return best params found
+
+    For a 5-parameter strategy, recommended iterations:
+        - 50:  Quick scan (~50s) — good for a rough idea
+        - 200: Balanced (~3 min) — solid coverage of the space
+        - 500: Thorough (~8 min) — deep exploration, best results
 
     Args:
         bot_id: Bot identifier
