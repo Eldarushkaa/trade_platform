@@ -866,6 +866,11 @@ function renderBacktestChart(curve) {
     return cv > 0.01 ? cv : 0;
   });
   const prices = curve.map(p => p.price);
+  const sides = curve.map(p => p.side || 'NONE');
+
+  // Color helpers based on position side
+  const sideColor = (s) => s === 'LONG' ? 'rgba(0,200,120,0.8)' : s === 'SHORT' ? 'rgba(255,80,80,0.8)' : 'rgba(130,130,160,0.5)';
+  const sideBg   = (s) => s === 'LONG' ? 'rgba(0,200,120,0.12)' : s === 'SHORT' ? 'rgba(255,80,80,0.12)' : 'rgba(130,130,160,0.05)';
 
   const ctx = document.getElementById('bt-chart').getContext('2d');
   if (_backtestChart) _backtestChart.destroy();
@@ -875,35 +880,40 @@ function renderBacktestChart(curve) {
     data: {
       labels,
       datasets: [
-        // Coin value area (total = top)
+        // Position area fill — colored by LONG/SHORT
         {
-          label: 'Coin Value',
+          label: 'Position',
           data: values,
-          borderColor: 'rgba(0,200,150,0.6)',
-          backgroundColor: 'rgba(0,200,150,0.15)',
           borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
           yAxisID: 'yEq',
-          order: 3,
+          order: 4,
+          segment: {
+            backgroundColor: ctx => sideBg(sides[ctx.p0DataIndex]),
+          },
+          backgroundColor: 'rgba(130,130,160,0.05)',
         },
         // USDT balance area (bottom)
         {
           label: 'USDT Balance',
           data: usdtValues,
           borderColor: 'rgba(108,99,255,0.6)',
-          backgroundColor: 'rgba(108,99,255,0.2)',
+          backgroundColor: 'rgba(108,99,255,0.18)',
           borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
           yAxisID: 'yEq',
-          order: 2,
+          order: 3,
         },
-        // Total value line (on top)
+        // Total value line — colored by position side
         {
           label: 'Total Value',
           data: values,
-          borderColor: '#6c63ff',
           backgroundColor: 'transparent',
           borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3,
           yAxisID: 'yEq',
           order: 1,
+          segment: {
+            borderColor: ctx => sideColor(sides[ctx.p0DataIndex]),
+          },
+          borderColor: 'rgba(130,130,160,0.5)',
         },
         {
           label: 'Coin Price',
@@ -911,6 +921,7 @@ function renderBacktestChart(curve) {
           borderColor: '#f5a623',
           borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2,
           yAxisID: 'yPr',
+          order: 2,
         }
       ]
     },
@@ -927,9 +938,13 @@ function renderBacktestChart(curve) {
               const dsLabel = tooltipCtx.dataset.label;
               const idx = tooltipCtx.dataIndex;
               const fmtUsd = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-              if (dsLabel === 'Total Value') return `Total: ${fmtUsd(v)}`;
+              if (dsLabel === 'Total Value') {
+                const side = sides[idx];
+                const tag = side === 'LONG' ? ' 🟢 LONG' : side === 'SHORT' ? ' 🔴 SHORT' : '';
+                return `Total: ${fmtUsd(v)}${tag}`;
+              }
               if (dsLabel === 'USDT Balance') return `USDT: ${fmtUsd(v)}`;
-              if (dsLabel === 'Coin Value') return `Coin: ${fmtUsd(coinValues[idx] ?? 0)}`;
+              if (dsLabel === 'Position') return `Coin: ${fmtUsd(coinValues[idx] ?? 0)}`;
               if (dsLabel === 'Coin Price') return `Price: ${fmtUsd(v)}`;
               return null;
             }

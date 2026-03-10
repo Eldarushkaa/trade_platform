@@ -283,13 +283,15 @@ async def run_backtest(
     async def intercepting_place_order(bot_id, symbol, side, quantity, price):
         order_result = await original_place_order(bot_id, symbol, side, quantity, price)
         trade_index[0] += 1
+        # Use the actual quantity from the result (engine resolves 0 → full position qty)
+        actual_qty = order_result.get("quantity", quantity)
         result.trades.append({
             "index": trade_index[0],
             "timestamp": candle_rows[min(result.candles_processed, len(candle_rows) - 1)]["open_time"],
             "side": side,
-            "action": order_result.get("position_side", side),
+            "action": order_result.get("action", side),
             "price": round(price, 2),
-            "quantity": round(quantity, 6),
+            "quantity": round(actual_qty, 6),
             "realized_pnl": round(order_result.get("realized_pnl", 0), 4) if order_result.get("realized_pnl") else None,
             "fee_usdt": round(order_result.get("fee_usdt", 0), 4) if order_result.get("fee_usdt") else None,
         })
@@ -336,6 +338,7 @@ async def run_backtest(
                     "value": round(total, 2),
                     "usdt": round(usdt, 2),
                     "price": round(candle.close, 2),
+                    "side": state.get("position_side", "NONE"),
                 })
 
         # --- Final state ---
