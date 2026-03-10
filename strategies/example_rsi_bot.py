@@ -39,6 +39,29 @@ class RSIBot(BaseStrategy):
     TRADE_FRACTION = 0.80        # Use 80% of free USDT for margin
     COOLDOWN_CANDLES = 3         # Min candles between trades
 
+    PARAM_SCHEMA = {
+        "RSI_PERIOD": {
+            "type": "int", "default": 10, "min": 3, "max": 50,
+            "description": "RSI lookback window",
+        },
+        "OVERSOLD": {
+            "type": "float", "default": 30.0, "min": 5.0, "max": 45.0,
+            "description": "Long entry threshold (RSI below this → LONG)",
+        },
+        "OVERBOUGHT": {
+            "type": "float", "default": 70.0, "min": 55.0, "max": 95.0,
+            "description": "Short entry threshold (RSI above this → SHORT)",
+        },
+        "TRADE_FRACTION": {
+            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "description": "Fraction of free USDT to use per trade",
+        },
+        "COOLDOWN_CANDLES": {
+            "type": "int", "default": 3, "min": 0, "max": 30,
+            "description": "Minimum candles between trades",
+        },
+    }
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------

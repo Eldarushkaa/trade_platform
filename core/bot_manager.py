@@ -87,6 +87,17 @@ class BotManager:
         logger.info(f"Registered bot '{bot_id}' ({strategy_class.__name__}) on {bot.symbol}")
         return bot
 
+    async def load_saved_params(self, bot_id: str) -> None:
+        """Load saved parameter overrides from the DB and apply to the bot instance."""
+        saved = await repo.get_bot_params(bot_id)
+        if saved:
+            bot = self._get_bot(bot_id)
+            try:
+                bot.set_params(saved)
+                logger.info(f"Loaded saved params for '{bot_id}': {saved}")
+            except ValueError as exc:
+                logger.warning(f"Ignoring invalid saved params for '{bot_id}': {exc}")
+
     # ------------------------------------------------------------------
     # Start / Stop
     # ------------------------------------------------------------------
@@ -167,6 +178,8 @@ class BotManager:
                 updated_at=datetime.utcnow(),
             )
             await repo.upsert_bot(record)
+            # Load any saved parameter overrides from DB
+            await self.load_saved_params(bot_id)
             await self.start_bot(bot_id)
 
     async def stop_all(self) -> None:

@@ -1,13 +1,17 @@
 """
 API routes for bot management.
 
-GET  /api/bots              — list all registered bots
-GET  /api/bots/{name}       — get a single bot's status + portfolio
-POST /api/bots/{name}/start — start a bot
-POST /api/bots/{name}/stop  — stop a bot
+GET  /api/bots                — list all registered bots
+GET  /api/bots/{name}         — get a single bot's status + portfolio
+POST /api/bots/{name}/start   — start a bot
+POST /api/bots/{name}/stop    — stop a bot
+GET  /api/bots/{name}/params  — get current parameters + schema
+PUT  /api/bots/{name}/params  — update strategy parameters
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from db import repository as repo
 
 router = APIRouter(prefix="/bots", tags=["Bots"])
 
@@ -89,3 +93,52 @@ async def stop_bot(name: str):
         return {"message": f"Bot '{name}' stopped"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ------------------------------------------------------------------
+# Parameter editing
+# ------------------------------------------------------------------
+
+@router.get("/{name}/params")
+async def get_params(name: str):
+    """Return the current parameter values and schema for a bot."""
+    manager = _get_manager()
+    bot = manager.get_bot(name)
+    if bot is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
+    return {
+        "bot_id": bot.name,
+        "strategy": bot.__class__.__bases__[0].__name__,
+        "params": bot.get_params(),
+    }
+
+
+@router.put("/{name}/params")
+async def update_params(name: str, body: dict):
+    """
+    Update strategy parameters for a bot.
+
+    Accepts a JSON dict of param_name → new_value.
+    Validates types and min/max bounds. Returns the applied values.
+    Changes take effect immediately on the next candle.
+    """
+    manager = _get_manager()
+    bot = manager.get_bot(name)
+    if bot is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
+
+    try:
+        applied = bot.set_params(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Persist to DB so params survive restarts
+    # Build full current param values dict for storage
+    current_values = {k: v["value"] for k, v in bot.get_params().items()}
+    await repo.save_bot_params(bot.name, current_values)
+
+    return {
+        "message": f"Updated {len(applied)} parameter(s)",
+        "applied": applied,
+        "params": bot.get_params(),
+    }

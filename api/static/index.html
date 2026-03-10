@@ -143,6 +143,85 @@
     #no-bot { padding: 60px; text-align: center; color: var(--muted); }
     #loading { color: var(--muted); font-style: italic; padding: 10px 0; }
 
+    /* --- Settings panel --- */
+    .settings-wrap {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 20px; overflow: hidden;
+    }
+    .settings-header {
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      font-weight: 600; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; user-select: none; transition: background .15s;
+    }
+    .settings-header:hover { background: rgba(255,255,255,.02); }
+    .settings-header .chevron { transition: transform .2s; font-size: 12px; color: var(--muted); }
+    .settings-header .chevron.open { transform: rotate(90deg); }
+    .settings-body { padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height .3s ease, padding .3s ease; }
+    .settings-body.open { max-height: 600px; padding: 16px; }
+    .settings-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px;
+    }
+    .param-group { display: flex; flex-direction: column; gap: 4px; }
+    .param-group label {
+      font-size: 11px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: .5px; font-weight: 600;
+    }
+    .param-group .param-desc { font-size: 10px; color: var(--muted); opacity: .7; }
+    .param-group input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; color: var(--text); font-size: 14px; font-weight: 600;
+      outline: none; transition: border-color .2s;
+    }
+    .param-group input:focus { border-color: var(--accent); }
+    .param-group input.changed { border-color: var(--yellow); }
+    .param-group .param-range { font-size: 10px; color: var(--muted); }
+    .settings-actions {
+      margin-top: 14px; display: flex; gap: 10px; align-items: center;
+    }
+    .btn-save {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: opacity .2s;
+    }
+    .btn-save:hover { opacity: .85; }
+    .btn-save:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-reset {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: border-color .2s, color .2s;
+    }
+    .btn-reset:hover { border-color: var(--yellow); color: var(--yellow); }
+    .settings-toast {
+      font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px;
+      animation: fadeIn .3s; display: none;
+    }
+    .settings-toast.success { display: inline-block; background: rgba(0,200,150,.15); color: var(--green); }
+    .settings-toast.error   { display: inline-block; background: rgba(255,77,109,.15); color: var(--red); }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* --- LLM Agent panel --- */
+    .llm-panel {
+      margin-top: 20px; background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px; font-size: 12px;
+    }
+    .llm-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px;
+      color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+    .llm-status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    }
+    .llm-status-dot.on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .llm-status-dot.off { background: var(--muted); }
+    .llm-info { color: var(--muted); line-height: 1.6; }
+    .llm-info .label { color: var(--text); font-weight: 600; }
+    .llm-btn-row { display: flex; gap: 8px; margin-top: 10px; }
+    .llm-log-entry {
+      margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 6px;
+      font-size: 11px; line-height: 1.5;
+    }
+    .llm-log-entry .reasoning { color: var(--text); margin-bottom: 4px; }
+    .llm-log-entry .actions { color: var(--muted); }
+    .llm-log-entry .ts { color: var(--muted); font-size: 10px; }
+
     @media (max-width: 768px) {
       .layout { grid-template-columns: 1fr; }
     }
@@ -164,6 +243,35 @@
   <aside class="sidebar">
     <h2>Bots</h2>
     <div id="bots-list"><div id="loading">Loading...</div></div>
+
+    <!-- LLM Agent Panel -->
+    <div class="llm-panel" id="llm-panel">
+      <h3><span class="llm-status-dot off" id="llm-dot"></span> AI Agent</h3>
+      <div class="llm-info" id="llm-info">
+        <span class="label">Status:</span> <span id="llm-status-text">Checking…</span><br>
+        <span class="label">Model:</span> <span id="llm-model">—</span><br>
+        <span class="label">Interval:</span> <span id="llm-interval">—</span><br>
+        <span class="label">Mode:</span> <span id="llm-mode">—</span>
+      </div>
+      <div class="llm-btn-row">
+        <button class="btn btn-start" id="llm-toggle-btn" onclick="toggleLLM()" style="font-size:11px;padding:5px 12px">Enable</button>
+        <button class="btn" id="llm-trigger-btn" onclick="triggerLLM()" style="background:var(--accent);color:#fff;font-size:11px;padding:5px 12px" disabled>⚡ Run Now</button>
+      </div>
+      <div id="llm-last-decision" style="display:none">
+        <div class="llm-log-entry">
+          <div class="ts" id="llm-last-ts"></div>
+          <div class="reasoning" id="llm-last-reasoning"></div>
+          <div class="actions" id="llm-last-actions"></div>
+        </div>
+      </div>
+      <div id="llm-log-wrap" style="margin-top:10px;display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Decision Log</span>
+          <button class="btn" onclick="loadLLMLog()" style="background:transparent;color:var(--muted);border:1px solid var(--border);font-size:10px;padding:3px 8px">↻ Refresh</button>
+        </div>
+        <div id="llm-log-entries" style="max-height:300px;overflow-y:auto"></div>
+      </div>
+    </div>
   </aside>
 
   <!-- Main panel -->
@@ -177,6 +285,22 @@
 
       <!-- Stats cards -->
       <div class="stats-grid" id="stats-grid"></div>
+
+      <!-- Strategy Settings (collapsible) -->
+      <div class="settings-wrap" id="settings-wrap" style="display:none">
+        <div class="settings-header" onclick="toggleSettings()">
+          <span>⚙️ Strategy Parameters <span id="settings-strategy-label" style="color:var(--muted);font-weight:400;font-size:12px"></span></span>
+          <span class="chevron" id="settings-chevron">▶</span>
+        </div>
+        <div class="settings-body" id="settings-body">
+          <div class="settings-grid" id="settings-grid"></div>
+          <div class="settings-actions">
+            <button class="btn-save" id="btn-save-params" onclick="saveParams()" disabled>💾 Save</button>
+            <button class="btn-reset" onclick="resetParams()">↺ Reset to Defaults</button>
+            <span class="settings-toast" id="settings-toast"></span>
+          </div>
+        </div>
+      </div>
 
       <div class="chart-wrap">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -220,6 +344,8 @@
   const API = '/api';
   let selectedBot = null;
   let portfolioChart = null;
+  let _paramsCache = {};         // param_name → {value, default, type, ...}
+  let _settingsOpen = false;
 
   // ── Fetch helpers ──────────────────────────────────────────────
   async function get(url) {
@@ -231,6 +357,15 @@
   async function post(url) {
     const r = await fetch(url, { method: 'POST' });
     return r.json();
+  }
+
+  async function put(url, body) {
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { ok: r.ok, status: r.status, data: await r.json() };
   }
 
   // ── Sidebar: list all bots ─────────────────────────────────────
@@ -300,6 +435,7 @@
       loadPortfolio(name),
       loadHistory(name),
       loadTrades(name),
+      loadParams(name),
     ]);
   }
 
@@ -714,9 +850,282 @@
       : n.toFixed(2);
   }
 
+  // ── Settings panel ─────────────────────────────────────────────
+  async function loadParams(name) {
+    try {
+      const data = await get(`${API}/bots/${name}/params`);
+      _paramsCache = data.params || {};
+      const wrap = document.getElementById('settings-wrap');
+      const grid = document.getElementById('settings-grid');
+      const label = document.getElementById('settings-strategy-label');
+
+      const keys = Object.keys(_paramsCache);
+      if (keys.length === 0) {
+        wrap.style.display = 'none';
+        return;
+      }
+
+      wrap.style.display = 'block';
+      label.textContent = `(${data.strategy})`;
+
+      grid.innerHTML = '';
+      keys.forEach(key => {
+        const p = _paramsCache[key];
+        const step = p.type === 'int' ? '1' : '0.0001';
+        const isChanged = p.value !== p.default;
+        const div = document.createElement('div');
+        div.className = 'param-group';
+        div.innerHTML = `
+          <label>${key.replace(/_/g, ' ')}</label>
+          <input type="number" id="param-${key}" data-key="${key}" data-default="${p.default}"
+                 value="${p.value}" min="${p.min}" max="${p.max}" step="${step}"
+                 class="${isChanged ? 'changed' : ''}"
+                 oninput="onParamInput(this)" />
+          <div class="param-range">${p.min} – ${p.max} · default: ${p.default}</div>
+          <div class="param-desc">${p.description || ''}</div>`;
+        grid.appendChild(div);
+      });
+
+      document.getElementById('btn-save-params').disabled = true;
+      hideToast();
+    } catch (e) {
+      console.warn('loadParams', e);
+      document.getElementById('settings-wrap').style.display = 'none';
+    }
+  }
+
+  function onParamInput(input) {
+    const key = input.dataset.key;
+    const defVal = parseFloat(input.dataset.default);
+    const curVal = parseFloat(input.value);
+    input.classList.toggle('changed', curVal !== defVal);
+    document.getElementById('btn-save-params').disabled = false;
+    hideToast();
+  }
+
+  function toggleSettings() {
+    _settingsOpen = !_settingsOpen;
+    document.getElementById('settings-body').classList.toggle('open', _settingsOpen);
+    document.getElementById('settings-chevron').classList.toggle('open', _settingsOpen);
+  }
+
+  async function saveParams() {
+    if (!selectedBot) return;
+    const inputs = document.querySelectorAll('#settings-grid input[data-key]');
+    const updates = {};
+    inputs.forEach(inp => {
+      const key = inp.dataset.key;
+      const schema = _paramsCache[key];
+      if (!schema) return;
+      const val = schema.type === 'int' ? parseInt(inp.value) : parseFloat(inp.value);
+      if (val !== schema.value) updates[key] = val;
+    });
+
+    if (Object.keys(updates).length === 0) {
+      showToast('No changes to save', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('btn-save-params');
+    btn.disabled = true;
+    btn.textContent = '⏳ Saving...';
+
+    try {
+      const resp = await put(`${API}/bots/${selectedBot}/params`, updates);
+      if (resp.ok) {
+        showToast(`✓ Saved ${Object.keys(resp.data.applied).length} param(s)`, 'success');
+        // Reload to refresh cached values
+        await loadParams(selectedBot);
+      } else {
+        showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`✗ ${e.message}`, 'error');
+    }
+    btn.textContent = '💾 Save';
+  }
+
+  async function resetParams() {
+    if (!selectedBot) return;
+    const defaults = {};
+    Object.entries(_paramsCache).forEach(([key, p]) => {
+      defaults[key] = p.default;
+    });
+
+    try {
+      const resp = await put(`${API}/bots/${selectedBot}/params`, defaults);
+      if (resp.ok) {
+        showToast('✓ Reset to defaults', 'success');
+        await loadParams(selectedBot);
+      } else {
+        showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`✗ ${e.message}`, 'error');
+    }
+  }
+
+  function showToast(msg, type) {
+    const el = document.getElementById('settings-toast');
+    el.textContent = msg;
+    el.className = `settings-toast ${type}`;
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => { el.className = 'settings-toast'; }, 4000);
+  }
+
+  function hideToast() {
+    const el = document.getElementById('settings-toast');
+    el.className = 'settings-toast';
+  }
+
+  // ── LLM Agent panel ────────────────────────────────────────────
+  let _llmEnabled = false;
+
+  async function loadLLMStatus() {
+    try {
+      const s = await get(`${API}/llm/status`);
+      _llmEnabled = s.enabled;
+
+      // Status dot
+      const dot = document.getElementById('llm-dot');
+      dot.className = `llm-status-dot ${s.enabled ? 'on' : 'off'}`;
+
+      // Text fields
+      document.getElementById('llm-status-text').textContent =
+        s.enabled ? 'Active' : (s.config_enabled ? 'Paused' : 'Disabled');
+      document.getElementById('llm-model').textContent = s.model || '—';
+      document.getElementById('llm-interval').textContent = s.interval_minutes ? `${s.interval_minutes} min` : '—';
+      document.getElementById('llm-mode').textContent = s.dry_run ? '🧪 Dry-run' : '🔴 Live';
+
+      // Toggle button
+      const btn = document.getElementById('llm-toggle-btn');
+      if (s.enabled) {
+        btn.textContent = '⏸ Disable';
+        btn.className = 'btn btn-stop';
+        btn.style.cssText = 'font-size:11px;padding:5px 12px';
+      } else {
+        btn.textContent = '▶ Enable';
+        btn.className = 'btn btn-start';
+        btn.style.cssText = 'font-size:11px;padding:5px 12px';
+      }
+
+      // Trigger button — only if API key present
+      document.getElementById('llm-trigger-btn').disabled = !s.has_api_key;
+
+      // Last decision
+      const lastWrap = document.getElementById('llm-last-decision');
+      if (s.last_decision) {
+        lastWrap.style.display = 'block';
+        document.getElementById('llm-last-ts').textContent = new Date(s.last_decision.timestamp).toLocaleString();
+
+        // Parse response
+        let reasoning = '';
+        let actionsText = '';
+        try {
+          const resp = JSON.parse(s.last_decision.response_json || '{}');
+          reasoning = resp.reasoning || '';
+          const acts = resp.actions || [];
+          actionsText = acts.length > 0
+            ? acts.map(a => `${a.type}: ${a.bot_id}${a.params ? ' → ' + JSON.stringify(a.params) : ''}`).join('; ')
+            : 'No actions taken';
+        } catch {
+          reasoning = s.last_decision.error_message || 'Error parsing response';
+          actionsText = '';
+        }
+        document.getElementById('llm-last-reasoning').textContent = reasoning;
+        document.getElementById('llm-last-actions').textContent = actionsText;
+
+        // Show log section
+        document.getElementById('llm-log-wrap').style.display = 'block';
+      } else {
+        lastWrap.style.display = 'none';
+        document.getElementById('llm-log-wrap').style.display = s.enabled ? 'block' : 'none';
+      }
+    } catch (e) {
+      console.warn('loadLLMStatus', e);
+    }
+  }
+
+  async function toggleLLM() {
+    const action = _llmEnabled ? 'disable' : 'enable';
+    try {
+      await post(`${API}/llm/${action}`);
+    } catch (e) {
+      console.error('toggleLLM', e);
+    }
+    await loadLLMStatus();
+  }
+
+  async function triggerLLM() {
+    const btn = document.getElementById('llm-trigger-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Running…';
+    try {
+      await post(`${API}/llm/trigger`);
+    } catch (e) {
+      console.error('triggerLLM', e);
+    }
+    btn.textContent = '⚡ Run Now';
+    btn.disabled = false;
+    await loadLLMStatus();
+  }
+
+  async function loadLLMLog() {
+    try {
+      const entries = await get(`${API}/llm/log?limit=10`);
+      const container = document.getElementById('llm-log-entries');
+      container.innerHTML = '';
+
+      if (entries.length === 0) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px">No decisions yet</div>';
+        return;
+      }
+
+      entries.forEach(d => {
+        let reasoning = '';
+        let actionsText = '';
+        let success = d.success;
+
+        if (d.error_message) {
+          reasoning = '❌ ' + d.error_message;
+        } else {
+          try {
+            const resp = JSON.parse(d.response_json || '{}');
+            reasoning = resp.reasoning || '';
+            const acts = resp.actions || [];
+            actionsText = acts.length > 0
+              ? acts.map(a => `${a.type}: ${a.bot_id}${a.params ? ' → ' + JSON.stringify(a.params) : ''}`).join('; ')
+              : 'No actions';
+          } catch {
+            reasoning = 'Parse error';
+          }
+        }
+
+        // Parse action results
+        let resultsText = '';
+        try {
+          const results = JSON.parse(d.actions_taken || '[]');
+          if (results.length > 0) resultsText = results.join(' | ');
+        } catch {}
+
+        const entry = document.createElement('div');
+        entry.className = 'llm-log-entry';
+        entry.innerHTML = `
+          <div class="ts">${new Date(d.timestamp).toLocaleString()} · ${success ? '✅' : '❌'}</div>
+          <div class="reasoning">${reasoning}</div>
+          ${actionsText ? `<div class="actions">${actionsText}</div>` : ''}
+          ${resultsText ? `<div class="actions" style="color:var(--accent);margin-top:2px">${resultsText}</div>` : ''}`;
+        container.appendChild(entry);
+      });
+    } catch (e) {
+      console.warn('loadLLMLog', e);
+    }
+  }
+
   // ── Auto-refresh loop ──────────────────────────────────────────
   async function refresh() {
     await loadBots();
+    await loadLLMStatus();
     if (selectedBot) await loadBotDetail(selectedBot);
   }
 

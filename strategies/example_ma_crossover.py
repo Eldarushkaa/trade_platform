@@ -37,6 +37,25 @@ class MACrossoverBot(BaseStrategy):
     SIGNAL_PERIOD = 9
     TRADE_FRACTION = 0.80
 
+    PARAM_SCHEMA = {
+        "FAST_PERIOD": {
+            "type": "int", "default": 12, "min": 3, "max": 50,
+            "description": "Fast EMA period",
+        },
+        "SLOW_PERIOD": {
+            "type": "int", "default": 26, "min": 10, "max": 100,
+            "description": "Slow EMA period",
+        },
+        "SIGNAL_PERIOD": {
+            "type": "int", "default": 9, "min": 3, "max": 30,
+            "description": "Signal line smoothing period",
+        },
+        "TRADE_FRACTION": {
+            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "description": "Fraction of free USDT to use per trade",
+        },
+    }
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------

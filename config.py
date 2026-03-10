@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # --- Portfolio snapshot interval (seconds) ---
     snapshot_interval_seconds: int = Field(default=60)
 
+    # --- LLM Agent ---
+    # Set llm_enabled=True and provide llm_api_key to activate.
+    # The agent calls the LLM every llm_interval_minutes to manage bot params.
+    llm_enabled: bool = Field(default=False, description="Enable LLM agent (off by default)")
+    llm_api_key: str = Field(default="", description="OpenAI API key")
+    llm_model: str = Field(default="gpt-4o-mini", description="OpenAI model name")
+    llm_interval_minutes: int = Field(default=10, description="Minutes between LLM calls")
+    llm_max_actions: int = Field(default=5, description="Max actions per LLM decision (safety)")
+    llm_dry_run: bool = Field(default=False, description="Log LLM decisions without applying")
+
 
 # Singleton settings instance used across the app
 settings = Settings()

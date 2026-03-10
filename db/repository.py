@@ -2,6 +2,7 @@
 Database repository — all SQL queries live here.
 Every method is async and uses the shared aiosqlite connection from database.py.
 """
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -244,3 +245,86 @@ async def get_latest_snapshot(bot_id: str) -> Optional[PortfolioSnapshot]:
         asset_price=row["asset_price"] if "asset_price" in row.keys() else None,
         timestamp=_str_to_dt(row["timestamp"]),
     )
+
+
+# ------------------------------------------------------------------
+# Bot Parameters
+# ------------------------------------------------------------------
+
+async def get_bot_params(bot_id: str) -> Optional[dict]:
+    """Load saved parameter overrides for a bot. Returns None if no saved params."""
+    db = get_db()
+    async with db.execute(
+        "SELECT params_json FROM bot_params WHERE bot_id = ?",
+        (bot_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row["params_json"])
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(f"Corrupt params_json for bot '{bot_id}', ignoring")
+        return None
+
+
+async def save_bot_params(bot_id: str, params: dict) -> None:
+    """Persist parameter overrides for a bot (upsert)."""
+    db = get_db()
+    now = _dt_to_str(datetime.utcnow())
+    params_json = json.dumps(params)
+    await db.execute(
+        """INSERT INTO bot_params (bot_id, params_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(bot_id) DO UPDATE SET
+               params_json = excluded.params_json,
+               updated_at  = excluded.updated_at""",
+        (bot_id, params_json, now),
+    )
+    await db.commit()
+    logger.debug(f"Saved params for '{bot_id}': {params}")
+
+
+# ------------------------------------------------------------------
+# LLM Decisions Log
+# ------------------------------------------------------------------
+
+async def insert_llm_decision(
+    prompt_summary: str,
+    response_json: str,
+    actions_taken: str,
+    success: bool = True,
+    error_message: Optional[str] = None,
+) -> int:
+    """Log an LLM decision to the database."""
+    db = get_db()
+    now = _dt_to_str(datetime.utcnow())
+    cursor = await db.execute(
+        """INSERT INTO llm_decisions
+           (timestamp, prompt_summary, response_json, actions_taken, success, error_message)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (now, prompt_summary, response_json, actions_taken, 1 if success else 0, error_message),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_llm_decisions(limit: int = 20) -> list[dict]:
+    """Fetch recent LLM decisions, newest first."""
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM llm_decisions ORDER BY timestamp DESC LIMIT ?",
+        (limit,),
+    ) as cursor:
+        rows = []
+        async for row in cursor:
+            rows.append({
+                "id": row["id"],
+                "timestamp": row["timestamp"],
+                "prompt_summary": row["prompt_summary"],
+                "response_json": row["response_json"],
+                "actions_taken": row["actions_taken"],
+                "success": bool(row["success"]),
+                "error_message": row["error_message"],
+            })
+    return rows

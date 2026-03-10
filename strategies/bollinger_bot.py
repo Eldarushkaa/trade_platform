@@ -42,6 +42,33 @@ class BollingerBot(BaseStrategy):
     COOLDOWN_CANDLES = 3
     STOP_LOSS_PCT = 0.01          # 1% stop-loss from entry
 
+    PARAM_SCHEMA = {
+        "BB_PERIOD": {
+            "type": "int", "default": 20, "min": 5, "max": 50,
+            "description": "Bollinger Band lookback period",
+        },
+        "BB_STD_DEV": {
+            "type": "float", "default": 2.0, "min": 0.5, "max": 4.0,
+            "description": "Standard deviation multiplier for bands",
+        },
+        "TRADE_FRACTION": {
+            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "description": "Fraction of free USDT to use per trade",
+        },
+        "MIN_BANDWIDTH": {
+            "type": "float", "default": 0.0005, "min": 0.0, "max": 0.01,
+            "description": "Minimum bandwidth to trade (squeeze filter)",
+        },
+        "COOLDOWN_CANDLES": {
+            "type": "int", "default": 3, "min": 0, "max": 30,
+            "description": "Minimum candles between trades",
+        },
+        "STOP_LOSS_PCT": {
+            "type": "float", "default": 0.01, "min": 0.001, "max": 0.05,
+            "description": "Stop-loss percentage from entry price",
+        },
+    }
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------

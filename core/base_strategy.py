@@ -45,6 +45,11 @@ class BaseStrategy(ABC):
     name: str       # subclasses must define this as a class attribute
     symbol: str     # subclasses must define this as a class attribute
 
+    # Override in subclasses to define tunable parameters.
+    # Format: { "PARAM_NAME": { "type": "int"|"float", "default": N,
+    #           "min": N, "max": N, "description": "..." }, ... }
+    PARAM_SCHEMA: dict[str, dict] = {}
+
     def __init__(self, engine: "BaseOrderEngine") -> None:
         self.engine = engine
         self.is_running: bool = False
@@ -52,6 +57,69 @@ class BaseStrategy(ABC):
         self._price_queue = None   # asyncio.Queue, set by BotManager
         self._candle_queue = None  # asyncio.Queue, set by BotManager
         self.logger = logging.getLogger(f"strategy.{self.name}")
+
+    # ------------------------------------------------------------------
+    # Parameter introspection and live editing
+    # ------------------------------------------------------------------
+
+    def get_params(self) -> dict:
+        """Return current parameter values with schema metadata."""
+        result = {}
+        for key, schema in self.PARAM_SCHEMA.items():
+            result[key] = {
+                "value": getattr(self, key, schema["default"]),
+                **schema,
+            }
+        return result
+
+    def set_params(self, updates: dict) -> dict:
+        """
+        Validate and apply parameter updates. Returns the applied values.
+
+        Raises ValueError with details if any value is invalid.
+        """
+        errors = []
+        coerced = {}
+
+        for key, value in updates.items():
+            if key not in self.PARAM_SCHEMA:
+                errors.append(f"Unknown parameter: {key}")
+                continue
+
+            schema = self.PARAM_SCHEMA[key]
+            ptype = schema["type"]
+
+            # Type coercion
+            try:
+                if ptype == "int":
+                    value = int(value)
+                elif ptype == "float":
+                    value = float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{key}: expected {ptype}, got {type(value).__name__}")
+                continue
+
+            # Range validation
+            if "min" in schema and value < schema["min"]:
+                errors.append(f"{key}: {value} < min ({schema['min']})")
+                continue
+            if "max" in schema and value > schema["max"]:
+                errors.append(f"{key}: {value} > max ({schema['max']})")
+                continue
+
+            coerced[key] = value
+
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        # Apply all validated values
+        applied = {}
+        for key, value in coerced.items():
+            setattr(self, key, value)
+            applied[key] = value
+            self.logger.info(f"Parameter {key} updated to {value}")
+
+        return applied
 
     # ------------------------------------------------------------------
     # Primary interface — implement on_candle() for candle-based trading

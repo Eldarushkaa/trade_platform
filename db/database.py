@@ -88,6 +88,24 @@ async def _create_tables() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_snapshots_bot_id ON portfolio_snapshots(bot_id);
         CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON portfolio_snapshots(timestamp);
+
+        CREATE TABLE IF NOT EXISTS bot_params (
+            bot_id      TEXT PRIMARY KEY REFERENCES bots(id),
+            params_json TEXT NOT NULL DEFAULT '{}',
+            updated_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS llm_decisions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp       TEXT NOT NULL,
+            prompt_summary  TEXT,
+            response_json   TEXT,
+            actions_taken   TEXT,
+            success         INTEGER NOT NULL DEFAULT 1,
+            error_message   TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_llm_decisions_ts ON llm_decisions(timestamp);
     """)
 
     # --- Additive migrations (safe to run on existing DBs) ---

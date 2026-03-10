@@ -38,6 +38,7 @@ from config import settings
 from db.database import init_db, close_db
 from core.simulation_engine import simulation_engine
 from core.bot_manager import BotManager
+from core import llm_agent
 from data.binance_feed import BinanceFeed
 from data.price_cache import price_cache
 from data.candle_aggregator import CandleAggregator
@@ -77,6 +78,9 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 bot_manager = BotManager(engine=simulation_engine)
 candle_aggregator = CandleAggregator(interval_seconds=60)  # 1-minute candles
+
+# Inject dependencies into LLM agent
+llm_agent.set_dependencies(bot_manager, simulation_engine)
 
 # ------------------------------------------------------------------
 # FastAPI lifespan: startup / shutdown
@@ -120,10 +124,14 @@ async def lifespan(app: FastAPI):
     feed_task = asyncio.create_task(feed.start(), name="binance-feed")
     logger.info(f"Binance feed started for symbols: {symbols}")
 
+    # 6. Start LLM agent (if enabled in config)
+    await llm_agent.start_agent()
+
     yield  # ← App is running
 
     # ------ Shutdown ------
     logger.info("Shutting down...")
+    await llm_agent.stop_agent()
     await feed.stop()
     feed_task.cancel()
     try:
@@ -154,6 +162,7 @@ app = FastAPI(
 from api.routes import bots as bots_router
 from api.routes import trades as trades_router
 from api.routes import portfolio as portfolio_router
+from api.routes import llm as llm_router
 
 bots_router.set_bot_manager(bot_manager)
 portfolio_router.set_engine(simulation_engine)
@@ -161,6 +170,7 @@ portfolio_router.set_engine(simulation_engine)
 app.include_router(bots_router.router, prefix="/api")
 app.include_router(trades_router.router, prefix="/api")
 app.include_router(portfolio_router.router, prefix="/api")
+app.include_router(llm_router.router, prefix="/api")
 
 # ------------------------------------------------------------------
 # Serve static dashboard
