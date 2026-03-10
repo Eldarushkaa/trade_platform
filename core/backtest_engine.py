@@ -329,9 +329,12 @@ async def run_backtest(
             # Record equity point at intervals
             if i % equity_interval == 0 or i == len(candle_rows) - 1:
                 state = await engine.get_portfolio_state(bot.name)
+                total = state["total_value_usdt"]
+                usdt = state.get("usdt_balance", total)
                 result.equity_curve.append({
                     "time": row["open_time"],
-                    "value": round(state["total_value_usdt"], 2),
+                    "value": round(total, 2),
+                    "usdt": round(usdt, 2),
                     "price": round(candle.close, 2),
                 })
 

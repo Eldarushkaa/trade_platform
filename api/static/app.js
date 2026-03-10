@@ -860,6 +860,11 @@ function renderBacktestChart(curve) {
     return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   });
   const values = curve.map(p => p.value);
+  const usdtValues = curve.map(p => p.usdt ?? p.value);
+  const coinValues = curve.map((p, i) => {
+    const cv = (p.value || 0) - (p.usdt ?? p.value);
+    return cv > 0.01 ? cv : 0;
+  });
   const prices = curve.map(p => p.price);
 
   const ctx = document.getElementById('bt-chart').getContext('2d');
@@ -870,13 +875,35 @@ function renderBacktestChart(curve) {
     data: {
       labels,
       datasets: [
+        // Coin value area (total = top)
         {
-          label: 'Equity (USDT)',
+          label: 'Coin Value',
+          data: values,
+          borderColor: 'rgba(0,200,150,0.6)',
+          backgroundColor: 'rgba(0,200,150,0.15)',
+          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
+          yAxisID: 'yEq',
+          order: 3,
+        },
+        // USDT balance area (bottom)
+        {
+          label: 'USDT Balance',
+          data: usdtValues,
+          borderColor: 'rgba(108,99,255,0.6)',
+          backgroundColor: 'rgba(108,99,255,0.2)',
+          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
+          yAxisID: 'yEq',
+          order: 2,
+        },
+        // Total value line (on top)
+        {
+          label: 'Total Value',
           data: values,
           borderColor: '#6c63ff',
-          backgroundColor: 'rgba(108,99,255,0.08)',
-          borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3,
+          backgroundColor: 'transparent',
+          borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3,
           yAxisID: 'yEq',
+          order: 1,
         },
         {
           label: 'Coin Price',
@@ -894,11 +921,17 @@ function renderBacktestChart(curve) {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: ctx => {
-              const v = ctx.parsed.y;
-              if (ctx.dataset.label.startsWith('Equity'))
-                return `Equity: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-              return `Price: $${v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+            label: tooltipCtx => {
+              const v = tooltipCtx.parsed.y;
+              if (v === null || v === undefined) return null;
+              const dsLabel = tooltipCtx.dataset.label;
+              const idx = tooltipCtx.dataIndex;
+              const fmtUsd = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+              if (dsLabel === 'Total Value') return `Total: ${fmtUsd(v)}`;
+              if (dsLabel === 'USDT Balance') return `USDT: ${fmtUsd(v)}`;
+              if (dsLabel === 'Coin Value') return `Coin: ${fmtUsd(coinValues[idx] ?? 0)}`;
+              if (dsLabel === 'Coin Price') return `Price: ${fmtUsd(v)}`;
+              return null;
             }
           }
         }
