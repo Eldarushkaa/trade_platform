@@ -15,7 +15,7 @@ Usage:
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Type
 
 from core.base_strategy import BaseStrategy
@@ -174,8 +174,8 @@ class BotManager:
                 symbol=bot.symbol,
                 status="stopped",
                 initial_balance=settings.initial_usdt_balance,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
             await repo.upsert_bot(record)
             # Load any saved parameter overrides from DB

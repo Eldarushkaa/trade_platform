@@ -4,7 +4,7 @@ Every method is async and uses the shared aiosqlite connection from database.py.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from db.database import get_db
@@ -59,7 +59,7 @@ async def update_bot_status(bot_id: str, status: str) -> None:
     db = get_db()
     await db.execute(
         "UPDATE bots SET status = ?, updated_at = ? WHERE id = ?",
-        (status, _dt_to_str(datetime.utcnow()), bot_id),
+        (status, _dt_to_str(datetime.now(timezone.utc)), bot_id),
     )
     await db.commit()
 
@@ -271,7 +271,7 @@ async def get_bot_params(bot_id: str) -> Optional[dict]:
 async def save_bot_params(bot_id: str, params: dict) -> None:
     """Persist parameter overrides for a bot (upsert)."""
     db = get_db()
-    now = _dt_to_str(datetime.utcnow())
+    now = _dt_to_str(datetime.now(timezone.utc))
     params_json = json.dumps(params)
     await db.execute(
         """INSERT INTO bot_params (bot_id, params_json, updated_at)
@@ -298,7 +298,7 @@ async def insert_llm_decision(
 ) -> int:
     """Log an LLM decision to the database."""
     db = get_db()
-    now = _dt_to_str(datetime.utcnow())
+    now = _dt_to_str(datetime.now(timezone.utc))
     cursor = await db.execute(
         """INSERT INTO llm_decisions
            (timestamp, prompt_summary, response_json, actions_taken, success, error_message)

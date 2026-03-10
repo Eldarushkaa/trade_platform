@@ -19,7 +19,7 @@ so switching to live trading requires ZERO strategy code changes.
 """
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from core.virtual_portfolio import VirtualPortfolio
@@ -89,6 +89,7 @@ class SimulationEngine(BaseOrderEngine):
         self._portfolios: dict[str, VirtualPortfolio] = {}
         self._prices: dict[str, float] = {}
         self._fee_rates: dict[str, float] = {}
+        self._skip_db: bool = False  # Set True during backtest to avoid DB writes
 
     def register_bot(
         self,
@@ -218,21 +219,24 @@ class SimulationEngine(BaseOrderEngine):
             f"({fee_rate * 100:.3f}% of {quantity * price:.2f})"
         )
 
-        # --- Persist trade to database ---
-        action = result.get("action", side)
-        trade = TradeRecord(
-            bot_id=bot_id,
-            side=side,
-            symbol=symbol,
-            quantity=quantity,
-            price=price,
-            realized_pnl=result.get("realized_pnl"),
-            fee_usdt=fee_usdt,
-            position_side=action,
-            timestamp=datetime.utcnow(),
-        )
-        trade_id = await repo.insert_trade(trade)
-        result["trade_id"] = trade_id
+        # --- Persist trade to database (skip during backtest) ---
+        if not self._skip_db:
+            action = result.get("action", side)
+            trade = TradeRecord(
+                bot_id=bot_id,
+                side=side,
+                symbol=symbol,
+                quantity=quantity,
+                price=price,
+                realized_pnl=result.get("realized_pnl"),
+                fee_usdt=fee_usdt,
+                position_side=action,
+                timestamp=datetime.now(timezone.utc),
+            )
+            trade_id = await repo.insert_trade(trade)
+            result["trade_id"] = trade_id
+        else:
+            result["trade_id"] = -1
 
         return result
 
@@ -283,7 +287,7 @@ class SimulationEngine(BaseOrderEngine):
             asset_symbol=state["asset_symbol"],
             total_value_usdt=state["total_value_usdt"],
             asset_price=current_price if current_price else None,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         await repo.insert_snapshot(snap)
 

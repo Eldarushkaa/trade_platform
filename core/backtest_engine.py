@@ -273,16 +273,8 @@ async def run_backtest(
         initial_balance=balance,
     )
 
-    # --- Patch repo.insert_trade to prevent DB contamination ---
-    # The SimulationEngine calls repo.insert_trade() on every order.
-    # In backtest mode, we intercept and skip the DB write.
-    import db.repository as _repo_module
-    _original_insert_trade = _repo_module.insert_trade
-
-    async def _noop_insert_trade(trade):
-        return -1  # fake trade ID, no DB write
-
-    _repo_module.insert_trade = _noop_insert_trade
+    # --- Tell engine to skip DB writes during backtest ---
+    engine._skip_db = True
 
     # --- Track trades by intercepting engine ---
     trade_index = [0]  # mutable counter
@@ -305,7 +297,7 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
-    # --- Replay candles (wrapped in try/finally to always restore repo) ---
+    # --- Replay candles (wrapped in try/finally to always restore flag) ---
     error_count = [0]
     try:
         for i, row in enumerate(candle_rows):
@@ -351,8 +343,8 @@ async def run_backtest(
         if error_count[0] > 0:
             logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
     finally:
-        # --- Always restore original insert_trade ---
-        _repo_module.insert_trade = _original_insert_trade
+        # --- Always restore DB writes ---
+        engine._skip_db = False
 
     result.duration_seconds = time.monotonic() - start_time
 
