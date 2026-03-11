@@ -325,6 +325,10 @@ class BotManager:
         portfolio.usdt_balance = free_usdt
 
         # --- Restore open position from last trade ---
+        # NOTE: snapshot.usdt_balance is FREE cash (margin already deducted when
+        # the position was opened), so we must NOT deduct margin again here.
+        # We only reconstruct the FuturesPosition object so the engine knows
+        # the bot holds coins.
         last_trade = await repo.get_latest_trade(bot_id)
         if last_trade is not None:
             ps = last_trade.position_side or ""
@@ -335,28 +339,23 @@ class BotManager:
                 notional = qty * entry
                 margin = notional / portfolio.leverage
 
-                # Only restore if we have enough free USDT to cover the margin
-                if margin <= portfolio.usdt_balance:
-                    portfolio.usdt_balance -= margin
-                    portfolio.position.side = side
-                    portfolio.position.quantity = qty
-                    portfolio.position.entry_price = entry
-                    portfolio.position.margin = margin
-                    if side == "LONG":
-                        liq = entry - (margin / qty) if qty > 0 else 0.0
-                        portfolio.position.liquidation_price = max(liq, 0.0)
-                    else:
-                        liq = entry + (margin / qty) if qty > 0 else 0.0
-                        portfolio.position.liquidation_price = liq
-                    logger.info(
-                        f"Restored '{bot_id}' open {side} position: "
-                        f"{qty:.6f} @ {entry:.2f} | margin: {margin:.2f} USDT"
-                    )
+                # Reconstruct the position — do NOT deduct margin from usdt_balance
+                # because snapshot already saved the post-margin free cash.
+                portfolio.position.side = side
+                portfolio.position.quantity = qty
+                portfolio.position.entry_price = entry
+                portfolio.position.margin = margin
+                if side == "LONG":
+                    liq = entry - (margin / qty) if qty > 0 else 0.0
+                    portfolio.position.liquidation_price = max(liq, 0.0)
                 else:
-                    logger.warning(
-                        f"'{bot_id}': not enough free USDT ({portfolio.usdt_balance:.2f}) "
-                        f"to restore {side} position (needs {margin:.2f} margin) — position left closed"
-                    )
+                    liq = entry + (margin / qty) if qty > 0 else 0.0
+                    portfolio.position.liquidation_price = liq
+                logger.info(
+                    f"Restored '{bot_id}' open {side} position: "
+                    f"{qty:.6f} @ {entry:.2f} | margin: {margin:.2f} USDT | "
+                    f"free USDT: {portfolio.usdt_balance:.2f}"
+                )
             else:
                 logger.debug(f"'{bot_id}' last trade was '{ps}' — no open position to restore")
 
