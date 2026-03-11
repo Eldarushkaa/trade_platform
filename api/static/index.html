@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Trade Platform — Futures Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css?v=3" />
+  <link rel="stylesheet" href="/static/style.css?v=4" />
 </head>
 <body>
 
@@ -147,9 +147,12 @@
             <button class="bt-btn bt-btn-run" id="bt-run-btn" onclick="runBacktest()" disabled>▶ Run Backtest</button>
             <button class="bt-btn bt-btn-opt" id="bt-opt-btn" onclick="runOptimize()" disabled>🧠 Optimize</button>
             <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;">
-              <option value="100">100 iter (quick)</option>
+              <option value="200">200 iter (quick)</option>
               <option value="500" selected>500 iter</option>
               <option value="1000">1000 iter (deep)</option>
+              <option value="2000">2000 iter (thorough)</option>
+              <option value="5000">5000 iter (exhaustive)</option>
+              <option value="10000">10000 iter (max)</option>
             </select>
             <span class="bt-status" id="bt-status"></span>
           </div>
@@ -191,6 +194,6 @@
 
 <!-- Lightweight chart via Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

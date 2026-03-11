@@ -217,6 +217,7 @@ async def run_backtest(
     params: dict | None = None,
     initial_balance: float | None = None,
     equity_interval: int = 5,
+    candle_data: list | None = None,
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
@@ -228,6 +229,8 @@ async def run_backtest(
         params: Optional param overrides {name: value}
         initial_balance: Starting USDT (defaults to settings)
         equity_interval: Record equity point every N candles (saves memory)
+        candle_data: Pre-loaded candle rows (skips DB read if provided).
+                     Used by the optimizer to avoid redundant DB queries.
 
     Returns:
         BacktestResult with metrics, equity curve, and trades.
@@ -237,8 +240,8 @@ async def run_backtest(
 
     balance = initial_balance or settings.initial_usdt_balance
 
-    # --- Load historical candles from DB ---
-    candle_rows = await repo.get_historical_candles(symbol)
+    # --- Load historical candles (from cache or DB) ---
+    candle_rows = candle_data if candle_data is not None else await repo.get_historical_candles(symbol)
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 

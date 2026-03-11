@@ -1169,6 +1169,7 @@ function renderOptResults(r) {
 
   const sign = v => v >= 0 ? 'positive' : 'negative';
   const imp = r.improvement || {};
+  const ga = r.ga_stats || {};
 
   // Build param comparison table
   let paramRows = '';
@@ -1186,7 +1187,7 @@ function renderOptResults(r) {
 
   wrap.innerHTML = `
     <div class="bt-opt-results">
-      <h4>🧠 Optimization Results</h4>
+      <h4>🧬 GA Optimization Results</h4>
       <div class="bt-metrics" style="margin-bottom:14px">
         <div class="bt-metric">
           <div class="label">Best Sharpe</div>
@@ -1213,9 +1214,22 @@ function renderOptResults(r) {
           <div class="value ${r.best_win_rate >= 50 ? 'positive' : 'negative'}">${r.best_win_rate.toFixed(1)}%</div>
         </div>
         <div class="bt-metric">
-          <div class="label">Iterations</div>
-          <div class="value neutral">${r.iterations_run}/${r.max_iterations}</div>
+          <div class="label">Profit Factor</div>
+          <div class="value ${(r.best_profit_factor||0) >= 1 ? 'positive' : 'negative'}">${(r.best_profit_factor||0).toFixed(2)}</div>
         </div>
+        <div class="bt-metric">
+          <div class="label">Trades</div>
+          <div class="value neutral">${r.best_trade_count || '—'}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;padding:8px 10px;background:rgba(108,99,255,0.07);border-radius:8px;font-size:11px;color:var(--muted)">
+        <span>🧬 <b>${ga.generations || '?'}</b> generations</span>
+        <span>👥 pop <b>${ga.population_size || '?'}</b></span>
+        <span>⚡ <b>${r.iterations_run}/${r.max_iterations}</b> evals</span>
+        <span>🔄 <b>${ga.stagnation_restarts || 0}</b> restarts</span>
+        <span>🧵 ×<b>${ga.concurrency || 1}</b> parallel</span>
+        <span>⏱ <b>${r.duration_seconds}s</b></span>
       </div>
 
       <div style="margin-bottom:12px;font-size:12px;font-weight:600;color:var(--muted)">PARAMETER COMPARISON</div>

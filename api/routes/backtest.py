@@ -53,7 +53,7 @@ class BacktestRequest(BaseModel):
 
 class OptimizeRequest(BaseModel):
     bot_id: str
-    iterations: int = 500              # max optimization iterations (100/500/1000)
+    iterations: int = 500              # max optimization iterations (200/500/1000/2000/5000)
 
 
 # ------------------------------------------------------------------
@@ -161,13 +161,14 @@ async def run_backtest_endpoint(req: BacktestRequest):
 async def optimize_endpoint(req: OptimizeRequest):
     """
     Run parameter optimization for one bot.
-    Uses evolutionary search to find params that maximize Sharpe ratio.
+    Uses a genetic algorithm (population, crossover, adaptive mutation, restarts)
+    to find params that maximize a composite fitness (Sharpe + return − drawdown).
     This is a long-running operation — starts in background and returns task_id.
     Poll /api/backtest/status?task_id=... for progress.
     """
     strategy_class, symbol, current_params = _get_bot_info(req.bot_id)
 
-    iterations = max(10, min(req.iterations, 2000))
+    iterations = max(10, min(req.iterations, 10000))
     task_id = f"opt_{req.bot_id}"
 
     # Check if already running
@@ -184,6 +185,11 @@ async def optimize_endpoint(req: OptimizeRequest):
     # Run in background
     async def _run():
         try:
+            import os
+            # Use CPU cores for parallel backtest eval (default 4, capped at 8)
+            cpu_count = os.cpu_count() or 4
+            concurrency = min(8, max(2, cpu_count))
+
             result = await optimize_params(
                 bot_id=req.bot_id,
                 symbol=symbol,
@@ -191,6 +197,7 @@ async def optimize_endpoint(req: OptimizeRequest):
                 current_params=current_params,
                 max_iterations=iterations,
                 progress_callback=on_progress,
+                concurrency=concurrency,
             )
             _running_tasks[task_id]["result"] = result.to_dict()
             _running_tasks[task_id]["done"] = True
