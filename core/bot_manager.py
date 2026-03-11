@@ -292,9 +292,12 @@ class BotManager:
         Restore a bot's portfolio balance from the most recent DB snapshot.
         Called at startup so stats persist across server restarts.
 
-        The snapshot stores `total_value_usdt` (free USDT + locked margin + unrealized PnL).
-        We use it as the new `usdt_balance` starting point, since on restart there are no
-        open positions — the bot must rebuild position state through trading signals.
+        On restart there are no open positions, so we use total_value_usdt
+        (which was free_usdt + locked_margin + unrealized_pnl at snapshot time)
+        as the new usdt_balance — all value becomes free cash.
+
+        Smart fallback: if the latest snapshot has the default balance (from a
+        restart that didn't have restore code), search for the last non-default one.
         """
         snap = await repo.get_latest_snapshot(bot_id)
         if snap is None:
@@ -305,16 +308,26 @@ class BotManager:
         if portfolio is None:
             return
 
-        # Restore free USDT balance from last snapshot
-        # total_value_usdt was free_usdt + margin + unrealized_pnl at snapshot time.
-        # On restart there's no open position so we use usdt_balance directly.
-        restored_usdt = snap.usdt_balance
-        portfolio.usdt_balance = restored_usdt
-        # Keep initial_balance so return_pct is computed relative to the original start
-        # (don't update initial_balance — that reflects true performance over all time)
+        restored = snap.total_value_usdt
+
+        # If latest snapshot is at default balance, try to find older non-default one
+        if abs(restored - settings.initial_usdt_balance) < 0.01:
+            better_snap = await repo.get_latest_nondefault_snapshot(
+                bot_id, settings.initial_usdt_balance
+            )
+            if better_snap is not None:
+                restored = better_snap.total_value_usdt
+                logger.info(
+                    f"Restored '{bot_id}' from older non-default snapshot: "
+                    f"${restored:.2f} USDT (snapshot from {better_snap.timestamp})"
+                )
+
+        if abs(restored - portfolio.usdt_balance) < 0.01:
+            return  # Already at same value
+
+        portfolio.usdt_balance = restored
         logger.info(
-            f"Restored '{bot_id}' balance from snapshot: ${restored_usdt:.2f} USDT "
-            f"(snapshot from {snap.timestamp})"
+            f"Restored '{bot_id}' balance: ${restored:.2f} USDT"
         )
 
     def _on_task_done(self, bot_id: str, task: asyncio.Task) -> None:

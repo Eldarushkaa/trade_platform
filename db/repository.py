@@ -247,6 +247,37 @@ async def get_latest_snapshot(bot_id: str) -> Optional[PortfolioSnapshot]:
     )
 
 
+async def get_latest_nondefault_snapshot(
+    bot_id: str, default_balance: float
+) -> Optional[PortfolioSnapshot]:
+    """
+    Find the most recent snapshot whose total_value_usdt differs from the
+    default initial balance. Used on restart to skip over snapshots that were
+    saved after a cold start (when balances were reset to defaults).
+    """
+    db = get_db()
+    # Allow 1 USDT tolerance to account for rounding
+    async with db.execute(
+        """SELECT * FROM portfolio_snapshots
+           WHERE bot_id = ? AND ABS(total_value_usdt - ?) > 1.0
+           ORDER BY timestamp DESC LIMIT 1""",
+        (bot_id, default_balance),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return PortfolioSnapshot(
+        id=row["id"],
+        bot_id=row["bot_id"],
+        usdt_balance=row["usdt_balance"],
+        asset_balance=row["asset_balance"],
+        asset_symbol=row["asset_symbol"],
+        total_value_usdt=row["total_value_usdt"],
+        asset_price=row["asset_price"] if "asset_price" in row.keys() else None,
+        timestamp=_str_to_dt(row["timestamp"]),
+    )
+
+
 # ------------------------------------------------------------------
 # Bot Parameters
 # ------------------------------------------------------------------
