@@ -40,9 +40,10 @@ async function postJson(url, body) {
 // ── Sidebar: list all bots ─────────────────────────────────────
 async function loadBots() {
   try {
-    const [bots, portfolios] = await Promise.all([
+    const [bots, portfolios, nettingData] = await Promise.all([
       get(`${API}/bots`),
       get(`${API}/portfolio/all`).catch(() => []),
+      get(`${API}/portfolio/netting-stats`).catch(() => null),
     ]);
 
     // update mode badge from health
@@ -105,14 +106,14 @@ async function loadBots() {
     });
 
     // Also refresh global stats whenever bots list refreshes
-    renderGlobalStats(portfolios, bots);
+    renderGlobalStats(portfolios, bots, nettingData);
   } catch (e) {
     console.error('loadBots error', e);
   }
 }
 
 // ── Global stats bar ───────────────────────────────────────────
-function renderGlobalStats(portfolios, bots) {
+function renderGlobalStats(portfolios, bots, nettingData) {
   const bar = document.getElementById('global-stats-bar');
   if (!bar || portfolios.length === 0) return;
 
@@ -125,15 +126,13 @@ function renderGlobalStats(portfolios, bots) {
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
 
   // Build 3×3 matrix: strategies × coins
-  // Detect strategies and symbols from bot names
   const strategies = [...new Set(bots.map(b => {
-    // e.g. rsi_btc → rsi, ma_btc → ma, bb_btc → bb
     const parts = b.name.split('_');
-    return parts.slice(0, -1).join('_'); // everything before last _
+    return parts.slice(0, -1).join('_');
   }))].sort();
   const symbols = [...new Set(bots.map(b => {
     const parts = b.name.split('_');
-    return parts[parts.length - 1].toUpperCase(); // last part e.g. BTC
+    return parts[parts.length - 1].toUpperCase();
   }))].sort();
 
   // Build portfolio lookup
@@ -142,12 +141,10 @@ function renderGlobalStats(portfolios, bots) {
 
   // Matrix HTML
   let matrixHTML = `<div class="gs-matrix">`;
-  // Header row: coin labels
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
     matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr">${sym}</div>`;
   });
-  // Data rows
   strategies.forEach(strat => {
     const stratLabel = strat.toUpperCase();
     matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr" style="font-size:9px">${stratLabel}</div>`;
@@ -165,6 +162,41 @@ function renderGlobalStats(portfolios, bots) {
     });
   });
   matrixHTML += `</div>`;
+
+  // Per-coin position blocks
+  const coinPositions = nettingData ? nettingData.coin_positions : {};
+  const nettingStats  = nettingData ? nettingData.netting : {};
+  let coinBlocksHTML = '';
+  if (Object.keys(coinPositions).length > 0) {
+    coinBlocksHTML = `<div class="gs-coin-section">`;
+    Object.entries(coinPositions).sort(([a], [b]) => a.localeCompare(b)).forEach(([sym, cp]) => {
+      const asset = sym.replace('USDT', '');
+      const sideClass = cp.net_side === 'LONG' ? 'gs-net-long' : cp.net_side === 'SHORT' ? 'gs-net-short' : 'gs-net-flat';
+      const sideLabel = cp.net_side;
+      const longLabel  = cp.total_long_qty > 0  ? `▲${cp.total_long_qty.toFixed(4)}` : '▲—';
+      const shortLabel = cp.total_short_qty > 0 ? `▼${cp.total_short_qty.toFixed(4)}` : '▼—';
+      const netLabel   = Math.abs(cp.net_qty) > 1e-8 ? `${cp.net_side === 'SHORT' ? '-' : '+'}${Math.abs(cp.net_qty).toFixed(4)}` : '0';
+      coinBlocksHTML += `
+        <div class="gs-coin-block">
+          <div class="gs-coin-sym">${asset}</div>
+          <div class="gs-coin-row"><span class="gs-long-qty">${longLabel}</span><span class="gs-short-qty">${shortLabel}</span></div>
+          <div class="gs-coin-net ${sideClass}">${sideLabel} ${netLabel}</div>
+        </div>`;
+    });
+    coinBlocksHTML += `</div>`;
+  }
+
+  // Netting savings stat
+  let nettingSavingsHTML = '';
+  const totNetting = nettingStats._total;
+  if (totNetting && totNetting.events > 0) {
+    nettingSavingsHTML = `
+    <div class="gs-stat">
+      <div class="gs-label">Fees Saved (Netting)</div>
+      <div class="gs-value" style="color:var(--green)">$${totNetting.fees_saved_usdt.toFixed(4)}</div>
+      <div style="font-size:10px;color:var(--muted)">${totNetting.events} events · ${totNetting.qty_netted.toFixed(4)} qty</div>
+    </div>`;
+  }
 
   bar.innerHTML = `
     <div class="gs-stat">
@@ -187,6 +219,8 @@ function renderGlobalStats(portfolios, bots) {
       <div class="gs-label">Profitable Bots</div>
       <div class="gs-value" style="color:${positiveCount > 0 ? 'var(--green)' : 'var(--muted)'}">${positiveCount} / ${portfolios.length}</div>
     </div>
+    ${nettingSavingsHTML}
+    ${coinBlocksHTML}
     ${matrixHTML}
   `;
 }

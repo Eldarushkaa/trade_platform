@@ -228,20 +228,29 @@ class VirtualPortfolio:
     # Position closing
     # ------------------------------------------------------------------
 
-    def close_long(self, price: float) -> dict:
+    def close_long(self, price: float, quantity: Optional[float] = None) -> dict:
         """
-        Close the entire LONG position at the given price.
+        Close a LONG position (fully or partially) at the given price.
 
-        Returns margin + PnL to USDT balance.
+        Args:
+            price:    Execution price.
+            quantity: Amount to close. If None or >= position quantity, closes fully.
+
+        Returns margin portion + PnL to USDT balance.
         """
         if self.position.side != "LONG" or not self.position.is_open:
             raise ValueError(f"[{self.bot_id}] No LONG position to close")
 
-        quantity = self.position.quantity
-        pnl = (price - self.position.entry_price) * quantity
-        returned = self.position.margin + pnl  # margin back + profit/loss
+        total_qty = self.position.quantity
+        close_qty = quantity if (quantity is not None and quantity < total_qty) else total_qty
+        partial = close_qty < total_qty
 
-        # If PnL is worse than negative margin, cap at 0 (already liquidated scenario)
+        # Proportional margin for the closed slice
+        margin_fraction = close_qty / total_qty
+        margin_used = self.position.margin * margin_fraction
+
+        pnl = (price - self.position.entry_price) * close_qty
+        returned = margin_used + pnl
         returned = max(returned, 0.0)
 
         self.usdt_balance += returned
@@ -249,37 +258,53 @@ class VirtualPortfolio:
         self.trade_count += 1
 
         self.logger.info(
-            f"CLOSE LONG {quantity:.6f} {self.asset_symbol} @ {price:.2f} | "
+            f"CLOSE{'_PARTIAL' if partial else ''} LONG {close_qty:.6f}/{total_qty:.6f} "
+            f"{self.asset_symbol} @ {price:.2f} | "
             f"P&L: {pnl:+.2f} | Returned: {returned:.2f} | "
             f"USDT: {self.usdt_balance:.2f}"
         )
 
         result = {
             "side": "SELL",
-            "action": "CLOSE_LONG",
+            "action": "CLOSE_LONG" if not partial else "CLOSE_LONG_PARTIAL",
             "symbol": self.symbol,
-            "quantity": quantity,
+            "quantity": close_qty,
             "price": price,
             "realized_pnl": pnl,
             "margin_returned": returned,
         }
 
-        self.position.reset()
+        if partial:
+            # Reduce position size and margin proportionally
+            self.position.quantity -= close_qty
+            self.position.margin -= margin_used
+        else:
+            self.position.reset()
+
         return result
 
-    def close_short(self, price: float) -> dict:
+    def close_short(self, price: float, quantity: Optional[float] = None) -> dict:
         """
-        Close the entire SHORT position at the given price.
+        Close a SHORT position (fully or partially) at the given price.
 
-        Returns margin + PnL to USDT balance.
+        Args:
+            price:    Execution price.
+            quantity: Amount to close. If None or >= position quantity, closes fully.
+
+        Returns margin portion + PnL to USDT balance.
         """
         if self.position.side != "SHORT" or not self.position.is_open:
             raise ValueError(f"[{self.bot_id}] No SHORT position to close")
 
-        quantity = self.position.quantity
-        pnl = (self.position.entry_price - price) * quantity  # profit when price drops
-        returned = self.position.margin + pnl
+        total_qty = self.position.quantity
+        close_qty = quantity if (quantity is not None and quantity < total_qty) else total_qty
+        partial = close_qty < total_qty
 
+        margin_fraction = close_qty / total_qty
+        margin_used = self.position.margin * margin_fraction
+
+        pnl = (self.position.entry_price - price) * close_qty
+        returned = margin_used + pnl
         returned = max(returned, 0.0)
 
         self.usdt_balance += returned
@@ -287,22 +312,28 @@ class VirtualPortfolio:
         self.trade_count += 1
 
         self.logger.info(
-            f"CLOSE SHORT {quantity:.6f} {self.asset_symbol} @ {price:.2f} | "
+            f"CLOSE{'_PARTIAL' if partial else ''} SHORT {close_qty:.6f}/{total_qty:.6f} "
+            f"{self.asset_symbol} @ {price:.2f} | "
             f"P&L: {pnl:+.2f} | Returned: {returned:.2f} | "
             f"USDT: {self.usdt_balance:.2f}"
         )
 
         result = {
             "side": "BUY",
-            "action": "CLOSE_SHORT",
+            "action": "CLOSE_SHORT" if not partial else "CLOSE_SHORT_PARTIAL",
             "symbol": self.symbol,
-            "quantity": quantity,
+            "quantity": close_qty,
             "price": price,
             "realized_pnl": pnl,
             "margin_returned": returned,
         }
 
-        self.position.reset()
+        if partial:
+            self.position.quantity -= close_qty
+            self.position.margin -= margin_used
+        else:
+            self.position.reset()
+
         return result
 
     # ------------------------------------------------------------------

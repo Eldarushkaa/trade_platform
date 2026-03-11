@@ -65,6 +65,33 @@ header h1 span { color: var(--accent); }
 .gs-cell-red   { background: rgba(255,77,109,0.18); color: var(--red); }
 .gs-cell-neutral { background: var(--border); color: var(--muted); }
 
+/* Per-coin position blocks in global stats bar */
+.gs-coin-section {
+  display: flex; gap: 8px; align-items: stretch;
+  margin-left: 16px; padding-left: 16px;
+  border-left: 1px solid var(--border); flex-wrap: wrap;
+}
+.gs-coin-block {
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+  border-radius: 7px; padding: 6px 10px; min-width: 80px;
+  display: flex; flex-direction: column; gap: 3px; align-items: center;
+}
+.gs-coin-sym {
+  font-size: 11px; font-weight: 700; color: var(--text); letter-spacing: .5px;
+}
+.gs-coin-row {
+  display: flex; gap: 6px; font-size: 10px; font-weight: 600;
+}
+.gs-long-qty  { color: var(--green); }
+.gs-short-qty { color: var(--red); }
+.gs-coin-net {
+  font-size: 10px; font-weight: 700; border-radius: 4px;
+  padding: 1px 6px; letter-spacing: .3px;
+}
+.gs-net-long  { background: rgba(0,200,150,0.15); color: var(--green); }
+.gs-net-short { background: rgba(255,77,109,0.15); color: var(--red); }
+.gs-net-flat  { background: var(--border); color: var(--muted); }
+
 .layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; padding: 20px 24px; }
 
 /* --- Sidebar: Bots List --- */

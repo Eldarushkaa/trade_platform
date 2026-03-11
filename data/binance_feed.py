@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Futures WebSocket endpoint — same aggTrade format as spot, different server
 BINANCE_WS_BASE = "wss://fstream.binance.com/stream"
-RECONNECT_DELAY_SECONDS = 5
-MAX_RECONNECT_ATTEMPTS = 10
+RECONNECT_DELAY_MIN = 5    # seconds before first retry
+RECONNECT_DELAY_MAX = 60   # cap exponential backoff at 60s
 
 
 class BinanceFeed:
@@ -60,41 +60,41 @@ class BinanceFeed:
     async def start(self) -> None:
         """
         Start the WebSocket feed with automatic reconnection.
-        Runs indefinitely until stop() is called.
+        Runs indefinitely until stop() is called. No hard attempt limit —
+        uses exponential backoff (5s → 10s → 20s → ... → 60s cap).
         """
         self._running = True
         logger.info(f"BinanceFeed starting for symbols: {self.symbols}")
 
+        delay = RECONNECT_DELAY_MIN
         attempt = 0
-        while self._running and attempt < MAX_RECONNECT_ATTEMPTS:
+        while self._running:
             try:
                 await self._connect_and_stream()
-                attempt = 0  # Reset on clean disconnect
+                # Clean disconnect — reset backoff
+                delay = RECONNECT_DELAY_MIN
+                attempt = 0
             except (ConnectionClosedError, ConnectionClosedOK) as exc:
                 if not self._running:
                     break
                 attempt += 1
                 logger.warning(
                     f"BinanceFeed disconnected ({exc}). "
-                    f"Reconnecting in {RECONNECT_DELAY_SECONDS}s "
-                    f"(attempt {attempt}/{MAX_RECONNECT_ATTEMPTS})..."
+                    f"Reconnecting in {delay}s (attempt #{attempt})..."
                 )
-                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_DELAY_MAX)
             except Exception as exc:
                 if not self._running:
                     break
                 attempt += 1
                 logger.error(
                     f"BinanceFeed unexpected error: {exc}. "
-                    f"Reconnecting in {RECONNECT_DELAY_SECONDS}s...",
+                    f"Reconnecting in {delay}s (attempt #{attempt})...",
                     exc_info=True,
                 )
-                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
-
-        if attempt >= MAX_RECONNECT_ATTEMPTS:
-            logger.error(
-                f"BinanceFeed: max reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) reached. Giving up."
-            )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_DELAY_MAX)
 
     async def stop(self) -> None:
         """Gracefully stop the WebSocket feed."""
