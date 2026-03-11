@@ -40,7 +40,10 @@ async function postJson(url, body) {
 // ── Sidebar: list all bots ─────────────────────────────────────
 async function loadBots() {
   try {
-    const bots = await get(`${API}/bots`);
+    const [bots, portfolios] = await Promise.all([
+      get(`${API}/bots`),
+      get(`${API}/portfolio/all`).catch(() => []),
+    ]);
 
     // update mode badge from health
     try {
@@ -48,6 +51,10 @@ async function loadBots() {
       document.getElementById('mode-badge').textContent = h.mode;
       document.getElementById('market-badge').textContent = h.market_type || 'futures';
     } catch {}
+
+    // Build portfolio lookup by bot_id
+    const portMap = {};
+    portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
     const container = document.getElementById('bots-list');
     container.innerHTML = '';
@@ -58,6 +65,21 @@ async function loadBots() {
     }
 
     bots.forEach(bot => {
+      const p = portMap[bot.name];
+      const returnPct = p ? p.return_pct : null;
+      const totalVal = p ? p.total_value_usdt : null;
+      const side = p ? (p.position_side || 'NONE') : 'NONE';
+
+      const returnColor = returnPct == null ? 'var(--muted)'
+        : returnPct >= 0 ? 'var(--green)' : 'var(--red)';
+      const returnStr = returnPct == null ? '—'
+        : (returnPct >= 0 ? '+' : '') + returnPct.toFixed(2) + '%';
+      const totalStr = totalVal == null ? '—' : '$' + fmt(totalVal);
+
+      let sideDot = '';
+      if (side === 'LONG')  sideDot = '<span class="mini-side-dot long"></span>';
+      else if (side === 'SHORT') sideDot = '<span class="mini-side-dot short"></span>';
+
       const card = document.createElement('div');
       card.className = 'bot-card' + (selectedBot === bot.name ? ' active' : '');
       card.dataset.name = bot.name;
@@ -67,6 +89,11 @@ async function loadBots() {
           ${bot.name}
         </div>
         <div class="bot-symbol">${bot.symbol}</div>
+        <div class="bot-mini-stats">
+          <span style="color:${returnColor};font-weight:700">${returnStr}</span>
+          <span style="color:var(--muted)">${totalStr}</span>
+          <span>${sideDot}${side !== 'NONE' ? `<span style="font-size:10px;color:${side==='LONG'?'var(--green)':'var(--red)'}">${side}</span>` : ''}</span>
+        </div>
         <div class="bot-actions">
           ${bot.is_running
             ? `<button class="btn btn-stop"  onclick="controlBot('${bot.name}','stop');event.stopPropagation()">■ Stop</button>`
@@ -76,9 +103,92 @@ async function loadBots() {
       card.addEventListener('click', () => selectBot(bot.name));
       container.appendChild(card);
     });
+
+    // Also refresh global stats whenever bots list refreshes
+    renderGlobalStats(portfolios, bots);
   } catch (e) {
     console.error('loadBots error', e);
   }
+}
+
+// ── Global stats bar ───────────────────────────────────────────
+function renderGlobalStats(portfolios, bots) {
+  const bar = document.getElementById('global-stats-bar');
+  if (!bar || portfolios.length === 0) return;
+
+  const totalUSDT = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
+  const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
+  const totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
+  const positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
+  const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
+  const overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
+  const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
+
+  // Build 3×3 matrix: strategies × coins
+  // Detect strategies and symbols from bot names
+  const strategies = [...new Set(bots.map(b => {
+    // e.g. rsi_btc → rsi, ma_btc → ma, bb_btc → bb
+    const parts = b.name.split('_');
+    return parts.slice(0, -1).join('_'); // everything before last _
+  }))].sort();
+  const symbols = [...new Set(bots.map(b => {
+    const parts = b.name.split('_');
+    return parts[parts.length - 1].toUpperCase(); // last part e.g. BTC
+  }))].sort();
+
+  // Build portfolio lookup
+  const portMap = {};
+  portfolios.forEach(p => { portMap[p.bot_id] = p; });
+
+  // Matrix HTML
+  let matrixHTML = `<div class="gs-matrix">`;
+  // Header row: coin labels
+  matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
+  symbols.forEach(sym => {
+    matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr">${sym}</div>`;
+  });
+  // Data rows
+  strategies.forEach(strat => {
+    const stratLabel = strat.toUpperCase();
+    matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr" style="font-size:9px">${stratLabel}</div>`;
+    symbols.forEach(sym => {
+      const botId = `${strat}_${sym.toLowerCase()}`;
+      const p = portMap[botId];
+      const ret = p ? (p.return_pct || 0) : null;
+      let cellClass = 'gs-matrix-cell gs-cell-neutral';
+      let retStr = '—';
+      if (ret != null) {
+        cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+        retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
+      }
+      matrixHTML += `<div class="${cellClass}" title="${botId}">${retStr}</div>`;
+    });
+  });
+  matrixHTML += `</div>`;
+
+  bar.innerHTML = `
+    <div class="gs-stat">
+      <div class="gs-label">Free USDT</div>
+      <div class="gs-value">$${fmt(totalUSDT)}</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-label">Total Value</div>
+      <div class="gs-value">$${fmt(totalValue)}</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-label">Overall Return</div>
+      <div class="gs-value" style="color:${returnColor}">${overallReturn >= 0 ? '+' : ''}${overallReturn.toFixed(2)}%</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-label">Total Trades</div>
+      <div class="gs-value">${totalTrades}</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-label">Profitable Bots</div>
+      <div class="gs-value" style="color:${positiveCount > 0 ? 'var(--green)' : 'var(--muted)'}">${positiveCount} / ${portfolios.length}</div>
+    </div>
+    ${matrixHTML}
+  `;
 }
 
 async function controlBot(name, action) {

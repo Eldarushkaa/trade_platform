@@ -33,6 +33,31 @@ class SnapshotOut(BaseModel):
     timestamp: datetime
 
 
+@router.get("/all")
+async def get_all_portfolios():
+    """
+    Return current portfolio state for every registered bot in one call.
+    Used by the dashboard global stats bar and bot card mini-stats.
+    Returns a list of portfolio state dicts, each including bot_id, symbol,
+    position_side, total_value_usdt, usdt_balance, return_pct, trade_count, etc.
+
+    NOTE: This route MUST be declared before /{bot_name} to prevent FastAPI
+    from matching the literal "all" as a bot_name path parameter.
+    """
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not available")
+
+    bots = await repo.get_all_bots()
+    results = []
+    for bot in bots:
+        try:
+            state = await _engine.get_portfolio_state(bot.bot_id)
+            results.append(state)
+        except (KeyError, Exception):
+            pass
+    return results
+
+
 @router.get("/{bot_name}")
 async def get_portfolio(bot_name: str):
     """
