@@ -239,6 +239,43 @@ class BotManager:
         """Return a bot instance by id, or None if not found."""
         return self._bots.get(bot_id)
 
+    async def reset_bot(self, bot_id: str) -> dict:
+        """
+        Reset a bot's trading state to defaults: stop it, clear trades/snapshots
+        from DB, reset portfolio to initial balance, then restart.
+        Keeps: bot params, historical candle data.
+        """
+        bot = self._get_bot(bot_id)
+
+        # Stop first if running
+        was_running = bot.is_running
+        if was_running:
+            await self.stop_bot(bot_id)
+
+        # Clear DB data
+        result = await repo.reset_bot_trading_data(bot_id)
+
+        # Reset in-memory portfolio
+        if isinstance(self.engine, SimulationEngine):
+            portfolio = self.engine._portfolios.get(bot_id)
+            if portfolio:
+                portfolio.usdt_balance = settings.initial_usdt_balance
+                portfolio.position.reset()
+                portfolio.realized_pnl = 0.0
+                portfolio.total_fees_paid = 0.0
+                portfolio.trade_count = 0
+                portfolio.liquidation_count = 0
+
+        # Restart if it was running
+        if was_running:
+            await self.start_bot(bot_id)
+
+        logger.info(
+            f"Reset '{bot_id}': {result['trades_deleted']} trades, "
+            f"{result['snapshots_deleted']} snapshots deleted"
+        )
+        return result
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -291,12 +328,14 @@ class BotManager:
         """
         Restore a bot's portfolio balance and open position from DB on startup.
 
+        Uses total_value_usdt from the snapshot as the single source of truth
+        (most reliable — always equals usdt + margin + unrealized at save time).
+
         Steps:
-        1. Load latest snapshot for free USDT balance.
-        2. Check the latest trade — if it was an OPEN (not a CLOSE), reconstruct
-           the FuturesPosition so the bot resumes with the position intact.
-        3. Smart fallback: if latest snapshot is at default balance, search for
-           the last non-default snapshot.
+        1. Load latest snapshot → get total_value_usdt as the anchor.
+        2. Check latest trade → if it was OPEN_*, reconstruct the position.
+        3. Derive free cash = total_value - margin (unrealized ≈ 0 at restart
+           since we don't have a live price yet; first tick will correct it).
         """
         snap = await repo.get_latest_snapshot(bot_id)
         if snap is None:
@@ -307,40 +346,35 @@ class BotManager:
         if portfolio is None:
             return
 
-        # --- Restore free USDT from snapshot ---
-        free_usdt = snap.usdt_balance
+        # --- Use total_value_usdt as the reliable anchor ---
+        total_value = snap.total_value_usdt
 
-        # If latest snapshot has default free USDT, try non-default fallback
-        if abs(snap.total_value_usdt - settings.initial_usdt_balance) < 0.01:
+        # If latest snapshot is at default balance, try to find a real one
+        if abs(total_value - settings.initial_usdt_balance) < 0.01:
             better_snap = await repo.get_latest_nondefault_snapshot(
                 bot_id, settings.initial_usdt_balance
             )
             if better_snap is not None:
-                free_usdt = better_snap.usdt_balance
+                total_value = better_snap.total_value_usdt
                 logger.info(
                     f"Restored '{bot_id}' from older non-default snapshot: "
-                    f"${free_usdt:.2f} free USDT (snapshot from {better_snap.timestamp})"
+                    f"total=${total_value:.2f} (from {better_snap.timestamp})"
                 )
 
-        portfolio.usdt_balance = free_usdt
-
-        # --- Restore open position from last trade ---
-        # NOTE: snapshot.usdt_balance is FREE cash (margin already deducted when
-        # the position was opened), so we must NOT deduct margin again here.
-        # We only reconstruct the FuturesPosition object so the engine knows
-        # the bot holds coins.
+        # --- Check if there's an open position from last trade ---
         last_trade = await repo.get_latest_trade(bot_id)
+        has_open_position = False
+
         if last_trade is not None:
             ps = last_trade.position_side or ""
-            if ps.startswith("OPEN_") or ps in ("OPEN_LONG", "OPEN_SHORT"):
+            if ps.startswith("OPEN_"):
                 side = "LONG" if "LONG" in ps else "SHORT"
                 qty = last_trade.quantity
                 entry = last_trade.price
                 notional = qty * entry
                 margin = notional / portfolio.leverage
 
-                # Reconstruct the position — do NOT deduct margin from usdt_balance
-                # because snapshot already saved the post-margin free cash.
+                # Reconstruct position
                 portfolio.position.side = side
                 portfolio.position.quantity = qty
                 portfolio.position.entry_price = entry
@@ -351,16 +385,26 @@ class BotManager:
                 else:
                     liq = entry + (margin / qty) if qty > 0 else 0.0
                     portfolio.position.liquidation_price = liq
+
+                # Free cash = total - margin (unrealized treated as 0 at restart)
+                portfolio.usdt_balance = max(0.0, total_value - margin)
+                has_open_position = True
+
                 logger.info(
                     f"Restored '{bot_id}' open {side} position: "
-                    f"{qty:.6f} @ {entry:.2f} | margin: {margin:.2f} USDT | "
-                    f"free USDT: {portfolio.usdt_balance:.2f}"
+                    f"{qty:.6f} @ {entry:.2f} | margin={margin:.2f} | "
+                    f"free={portfolio.usdt_balance:.2f} | total={total_value:.2f}"
                 )
             else:
                 logger.debug(f"'{bot_id}' last trade was '{ps}' — no open position to restore")
 
+        if not has_open_position:
+            # No position — all value is free cash
+            portfolio.usdt_balance = total_value
+
         logger.info(
-            f"Restored '{bot_id}': free={portfolio.usdt_balance:.2f} USDT | "
+            f"Restored '{bot_id}': total={total_value:.2f} | "
+            f"free={portfolio.usdt_balance:.2f} USDT | "
             f"position={portfolio.position.side} qty={portfolio.position.quantity:.6f}"
         )
 

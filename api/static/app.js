@@ -1448,6 +1448,31 @@ function changeRefreshRate(seconds) {
   _refreshInterval = setInterval(refresh, _refreshSeconds * 1000);
 }
 
+// ── Reset all bots ─────────────────────────────────────────────
+
+async function resetAllBots() {
+  if (!confirm('⚠️ Reset ALL bots to default balance?\n\nThis will DELETE all trades and snapshots.\nBot parameters and historical data are kept.\n\nContinue?')) return;
+  try {
+    const resp = await post(`${API}/bots/reset-all`);
+    showToast(`✓ ${resp.message || 'All bots reset'}`, 'success');
+    await refresh();
+  } catch (e) {
+    showToast(`✗ ${e.message}`, 'error');
+  }
+}
+
+async function resetBot(name) {
+  if (!confirm(`Reset "${name}" to default balance?\n\nDeletes trades & snapshots, keeps params.`)) return;
+  try {
+    const resp = await post(`${API}/bots/${name}/reset`);
+    showToast(`✓ ${resp.message || 'Bot reset'}`, 'success');
+    await refresh();
+    if (selectedBot === name) await loadBotDetail(name);
+  } catch (e) {
+    showToast(`✗ ${e.message}`, 'error');
+  }
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────
 refresh();
 loadDataStatus();  // show data status in sidebar on load

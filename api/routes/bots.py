@@ -8,10 +8,14 @@ POST /api/bots/{name}/stop    — stop a bot
 GET  /api/bots/{name}/params  — get current parameters + schema
 PUT  /api/bots/{name}/params  — update strategy parameters
 """
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from db import repository as repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bots", tags=["Bots"])
 
@@ -93,6 +97,46 @@ async def stop_bot(name: str):
         return {"message": f"Bot '{name}' stopped"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ------------------------------------------------------------------
+# Reset trading data
+# ------------------------------------------------------------------
+
+@router.post("/{name}/reset")
+async def reset_bot(name: str):
+    """
+    Reset a bot's trading state to defaults.
+    Clears all trades and snapshots, resets balance to initial.
+    Keeps: strategy parameters, historical candle data.
+    """
+    manager = _get_manager()
+    if manager.get_bot(name) is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
+    try:
+        result = await manager.reset_bot(name)
+        return {
+            "message": f"Bot '{name}' reset to defaults",
+            **result,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/reset-all")
+async def reset_all_bots():
+    """Reset ALL bots' trading state to defaults."""
+    manager = _get_manager()
+    total = {"trades_deleted": 0, "snapshots_deleted": 0, "bots_reset": 0}
+    for info in manager.list_bots():
+        try:
+            result = await manager.reset_bot(info["name"])
+            total["trades_deleted"] += result["trades_deleted"]
+            total["snapshots_deleted"] += result["snapshots_deleted"]
+            total["bots_reset"] += 1
+        except Exception as exc:
+            logger.error(f"Reset error for '{info['name']}': {exc}")
+    return {"message": f"All {total['bots_reset']} bots reset", **total}
 
 
 # ------------------------------------------------------------------

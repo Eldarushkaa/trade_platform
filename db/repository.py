@@ -484,3 +484,22 @@ async def delete_historical_candles(symbol: str) -> int:
     await db.execute("DELETE FROM historical_candles WHERE symbol = ?", (symbol,))
     await db.commit()
     return count
+
+
+async def reset_bot_trading_data(bot_id: str) -> dict:
+    """
+    Delete all trades and snapshots for a bot (keeps params and historical candles).
+    Returns counts of deleted records.
+    """
+    db = get_db()
+
+    async with db.execute("SELECT COUNT(*) FROM trades WHERE bot_id = ?", (bot_id,)) as cur:
+        trades_count = (await cur.fetchone())[0]
+    async with db.execute("SELECT COUNT(*) FROM portfolio_snapshots WHERE bot_id = ?", (bot_id,)) as cur:
+        snaps_count = (await cur.fetchone())[0]
+
+    await db.execute("DELETE FROM trades WHERE bot_id = ?", (bot_id,))
+    await db.execute("DELETE FROM portfolio_snapshots WHERE bot_id = ?", (bot_id,))
+    await db.commit()
+
+    return {"trades_deleted": trades_count, "snapshots_deleted": snaps_count}
