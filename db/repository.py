@@ -159,6 +159,30 @@ async def get_trades_for_bot(
     ]
 
 
+async def get_latest_trade(bot_id: str) -> Optional[TradeRecord]:
+    """Return the most recent trade for a bot, or None if no trades exist."""
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM trades WHERE bot_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (bot_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return TradeRecord(
+        id=row["id"],
+        bot_id=row["bot_id"],
+        side=row["side"],
+        symbol=row["symbol"],
+        quantity=row["quantity"],
+        price=row["price"],
+        realized_pnl=row["realized_pnl"],
+        fee_usdt=row["fee_usdt"],
+        position_side=row["position_side"] if "position_side" in row.keys() else "LONG",
+        timestamp=_str_to_dt(row["timestamp"]),
+    )
+
+
 async def get_trade_count(bot_id: str) -> int:
     db = get_db()
     async with db.execute(

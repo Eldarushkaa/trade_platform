@@ -289,15 +289,14 @@ class BotManager:
 
     async def _restore_balance_from_snapshot(self, bot_id: str) -> None:
         """
-        Restore a bot's portfolio balance from the most recent DB snapshot.
-        Called at startup so stats persist across server restarts.
+        Restore a bot's portfolio balance and open position from DB on startup.
 
-        On restart there are no open positions, so we use total_value_usdt
-        (which was free_usdt + locked_margin + unrealized_pnl at snapshot time)
-        as the new usdt_balance — all value becomes free cash.
-
-        Smart fallback: if the latest snapshot has the default balance (from a
-        restart that didn't have restore code), search for the last non-default one.
+        Steps:
+        1. Load latest snapshot for free USDT balance.
+        2. Check the latest trade — if it was an OPEN (not a CLOSE), reconstruct
+           the FuturesPosition so the bot resumes with the position intact.
+        3. Smart fallback: if latest snapshot is at default balance, search for
+           the last non-default snapshot.
         """
         snap = await repo.get_latest_snapshot(bot_id)
         if snap is None:
@@ -308,26 +307,62 @@ class BotManager:
         if portfolio is None:
             return
 
-        restored = snap.total_value_usdt
+        # --- Restore free USDT from snapshot ---
+        free_usdt = snap.usdt_balance
 
-        # If latest snapshot is at default balance, try to find older non-default one
-        if abs(restored - settings.initial_usdt_balance) < 0.01:
+        # If latest snapshot has default free USDT, try non-default fallback
+        if abs(snap.total_value_usdt - settings.initial_usdt_balance) < 0.01:
             better_snap = await repo.get_latest_nondefault_snapshot(
                 bot_id, settings.initial_usdt_balance
             )
             if better_snap is not None:
-                restored = better_snap.total_value_usdt
+                free_usdt = better_snap.usdt_balance
                 logger.info(
                     f"Restored '{bot_id}' from older non-default snapshot: "
-                    f"${restored:.2f} USDT (snapshot from {better_snap.timestamp})"
+                    f"${free_usdt:.2f} free USDT (snapshot from {better_snap.timestamp})"
                 )
 
-        if abs(restored - portfolio.usdt_balance) < 0.01:
-            return  # Already at same value
+        portfolio.usdt_balance = free_usdt
 
-        portfolio.usdt_balance = restored
+        # --- Restore open position from last trade ---
+        last_trade = await repo.get_latest_trade(bot_id)
+        if last_trade is not None:
+            ps = last_trade.position_side or ""
+            if ps.startswith("OPEN_") or ps in ("OPEN_LONG", "OPEN_SHORT"):
+                side = "LONG" if "LONG" in ps else "SHORT"
+                qty = last_trade.quantity
+                entry = last_trade.price
+                notional = qty * entry
+                margin = notional / portfolio.leverage
+
+                # Only restore if we have enough free USDT to cover the margin
+                if margin <= portfolio.usdt_balance:
+                    portfolio.usdt_balance -= margin
+                    portfolio.position.side = side
+                    portfolio.position.quantity = qty
+                    portfolio.position.entry_price = entry
+                    portfolio.position.margin = margin
+                    if side == "LONG":
+                        liq = entry - (margin / qty) if qty > 0 else 0.0
+                        portfolio.position.liquidation_price = max(liq, 0.0)
+                    else:
+                        liq = entry + (margin / qty) if qty > 0 else 0.0
+                        portfolio.position.liquidation_price = liq
+                    logger.info(
+                        f"Restored '{bot_id}' open {side} position: "
+                        f"{qty:.6f} @ {entry:.2f} | margin: {margin:.2f} USDT"
+                    )
+                else:
+                    logger.warning(
+                        f"'{bot_id}': not enough free USDT ({portfolio.usdt_balance:.2f}) "
+                        f"to restore {side} position (needs {margin:.2f} margin) — position left closed"
+                    )
+            else:
+                logger.debug(f"'{bot_id}' last trade was '{ps}' — no open position to restore")
+
         logger.info(
-            f"Restored '{bot_id}' balance: ${restored:.2f} USDT"
+            f"Restored '{bot_id}': free={portfolio.usdt_balance:.2f} USDT | "
+            f"position={portfolio.position.side} qty={portfolio.position.quantity:.6f}"
         )
 
     def _on_task_done(self, bot_id: str, task: asyncio.Task) -> None:

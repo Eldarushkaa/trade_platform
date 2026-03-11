@@ -186,17 +186,15 @@ function renderGlobalStats(portfolios, bots, nettingData) {
     coinBlocksHTML += `</div>`;
   }
 
-  // Netting savings stat
-  let nettingSavingsHTML = '';
-  const totNetting = nettingStats._total;
-  if (totNetting && totNetting.events > 0) {
-    nettingSavingsHTML = `
+  // Netting savings stat — always shown, $0 when no netting yet
+  const totNetting = (nettingStats && nettingStats._total) ? nettingStats._total : {events: 0, qty_netted: 0, fees_saved_usdt: 0};
+  const nettingColor = totNetting.fees_saved_usdt > 0 ? 'var(--green)' : 'var(--muted)';
+  const nettingSavingsHTML = `
     <div class="gs-stat">
       <div class="gs-label">Fees Saved (Netting)</div>
-      <div class="gs-value" style="color:var(--green)">$${totNetting.fees_saved_usdt.toFixed(4)}</div>
-      <div style="font-size:10px;color:var(--muted)">${totNetting.events} events · ${totNetting.qty_netted.toFixed(4)} qty</div>
+      <div class="gs-value" style="color:${nettingColor}">$${totNetting.fees_saved_usdt.toFixed(4)}</div>
+      <div style="font-size:10px;color:var(--muted)">${totNetting.events} events</div>
     </div>`;
-  }
 
   bar.innerHTML = `
     <div class="gs-stat">
