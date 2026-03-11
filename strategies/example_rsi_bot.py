@@ -36,7 +36,7 @@ class RSIBot(BaseStrategy):
     RSI_PERIOD = 10              # Shorter period = faster signals on 1-min
     OVERSOLD = 30.0              # Go LONG below this
     OVERBOUGHT = 70.0            # Go SHORT above this
-    TRADE_FRACTION = 0.80        # Use 80% of free USDT for margin
+    TRADE_FRACTION = 1.0         # Use 100% of free USDT for margin
     COOLDOWN_CANDLES = 3         # Min candles between trades
 
     PARAM_SCHEMA = {
@@ -53,8 +53,9 @@ class RSIBot(BaseStrategy):
             "description": "Short entry threshold (RSI above this → SHORT)",
         },
         "TRADE_FRACTION": {
-            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
             "description": "Fraction of free USDT to use per trade",
+            "optimize": False,
         },
         "COOLDOWN_CANDLES": {
             "type": "int", "default": 3, "min": 0, "max": 30,

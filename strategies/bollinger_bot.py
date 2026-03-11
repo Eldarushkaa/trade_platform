@@ -37,7 +37,7 @@ class BollingerBot(BaseStrategy):
     # --- Bollinger Band parameters ---
     BB_PERIOD = 20
     BB_STD_DEV = 2.0
-    TRADE_FRACTION = 0.80
+    TRADE_FRACTION = 1.0
     MIN_BANDWIDTH = 0.0005
     COOLDOWN_CANDLES = 3
     STOP_LOSS_PCT = 0.01          # 1% stop-loss from entry
@@ -52,8 +52,9 @@ class BollingerBot(BaseStrategy):
             "description": "Standard deviation multiplier for bands",
         },
         "TRADE_FRACTION": {
-            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
             "description": "Fraction of free USDT to use per trade",
+            "optimize": False,
         },
         "MIN_BANDWIDTH": {
             "type": "float", "default": 0.0005, "min": 0.0, "max": 0.01,

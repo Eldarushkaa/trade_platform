@@ -113,9 +113,13 @@ class OptimizationResult:
 # ------------------------------------------------------------------
 
 def _sample_params(schema: dict) -> dict:
-    """Generate a random parameter set within PARAM_SCHEMA bounds."""
+    """Generate a random parameter set within PARAM_SCHEMA bounds.
+    Skips params with optimize=False (uses their default value instead)."""
     params = {}
     for key, spec in schema.items():
+        if spec.get("optimize", True) is False:
+            params[key] = spec["default"]
+            continue
         lo, hi = spec["min"], spec["max"]
         if spec["type"] == "int":
             params[key] = random.randint(int(lo), int(hi))
@@ -125,9 +129,13 @@ def _sample_params(schema: dict) -> dict:
 
 
 def _mutate_params(base: dict, schema: dict, mutation_rate: float = 0.3) -> dict:
-    """Create a mutated version of a parameter set."""
+    """Create a mutated version of a parameter set.
+    Skips params with optimize=False (keeps their default value)."""
     params = dict(base)
     for key, spec in schema.items():
+        if spec.get("optimize", True) is False:
+            params[key] = spec["default"]  # always reset to default, never mutate
+            continue
         if random.random() < mutation_rate:
             lo, hi = spec["min"], spec["max"]
             # Small perturbation around current value

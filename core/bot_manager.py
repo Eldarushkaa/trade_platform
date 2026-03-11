@@ -178,6 +178,11 @@ class BotManager:
                 updated_at=datetime.now(timezone.utc),
             )
             await repo.upsert_bot(record)
+
+            # Restore portfolio balance from last snapshot (survives restarts)
+            if isinstance(self.engine, SimulationEngine):
+                await self._restore_balance_from_snapshot(bot_id)
+
             # Load any saved parameter overrides from DB
             await self.load_saved_params(bot_id)
             await self.start_bot(bot_id)
@@ -281,6 +286,36 @@ class BotManager:
                     logger.error(f"Snapshot error for '{bot_id}': {exc}", exc_info=True)
         except asyncio.CancelledError:
             pass
+
+    async def _restore_balance_from_snapshot(self, bot_id: str) -> None:
+        """
+        Restore a bot's portfolio balance from the most recent DB snapshot.
+        Called at startup so stats persist across server restarts.
+
+        The snapshot stores `total_value_usdt` (free USDT + locked margin + unrealized PnL).
+        We use it as the new `usdt_balance` starting point, since on restart there are no
+        open positions — the bot must rebuild position state through trading signals.
+        """
+        snap = await repo.get_latest_snapshot(bot_id)
+        if snap is None:
+            logger.debug(f"No snapshot for '{bot_id}' — starting with default balance")
+            return
+
+        portfolio = self.engine._portfolios.get(bot_id)
+        if portfolio is None:
+            return
+
+        # Restore free USDT balance from last snapshot
+        # total_value_usdt was free_usdt + margin + unrealized_pnl at snapshot time.
+        # On restart there's no open position so we use usdt_balance directly.
+        restored_usdt = snap.usdt_balance
+        portfolio.usdt_balance = restored_usdt
+        # Keep initial_balance so return_pct is computed relative to the original start
+        # (don't update initial_balance — that reflects true performance over all time)
+        logger.info(
+            f"Restored '{bot_id}' balance from snapshot: ${restored_usdt:.2f} USDT "
+            f"(snapshot from {snap.timestamp})"
+        )
 
     def _on_task_done(self, bot_id: str, task: asyncio.Task) -> None:
         """Callback when a bot task finishes unexpectedly."""

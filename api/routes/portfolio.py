@@ -51,7 +51,7 @@ async def get_all_portfolios():
     results = []
     for bot in bots:
         try:
-            state = await _engine.get_portfolio_state(bot.bot_id)
+            state = await _engine.get_portfolio_state(bot.id)  # BotRecord uses .id not .bot_id
             results.append(state)
         except (KeyError, Exception):
             pass

@@ -35,7 +35,7 @@ class MACrossoverBot(BaseStrategy):
     FAST_PERIOD = 12
     SLOW_PERIOD = 26
     SIGNAL_PERIOD = 9
-    TRADE_FRACTION = 0.80
+    TRADE_FRACTION = 1.0
 
     PARAM_SCHEMA = {
         "FAST_PERIOD": {
@@ -51,8 +51,9 @@ class MACrossoverBot(BaseStrategy):
             "description": "Signal line smoothing period",
         },
         "TRADE_FRACTION": {
-            "type": "float", "default": 0.80, "min": 0.10, "max": 1.0,
+            "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
             "description": "Fraction of free USDT to use per trade",
+            "optimize": False,
         },
     }
 
