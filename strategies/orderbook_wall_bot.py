@@ -1,7 +1,7 @@
 """
 Orderbook Wall Bot — trades liquidity gaps in the order book (DOM).
 
-Strategy concept — "Gap before a wall":
+Strategy concept — "Rush to the wall":
     A "wall" is a price level with unusually large resting order volume
     (e.g. 3× the average notional per level). A "gap" is a zone of thin
     liquidity BETWEEN the current price and the wall.
@@ -14,15 +14,16 @@ Strategy concept — "Gap before a wall":
     │  BID wall below + gap above wall  → price drops DOWN → SHORT │
     └─────────────────────────────────────────────────────────┘
 
+    Take-profit is set just before the wall (the wall acts as a magnet).
+    Stop-loss triggers if price retreats from the gap (signal invalid).
+
 Signal logic (per candle):
     1. Fetch the latest orderbook snapshot from DB for this symbol.
-    2. Detect walls on the ASK side (sell walls) and BID side (buy walls).
-    3. Score the gap quality: gap_width / price × 100 (% distance to wall).
-    4. If a large ASK wall is present with a significant thin-liquidity gap
-       above current price → open LONG (target = wall price).
-    5. If a large BID wall is present with a significant thin-liquidity gap
-       below current price → open SHORT (target = wall price).
-    6. Exit on: candle close past target, stop-loss hit, or signal reversal.
+    2. Check imbalance filter: buy-heavy book confirms LONG, sell-heavy SHORT.
+    3. Detect walls on the ASK side (sell walls) and BID side (buy walls).
+    4. Score the gap quality: gap_width / price × 100 (% distance to wall).
+    5. If a large ASK wall with gap → LONG, TP near wall, SL below entry.
+    6. If a large BID wall with gap → SHORT, TP near wall, SL above entry.
 
 Multi-coin usage:
     OrderbookWallBot.for_symbol("BTCUSDT")
@@ -36,6 +37,7 @@ Requires:
 """
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Optional
 
 from db import repository as repo
@@ -134,7 +136,7 @@ def detect_gap_and_wall(
         if notionals[i] < avg_notional * 0.5  # < 50% of avg = thin
     )
 
-    # Require at least half the gap levels to be thin
+    # Require at least 40% of gap levels to be thin
     if wall_idx > 0 and thin_levels_in_gap < wall_idx * 0.4:
         return None
 
@@ -153,7 +155,7 @@ def detect_gap_and_wall(
 # ---------------------------------------------------------------------------
 
 class OrderbookWallBot(BaseStrategy):
-    """Trades liquidity gaps before order-book walls."""
+    """Trades liquidity gaps before order-book walls (rush-to-wall thesis)."""
 
     name = "ob_wall_bot"
     symbol = "BTCUSDT"
@@ -164,8 +166,10 @@ class OrderbookWallBot(BaseStrategy):
     TRADE_FRACTION: float = 0.8       # Fraction of free USDT for margin
     STALENESS_MINUTES: int = 3        # Skip if latest snapshot is older than this
     COOLDOWN_CANDLES: int = 5         # Min candles between new entries
-    STOP_LOSS_PCT: float = 0.30       # Stop loss: % move against us (from entry)
-    TAKE_PROFIT_PCT: float = 0.50     # Take profit: % move in our direction
+    STOP_LOSS_PCT: float = 0.30       # Stop loss: % move against us from entry
+    TP_BUFFER_PCT: float = 0.02       # Take profit buffer: set TP this % before the wall price
+    IMBALANCE_MIN: float = 0.50       # Min imbalance to confirm LONG (bid-heavy)
+    IMBALANCE_MAX: float = 0.50       # Max imbalance to confirm SHORT (ask-heavy)
 
     PARAM_SCHEMA = {
         "WALL_MULTIPLIER": {
@@ -193,9 +197,17 @@ class OrderbookWallBot(BaseStrategy):
             "type": "float", "default": 0.30, "min": 0.05, "max": 2.0,
             "description": "Stop loss % from entry price",
         },
-        "TAKE_PROFIT_PCT": {
-            "type": "float", "default": 0.50, "min": 0.05, "max": 3.0,
-            "description": "Take profit % from entry price",
+        "TP_BUFFER_PCT": {
+            "type": "float", "default": 0.02, "min": 0.005, "max": 0.50,
+            "description": "Take profit set this % before the wall price (buffer zone)",
+        },
+        "IMBALANCE_MIN": {
+            "type": "float", "default": 0.50, "min": 0.30, "max": 0.80,
+            "description": "Min bid imbalance (0-1) to confirm LONG signal",
+        },
+        "IMBALANCE_MAX": {
+            "type": "float", "default": 0.50, "min": 0.20, "max": 0.70,
+            "description": "Max bid imbalance (0-1) to confirm SHORT signal (ask-heavy)",
         },
     }
 
@@ -225,8 +237,11 @@ class OrderbookWallBot(BaseStrategy):
         self._position_side: Optional[str] = None  # "LONG" or "SHORT"
         self._take_profit: Optional[float] = None
         self._stop_loss: Optional[float] = None
+        self._wall_price: Optional[float] = None   # target wall price
         # Backtest injection: set by engine before each candle in replay mode
         self._bt_snapshot: Optional[dict] = None
+        # Recent wall detections for persistence check (last N candles)
+        self._recent_walls: deque = deque(maxlen=5)
 
     def _inject_orderbook(self, snapshot: dict) -> None:
         """
@@ -272,15 +287,44 @@ class OrderbookWallBot(BaseStrategy):
         if not bids or not asks:
             return
 
+        # --- Compute imbalance from raw levels (more accurate than stored summary) ---
+        bid_depth = sum(p * q for p, q in bids)
+        ask_depth = sum(p * q for p, q in asks)
+        total_depth = bid_depth + ask_depth
+        imbalance = bid_depth / total_depth if total_depth > 0 else 0.5
+
         # --- Detect gap+wall patterns ---
-        # ASK side: gap above current price → potential LONG
+        # ASK side: wall above current price → price rushes UP through gap → LONG
         ask_signal = detect_gap_and_wall(
             asks, self.WALL_MULTIPLIER, self.GAP_MIN_PCT, price, "ask"
         )
-        # BID side: gap below current price → potential SHORT
+        # BID side: wall below current price → price drops DOWN through gap → SHORT
         bid_signal = detect_gap_and_wall(
             bids, self.WALL_MULTIPLIER, self.GAP_MIN_PCT, price, "bid"
         )
+
+        # --- Imbalance confirmation filter ---
+        # For LONG: bid-heavy book (buying pressure) confirms the rush up
+        if ask_signal and imbalance < self.IMBALANCE_MIN:
+            self.logger.debug(
+                f"ASK wall signal rejected: imbalance {imbalance:.3f} < {self.IMBALANCE_MIN}"
+            )
+            ask_signal = None
+
+        # For SHORT: ask-heavy book (selling pressure) confirms the rush down
+        if bid_signal and imbalance > self.IMBALANCE_MAX:
+            self.logger.debug(
+                f"BID wall signal rejected: imbalance {imbalance:.3f} > {self.IMBALANCE_MAX}"
+            )
+            bid_signal = None
+
+        # Track detected walls for persistence (even if filtered by imbalance)
+        wall_key = None
+        if ask_signal:
+            wall_key = ("ask", round(ask_signal["wall_price"], 2))
+        elif bid_signal:
+            wall_key = ("bid", round(bid_signal["wall_price"], 2))
+        self._recent_walls.append(wall_key)
 
         # Prioritise the larger wall (more conviction)
         if ask_signal and bid_signal:
@@ -291,19 +335,21 @@ class OrderbookWallBot(BaseStrategy):
 
         if ask_signal:
             self.logger.info(
-                f"GAP+WALL (ASK) detected: wall_price={ask_signal['wall_price']:.4f} "
+                f"GAP+WALL (ASK→LONG): wall={ask_signal['wall_price']:.4f} "
                 f"gap={ask_signal['gap_pct']:.3f}% "
-                f"wall={ask_signal['wall_notional']:.0f} USD "
-                f"({ask_signal['levels_in_gap']} thin levels)"
+                f"notional={ask_signal['wall_notional']:.0f} USD "
+                f"({ask_signal['levels_in_gap']} thin levels) "
+                f"imbalance={imbalance:.3f}"
             )
             await self._open(price, "BUY", ask_signal)
 
         elif bid_signal:
             self.logger.info(
-                f"GAP+WALL (BID) detected: wall_price={bid_signal['wall_price']:.4f} "
+                f"GAP+WALL (BID→SHORT): wall={bid_signal['wall_price']:.4f} "
                 f"gap={bid_signal['gap_pct']:.3f}% "
-                f"wall={bid_signal['wall_notional']:.0f} USD "
-                f"({bid_signal['levels_in_gap']} thin levels)"
+                f"notional={bid_signal['wall_notional']:.0f} USD "
+                f"({bid_signal['levels_in_gap']} thin levels) "
+                f"imbalance={imbalance:.3f}"
             )
             await self._open(price, "SELL", bid_signal)
 
@@ -326,14 +372,14 @@ class OrderbookWallBot(BaseStrategy):
         if side == "LONG":
             if tp and price >= tp:
                 should_exit = True
-                reason = f"TP hit @ {price:.4f} (target {tp:.4f})"
+                reason = f"TP hit @ {price:.4f} (target {tp:.4f}, wall {self._wall_price:.4f})"
             elif sl and price <= sl:
                 should_exit = True
                 reason = f"SL hit @ {price:.4f} (stop {sl:.4f})"
         elif side == "SHORT":
             if tp and price <= tp:
                 should_exit = True
-                reason = f"TP hit @ {price:.4f} (target {tp:.4f})"
+                reason = f"TP hit @ {price:.4f} (target {tp:.4f}, wall {self._wall_price:.4f})"
             elif sl and price >= sl:
                 should_exit = True
                 reason = f"SL hit @ {price:.4f} (stop {sl:.4f})"
@@ -359,6 +405,7 @@ class OrderbookWallBot(BaseStrategy):
         spend = usdt * self.TRADE_FRACTION
         quantity = round(spend / price, 6)
         direction = "LONG" if side == "BUY" else "SHORT"
+        wall_price = signal["wall_price"]
 
         try:
             result = await self.engine.place_order(
@@ -371,18 +418,22 @@ class OrderbookWallBot(BaseStrategy):
             self._last_trade_candle = self._candle_count
             self._entry_price = price
             self._position_side = direction
+            self._wall_price = wall_price
 
-            # Set exit levels
+            # Set TP near the wall (slightly before it to exit before wall absorbs)
+            # Set SL as fixed % from entry (invalidation of the gap thesis)
             if direction == "LONG":
-                self._take_profit = price * (1 + self.TAKE_PROFIT_PCT / 100)
-                self._stop_loss   = price * (1 - self.STOP_LOSS_PCT / 100)
+                # TP = wall price minus a small buffer
+                self._take_profit = wall_price * (1 - self.TP_BUFFER_PCT / 100)
+                self._stop_loss = price * (1 - self.STOP_LOSS_PCT / 100)
             else:
-                self._take_profit = price * (1 - self.TAKE_PROFIT_PCT / 100)
-                self._stop_loss   = price * (1 + self.STOP_LOSS_PCT / 100)
+                # TP = wall price plus a small buffer
+                self._take_profit = wall_price * (1 + self.TP_BUFFER_PCT / 100)
+                self._stop_loss = price * (1 + self.STOP_LOSS_PCT / 100)
 
             self.logger.info(
                 f"OPEN {direction} {quantity:.6f} @ {price:.4f}  "
-                f"wall={signal['wall_price']:.4f} gap={signal['gap_pct']:.3f}%  "
+                f"wall={wall_price:.4f} gap={signal['gap_pct']:.3f}%  "
                 f"TP={self._take_profit:.4f}  SL={self._stop_loss:.4f}  "
                 f"fee={result.get('fee_usdt', 0):.4f}"
             )
@@ -404,6 +455,7 @@ class OrderbookWallBot(BaseStrategy):
             self._position_side = None
             self._take_profit = None
             self._stop_loss = None
+            self._wall_price = None
 
             pnl = result.get("realized_pnl", 0)
             self.logger.info(
