@@ -509,6 +509,49 @@ async def reset_bot_trading_data(bot_id: str) -> dict:
 # Orderbook (DOM) snapshots
 # ====================================================================
 
+async def get_orderbook_snapshots_for_backtest(symbol: str) -> list[dict]:
+    """
+    Load ALL orderbook snapshots for a symbol ordered oldest→newest.
+    Used by the backtest engine to replay historical orderbook state
+    alongside candle data. Returns compact dicts (no raw bids/asks JSON
+    to save memory — only metrics needed for signal detection + raw levels).
+    """
+    db = get_db()
+
+    # Check if table exists
+    async with db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_snapshots'"
+    ) as cur:
+        if await cur.fetchone() is None:
+            return []
+
+    rows = []
+    async with db.execute("""
+        SELECT timestamp, depth_limit, bids_json, asks_json,
+               best_bid, best_ask, spread, mid_price,
+               bid_depth_usdt, ask_depth_usdt, imbalance
+        FROM orderbook_snapshots
+        WHERE symbol = ?
+        ORDER BY timestamp ASC
+    """, (symbol,)) as cursor:
+        async for row in cursor:
+            rows.append({
+                "timestamp": row["timestamp"],
+                "depth_limit": row["depth_limit"],
+                "bids": row["bids_json"],   # raw JSON string — parsed lazily by bot
+                "asks": row["asks_json"],
+                "best_bid": row["best_bid"],
+                "best_ask": row["best_ask"],
+                "spread": row["spread"],
+                "mid_price": row["mid_price"],
+                "bid_depth_usdt": row["bid_depth_usdt"],
+                "ask_depth_usdt": row["ask_depth_usdt"],
+                "imbalance": row["imbalance"],
+            })
+
+    return rows
+
+
 async def get_orderbook_status() -> dict:
     """
     Return collection stats for each symbol in orderbook_snapshots:

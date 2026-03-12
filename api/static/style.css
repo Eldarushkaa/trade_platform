@@ -46,10 +46,9 @@ header h1 span { color: var(--accent); }
 .gs-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
 .gs-value { font-size: 16px; font-weight: 700; }
 
-/* 3×3 strategy/coin matrix */
+/* N×3 strategy/coin matrix (dynamic columns set inline) */
 .gs-matrix {
   display: grid;
-  grid-template-columns: auto repeat(3, 48px);
   gap: 3px;
   margin-left: 16px;
   padding-left: 16px;
@@ -91,6 +90,31 @@ header h1 span { color: var(--accent); }
 .gs-net-long  { background: rgba(0,200,150,0.15); color: var(--green); }
 .gs-net-short { background: rgba(255,77,109,0.15); color: var(--red); }
 .gs-net-flat  { background: var(--border); color: var(--muted); }
+
+/* DOM (orderbook collector) status block in global stats bar */
+.gs-dom-section {
+  display: flex; gap: 6px; align-items: stretch;
+  margin-left: 16px; padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+.gs-dom-label {
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px;
+  writing-mode: vertical-rl; text-orientation: mixed;
+  padding: 2px 0; align-self: center;
+}
+.gs-dom-cell {
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 8px; min-width: 68px;
+  display: flex; flex-direction: column; gap: 2px; align-items: center;
+}
+.gs-dom-sym {
+  font-size: 11px; font-weight: 700; color: var(--text); letter-spacing: .5px;
+}
+.gs-dom-rows {
+  display: flex; flex-direction: column; gap: 1px; align-items: center;
+}
+.gs-dom-offline { opacity: 0.5; }
 
 .layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; padding: 20px 24px; }
 

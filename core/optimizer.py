@@ -350,6 +350,26 @@ async def optimize_params(
         raise ValueError(f"No historical data for {symbol}. Download it first.")
     logger.info(f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol}")
 
+    # --- Pre-load orderbook data if strategy supports injection ---
+    _cached_orderbook: list | None = None
+    if hasattr(strategy_class, "_inject_orderbook") or (
+        hasattr(strategy_class, "__mro__") and any(
+            hasattr(c, "_inject_orderbook") for c in strategy_class.__mro__
+        )
+    ):
+        _cached_orderbook = await repo.get_orderbook_snapshots_for_backtest(symbol)
+        if _cached_orderbook:
+            logger.info(
+                f"Optimizer: pre-loaded {len(_cached_orderbook)} orderbook snapshots "
+                f"for {symbol} (orderbook-aware strategy)"
+            )
+        else:
+            logger.warning(
+                f"Optimizer: no orderbook snapshots for {symbol} — "
+                f"ob_wall signals will be inactive during backtest. "
+                f"Run scripts/collect_orderbook.py to gather data."
+            )
+
     # Count optimizable dimensions
     n_dims = sum(1 for v in schema.values() if v.get("optimize", True))
 
@@ -391,6 +411,7 @@ async def optimize_params(
                     initial_balance=initial_balance,
                     equity_interval=20,
                     candle_data=_cached_candles,
+                    orderbook_data=_cached_orderbook,
                 )
                 ind.sharpe = bt.sharpe_ratio
                 ind.return_pct = bt.return_pct

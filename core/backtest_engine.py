@@ -214,6 +214,7 @@ async def run_backtest(
     initial_balance: float | None = None,
     equity_interval: int = 5,
     candle_data: list | None = None,
+    orderbook_data: list | None = None,
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
@@ -227,6 +228,10 @@ async def run_backtest(
         equity_interval: Record equity point every N candles (saves memory)
         candle_data: Pre-loaded candle rows (skips DB read if provided).
                      Used by the optimizer to avoid redundant DB queries.
+        orderbook_data: Pre-loaded orderbook snapshot rows ordered oldest→newest.
+                        If provided AND the strategy has _inject_orderbook(), each
+                        candle injects the closest-in-time orderbook snapshot.
+                        Used by OrderbookWallBot for backtesting/optimization.
 
     Returns:
         BacktestResult with metrics, equity curve, and trades.
@@ -298,6 +303,39 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
+    # --- Pre-index orderbook snapshots by timestamp for O(log n) lookup ---
+    # ob_times[i] = epoch_ms of orderbook_data[i]
+    ob_times: list[int] = []
+    ob_has_inject = orderbook_data and hasattr(bot, "_inject_orderbook")
+    if ob_has_inject:
+        for ob_row in orderbook_data:
+            try:
+                from datetime import datetime, timezone
+                ts = ob_row["timestamp"].replace("Z", "+00:00")
+                dt = datetime.fromisoformat(ts)
+                ob_times.append(int(dt.timestamp() * 1000))
+            except Exception:
+                ob_times.append(0)
+        logger.info(
+            f"Backtest {bot_id}: injecting {len(orderbook_data)} "
+            f"orderbook snapshots into {strategy_class.__name__}"
+        )
+
+    def _find_nearest_ob(candle_open_ms: int) -> dict | None:
+        """Binary search for closest orderbook snapshot at or before candle time."""
+        if not ob_times:
+            return None
+        lo, hi = 0, len(ob_times) - 1
+        best = 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if ob_times[mid] <= candle_open_ms:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return orderbook_data[best]
+
     # --- Replay candles (wrapped in try/finally to always restore flag) ---
     error_count = [0]
     try:
@@ -316,6 +354,12 @@ async def run_backtest(
 
             # Update engine price (for liquidation checks etc.)
             engine.update_price(symbol, candle.close)
+
+            # Inject nearest orderbook snapshot before the candle fires
+            if ob_has_inject:
+                ob_snap = _find_nearest_ob(row["open_time"])
+                if ob_snap is not None:
+                    bot._inject_orderbook(ob_snap)  # type: ignore[attr-defined]
 
             # Feed candle to strategy
             try:

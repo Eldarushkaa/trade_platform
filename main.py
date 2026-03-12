@@ -49,13 +49,14 @@ from data.candle_aggregator import CandleAggregator
 from strategies.example_rsi_bot import RSIBot
 from strategies.example_ma_crossover import MACrossoverBot
 from strategies.bollinger_bot import BollingerBot
+from strategies.orderbook_wall_bot import OrderbookWallBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
 # ------------------------------------------------------------------
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-STRATEGY_CLASSES = [RSIBot, MACrossoverBot, BollingerBot]
+STRATEGY_CLASSES = [RSIBot, MACrossoverBot, BollingerBot, OrderbookWallBot]
 
 # Build 9 bot classes: one per strategy × symbol combination
 REGISTERED_BOTS = []

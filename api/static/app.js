@@ -40,10 +40,11 @@ async function postJson(url, body) {
 // ── Sidebar: list all bots ─────────────────────────────────────
 async function loadBots() {
   try {
-    const [bots, portfolios, coinData] = await Promise.all([
+    const [bots, portfolios, coinData, obStatus] = await Promise.all([
       get(`${API}/bots`),
       get(`${API}/portfolio/all`).catch(() => []),
       get(`${API}/portfolio/coin-positions`).catch(() => null),
+      get(`${API}/portfolio/orderbook-status`).catch(() => null),
     ]);
 
     // update mode badge from health
@@ -106,14 +107,14 @@ async function loadBots() {
     });
 
     // Also refresh global stats whenever bots list refreshes
-    renderGlobalStats(portfolios, bots, coinData);
+    renderGlobalStats(portfolios, bots, coinData, obStatus);
   } catch (e) {
     console.error('loadBots error', e);
   }
 }
 
 // ── Global stats bar ───────────────────────────────────────────
-function renderGlobalStats(portfolios, bots, coinData) {
+function renderGlobalStats(portfolios, bots, coinData, obStatus) {
   const bar = document.getElementById('global-stats-bar');
   if (!bar || portfolios.length === 0) return;
 
@@ -140,8 +141,9 @@ function renderGlobalStats(portfolios, bots, coinData) {
   const portMap = {};
   portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
-  // Matrix HTML
-  let matrixHTML = `<div class="gs-matrix">`;
+  // Matrix HTML — dynamic columns based on actual symbol count
+  const matrixCols = `auto repeat(${symbols.length}, 48px)`;
+  let matrixHTML = `<div class="gs-matrix" style="grid-template-columns:${matrixCols}">`;
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
     matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr">${sym}</div>`;
@@ -186,6 +188,42 @@ function renderGlobalStats(portfolios, bots, coinData) {
     coinBlocksHTML += `</div>`;
   }
 
+  // DOM (orderbook) status block
+  let domHTML = '';
+  if (obStatus && obStatus.orderbook && Object.keys(obStatus.orderbook).length > 0) {
+    const ob = obStatus.orderbook;
+    let domCells = '';
+    Object.entries(ob).sort(([a],[b]) => a.localeCompare(b)).forEach(([sym, info]) => {
+      const asset = sym.replace('USDT','');
+      const count = info.count || 0;
+      const last = info.last ? info.last.slice(11,16) + ' UTC' : '—';
+      const ibal = info.latest ? (info.latest.imbalance * 100).toFixed(1) + '%' : '—';
+      const ibalColor = info.latest
+        ? (info.latest.imbalance > 0.55 ? 'var(--green)' : info.latest.imbalance < 0.45 ? 'var(--red)' : 'var(--muted)')
+        : 'var(--muted)';
+      const spread = info.latest ? info.latest.spread.toFixed(2) : '—';
+      domCells += `
+        <div class="gs-dom-cell">
+          <div class="gs-dom-sym">${asset}</div>
+          <div class="gs-dom-rows">
+            <span style="color:var(--muted);font-size:9px">${count} snaps</span>
+            <span style="color:var(--muted);font-size:9px">last ${last}</span>
+            <span style="font-size:10px">sprd <b>${spread}</b></span>
+            <span style="font-size:10px;color:${ibalColor}">bal <b>${ibal}</b></span>
+          </div>
+        </div>`;
+    });
+    domHTML = `<div class="gs-dom-section" title="Orderbook collector data">
+      <div class="gs-dom-label">📖 DOM</div>
+      ${domCells}
+    </div>`;
+  } else {
+    domHTML = `<div class="gs-dom-section gs-dom-offline" title="Run scripts/collect_orderbook.py to enable">
+      <div class="gs-dom-label">📖 DOM</div>
+      <div style="font-size:10px;color:var(--muted);padding:4px 6px">collector offline</div>
+    </div>`;
+  }
+
   bar.innerHTML = `
     <div class="gs-stat">
       <div class="gs-label">Free USDT</div>
@@ -211,6 +249,7 @@ function renderGlobalStats(portfolios, bots, coinData) {
       <div class="gs-label">Total Fees</div>
       <div class="gs-value" style="color:var(--yellow)">$${fmt(totalFees)}</div>
     </div>
+    ${domHTML}
     ${coinBlocksHTML}
     ${matrixHTML}
   `;
