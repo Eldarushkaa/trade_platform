@@ -336,6 +336,7 @@ class BotManager:
         2. Check latest trade → if it was OPEN_*, reconstruct the position.
         3. Derive free cash = total_value - margin (unrealized ≈ 0 at restart
            since we don't have a live price yet; first tick will correct it).
+        4. Restore trade_count, total_fees_paid, realized_pnl from DB aggregates.
         """
         snap = await repo.get_latest_snapshot(bot_id)
         if snap is None:
@@ -402,10 +403,18 @@ class BotManager:
             # No position — all value is free cash
             portfolio.usdt_balance = total_value
 
+        # --- Restore cumulative counters from DB aggregates ---
+        trade_stats = await repo.get_bot_trade_stats(bot_id)
+        portfolio.trade_count = trade_stats["trade_count"]
+        portfolio.total_fees_paid = trade_stats["total_fees_paid"]
+        portfolio.realized_pnl = trade_stats["realized_pnl"]
+
         logger.info(
             f"Restored '{bot_id}': total={total_value:.2f} | "
             f"free={portfolio.usdt_balance:.2f} USDT | "
-            f"position={portfolio.position.side} qty={portfolio.position.quantity:.6f}"
+            f"position={portfolio.position.side} qty={portfolio.position.quantity:.6f} | "
+            f"trades={portfolio.trade_count} fees={portfolio.total_fees_paid:.4f} "
+            f"realized_pnl={portfolio.realized_pnl:.4f}"
         )
 
     def _on_task_done(self, bot_id: str, task: asyncio.Task) -> None:

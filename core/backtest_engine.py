@@ -303,38 +303,45 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
-    # --- Pre-index orderbook snapshots by timestamp for O(log n) lookup ---
-    # ob_times[i] = epoch_ms of orderbook_data[i]
-    ob_times: list[int] = []
-    ob_has_inject = orderbook_data and hasattr(bot, "_inject_orderbook")
+    # --- Sequential orderbook injection setup ---
+    # Both candles and orderbook snapshots are 1-minute frequency.
+    # We use a simple forward pointer — no binary search needed.
+    ob_has_inject = bool(orderbook_data) and hasattr(bot, "_inject_orderbook")
+    ob_index = [0]   # mutable pointer into orderbook_data
+
     if ob_has_inject:
+        # Pre-parse timestamps to epoch_ms for fast comparison
+        from datetime import datetime, timezone as _tz
+        ob_times_ms: list[int] = []
         for ob_row in orderbook_data:
             try:
-                from datetime import datetime, timezone
                 ts = ob_row["timestamp"].replace("Z", "+00:00")
                 dt = datetime.fromisoformat(ts)
-                ob_times.append(int(dt.timestamp() * 1000))
+                ob_times_ms.append(int(dt.timestamp() * 1000))
             except Exception:
-                ob_times.append(0)
+                ob_times_ms.append(0)
         logger.info(
-            f"Backtest {bot_id}: injecting {len(orderbook_data)} "
-            f"orderbook snapshots into {strategy_class.__name__}"
+            f"Backtest {bot_id}: {len(orderbook_data)} orderbook snapshots "
+            f"→ sequential injection into {strategy_class.__name__}"
         )
+    else:
+        ob_times_ms = []
 
-    def _find_nearest_ob(candle_open_ms: int) -> dict | None:
-        """Binary search for closest orderbook snapshot at or before candle time."""
-        if not ob_times:
+    def _advance_ob_pointer(candle_open_ms: int) -> dict | None:
+        """
+        Advance the sequential pointer to the last snapshot at or before
+        candle_open_ms. Since both series are ~1-min, this typically
+        advances 0 or 1 step per candle.
+        """
+        if not ob_times_ms:
             return None
-        lo, hi = 0, len(ob_times) - 1
-        best = 0
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if ob_times[mid] <= candle_open_ms:
-                best = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return orderbook_data[best]
+        while (ob_index[0] + 1 < len(ob_times_ms)
+               and ob_times_ms[ob_index[0] + 1] <= candle_open_ms):
+            ob_index[0] += 1
+        # Return current snapshot only if it's at or before candle time
+        if ob_times_ms[ob_index[0]] <= candle_open_ms:
+            return orderbook_data[ob_index[0]]
+        return None
 
     # --- Replay candles (wrapped in try/finally to always restore flag) ---
     error_count = [0]
@@ -355,9 +362,9 @@ async def run_backtest(
             # Update engine price (for liquidation checks etc.)
             engine.update_price(symbol, candle.close)
 
-            # Inject nearest orderbook snapshot before the candle fires
+            # Inject current orderbook snapshot before the candle fires
             if ob_has_inject:
-                ob_snap = _find_nearest_ob(row["open_time"])
+                ob_snap = _advance_ob_pointer(row["open_time"])
                 if ob_snap is not None:
                     bot._inject_orderbook(ob_snap)  # type: ignore[attr-defined]
 

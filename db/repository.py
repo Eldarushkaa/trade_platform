@@ -192,6 +192,30 @@ async def get_trade_count(bot_id: str) -> int:
     return row["cnt"] if row else 0
 
 
+async def get_bot_trade_stats(bot_id: str) -> dict:
+    """Return aggregated trade stats for a bot: count, total fees, total realized PnL."""
+    db = get_db()
+    async with db.execute(
+        """
+        SELECT
+            COUNT(*) AS trade_count,
+            COALESCE(SUM(fee_usdt), 0.0) AS total_fees_paid,
+            COALESCE(SUM(realized_pnl), 0.0) AS realized_pnl
+        FROM trades
+        WHERE bot_id = ?
+        """,
+        (bot_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return {"trade_count": 0, "total_fees_paid": 0.0, "realized_pnl": 0.0}
+    return {
+        "trade_count": row["trade_count"],
+        "total_fees_paid": float(row["total_fees_paid"]),
+        "realized_pnl": float(row["realized_pnl"]),
+    }
+
+
 # ------------------------------------------------------------------
 # Portfolio Snapshots
 # ------------------------------------------------------------------

@@ -141,8 +141,9 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
   const portMap = {};
   portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
-  // Matrix HTML — dynamic columns based on actual symbol count
-  const matrixCols = `auto repeat(${symbols.length}, 48px)`;
+  // Matrix HTML — dynamic columns based on actual symbol count (min 3)
+  const numSymCols = Math.max(3, symbols.length);
+  const matrixCols = `auto repeat(${numSymCols}, 48px)`;
   let matrixHTML = `<div class="gs-matrix" style="grid-template-columns:${matrixCols}">`;
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
@@ -889,7 +890,29 @@ function toggleBacktest() {
 
 async function loadDataStatus() {
   try {
-    const d = await get(`${API}/backtest/data-status`);
+    const [d, obStatus] = await Promise.all([
+      get(`${API}/backtest/data-status`),
+      get(`${API}/portfolio/orderbook-status`).catch(() => null),
+    ]);
+
+    // Update orderbook snapshot count in sidebar
+    const obInfoEl = document.getElementById('ob-data-info');
+    if (obInfoEl && obStatus && obStatus.orderbook) {
+      const ob = obStatus.orderbook;
+      const syms = Object.keys(ob);
+      if (syms.length > 0) {
+        const totalSnaps = syms.reduce((s, sym) => s + (ob[sym].count || 0), 0);
+        const perCoin = syms.length > 0 ? Math.round(totalSnaps / syms.length) : 0;
+        const lastSym = Object.values(ob).find(v => v.last);
+        const lastStr = lastSym ? lastSym.last.slice(11,16) + ' UTC' : '';
+        obInfoEl.textContent = `${perCoin}/coin${lastStr ? ' · ' + lastStr : ''}`;
+        obInfoEl.style.color = 'var(--green)';
+      } else {
+        obInfoEl.textContent = 'no data';
+        obInfoEl.style.color = 'var(--muted)';
+      }
+    }
+
     const info = document.getElementById('bt-data-info');
     const badge = document.getElementById('bt-data-badge');
     const total = d.total_candles || 0;

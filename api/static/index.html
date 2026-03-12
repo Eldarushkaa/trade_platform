@@ -31,9 +31,13 @@
 <div class="layout">
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <button class="bt-btn bt-btn-dl" onclick="downloadHistory(7)" style="font-size:11px;padding:5px 10px">📥 Download 7d Data</button>
       <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:10px;color:var(--muted)">
+      <span>📖 DOM snapshots:</span>
+      <span id="ob-data-info" style="color:var(--muted)">—</span>
     </div>
     <h2>Bots</h2>
     <div id="bots-list"><div id="loading">Loading...</div></div>
