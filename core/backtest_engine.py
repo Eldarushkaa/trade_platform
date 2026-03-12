@@ -10,16 +10,12 @@ with live data) and feeds stored candles one by one, collecting:
 Usage:
     result = await run_backtest("rsi_btc", "BTCUSDT", RSIBot, params={...})
 """
-import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
 
 from config import settings
 from core.simulation_engine import SimulationEngine
-from core.virtual_portfolio import VirtualPortfolio
 from data.candle_aggregator import Candle
 from db import repository as repo
 

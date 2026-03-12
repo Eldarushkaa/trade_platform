@@ -9,7 +9,6 @@ GET  /api/backtest/status         — check running backtest/optimization status
 """
 import asyncio
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel

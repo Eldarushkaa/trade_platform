@@ -33,20 +33,18 @@ class SnapshotOut(BaseModel):
     timestamp: datetime
 
 
-@router.get("/netting-stats")
-async def get_netting_stats():
+@router.get("/coin-positions")
+async def get_coin_positions():
     """
-    Return cross-bot netting statistics and per-symbol position aggregates.
+    Return per-symbol aggregate position view across all bots.
 
     Response:
-      netting: {symbol: {events, qty_netted, fees_saved_usdt}, _total: {...}}
       coin_positions: {symbol: {total_long_qty, total_short_qty, net_qty, net_side,
                                 long_bots, short_bots}}
     """
     if _engine is None:
         raise HTTPException(status_code=503, detail="Engine not available")
     return {
-        "netting": _engine.get_netting_stats(),
         "coin_positions": _engine.get_coin_positions(),
     }
 

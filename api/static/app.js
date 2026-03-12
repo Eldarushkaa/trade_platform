@@ -40,10 +40,10 @@ async function postJson(url, body) {
 // ── Sidebar: list all bots ─────────────────────────────────────
 async function loadBots() {
   try {
-    const [bots, portfolios, nettingData] = await Promise.all([
+    const [bots, portfolios, coinData] = await Promise.all([
       get(`${API}/bots`),
       get(`${API}/portfolio/all`).catch(() => []),
-      get(`${API}/portfolio/netting-stats`).catch(() => null),
+      get(`${API}/portfolio/coin-positions`).catch(() => null),
     ]);
 
     // update mode badge from health
@@ -106,20 +106,21 @@ async function loadBots() {
     });
 
     // Also refresh global stats whenever bots list refreshes
-    renderGlobalStats(portfolios, bots, nettingData);
+    renderGlobalStats(portfolios, bots, coinData);
   } catch (e) {
     console.error('loadBots error', e);
   }
 }
 
 // ── Global stats bar ───────────────────────────────────────────
-function renderGlobalStats(portfolios, bots, nettingData) {
+function renderGlobalStats(portfolios, bots, coinData) {
   const bar = document.getElementById('global-stats-bar');
   if (!bar || portfolios.length === 0) return;
 
   const totalUSDT = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
   const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
   const totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
+  const totalFees = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
   const positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
   const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
   const overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
@@ -164,8 +165,7 @@ function renderGlobalStats(portfolios, bots, nettingData) {
   matrixHTML += `</div>`;
 
   // Per-coin position blocks
-  const coinPositions = nettingData ? nettingData.coin_positions : {};
-  const nettingStats  = nettingData ? nettingData.netting : {};
+  const coinPositions = coinData ? coinData.coin_positions : {};
   let coinBlocksHTML = '';
   if (Object.keys(coinPositions).length > 0) {
     coinBlocksHTML = `<div class="gs-coin-section">`;
@@ -185,16 +185,6 @@ function renderGlobalStats(portfolios, bots, nettingData) {
     });
     coinBlocksHTML += `</div>`;
   }
-
-  // Netting savings stat — always shown, $0 when no netting yet
-  const totNetting = (nettingStats && nettingStats._total) ? nettingStats._total : {events: 0, qty_netted: 0, fees_saved_usdt: 0};
-  const nettingColor = totNetting.fees_saved_usdt > 0 ? 'var(--green)' : 'var(--muted)';
-  const nettingSavingsHTML = `
-    <div class="gs-stat">
-      <div class="gs-label">Fees Saved (Netting)</div>
-      <div class="gs-value" style="color:${nettingColor}">$${totNetting.fees_saved_usdt.toFixed(4)}</div>
-      <div style="font-size:10px;color:var(--muted)">${totNetting.events} events</div>
-    </div>`;
 
   bar.innerHTML = `
     <div class="gs-stat">
@@ -217,7 +207,10 @@ function renderGlobalStats(portfolios, bots, nettingData) {
       <div class="gs-label">Profitable Bots</div>
       <div class="gs-value" style="color:${positiveCount > 0 ? 'var(--green)' : 'var(--muted)'}">${positiveCount} / ${portfolios.length}</div>
     </div>
-    ${nettingSavingsHTML}
+    <div class="gs-stat">
+      <div class="gs-label">Total Fees</div>
+      <div class="gs-value" style="color:var(--yellow)">$${fmt(totalFees)}</div>
+    </div>
     ${coinBlocksHTML}
     ${matrixHTML}
   `;

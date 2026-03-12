@@ -90,9 +90,6 @@ class SimulationEngine(BaseOrderEngine):
         self._prices: dict[str, float] = {}
         self._fee_rates: dict[str, float] = {}
         self._skip_db: bool = False  # Set True during backtest to avoid DB writes
-        self.enable_netting: bool = True  # Cross-bot position netting to reduce fees
-        # Netting stats: symbol → {events, qty_netted, fees_saved_usdt}
-        self._netting_stats: dict[str, dict] = {}
 
     def register_bot(
         self,
@@ -135,127 +132,8 @@ class SimulationEngine(BaseOrderEngine):
         return self._prices.get(symbol)
 
     # ------------------------------------------------------------------
-    # Cross-bot netting helpers
+    # Per-symbol position aggregation (used by stats bar)
     # ------------------------------------------------------------------
-
-    def _find_opposing_bots(self, requesting_bot_id: str, symbol: str, opening_side: str) -> list[str]:
-        """
-        Find bots that hold the opposite position on the same symbol.
-
-        Args:
-            requesting_bot_id: The bot about to open a new position.
-            symbol:            The trading pair (e.g. "BTCUSDT").
-            opening_side:      "LONG" or "SHORT" — the side the requester wants to open.
-
-        Returns:
-            List of bot IDs with an opposite open position on `symbol`.
-        """
-        opposing_side = "SHORT" if opening_side == "LONG" else "LONG"
-        result = []
-        for other_id, other_portfolio in self._portfolios.items():
-            if other_id == requesting_bot_id:
-                continue
-            if other_portfolio.symbol != symbol:
-                continue
-            if other_portfolio.position.is_open and other_portfolio.position.side == opposing_side:
-                result.append(other_id)
-        return result
-
-    async def _net_opposing_position(
-        self,
-        opposing_bot_id: str,
-        symbol: str,
-        price: float,
-        max_qty: float,
-    ) -> float:
-        """
-        Partially or fully close an opposing bot's position to net against an
-        incoming order of size `max_qty`.
-
-        Only `min(opposing_position_qty, max_qty)` is closed, so a large opposing
-        position is only partially reduced when the requesting order is smaller.
-
-        Args:
-            opposing_bot_id: Bot whose position to close.
-            symbol:          Trading pair.
-            price:           Execution price.
-            max_qty:         The requesting bot's order size — cap for netting.
-
-        Returns:
-            Quantity actually netted (may be less than max_qty if opposing position
-            was smaller — caller can use this to track remaining qty to net elsewhere).
-        """
-        other_portfolio = self._portfolios[opposing_bot_id]
-        pos = other_portfolio.position
-        fee_rate = self._fee_rates.get(opposing_bot_id, settings.simulation_fee_rate)
-
-        # Net only up to the requesting order size
-        net_qty = min(pos.quantity, max_qty)
-        fee_usdt = round(net_qty * price * fee_rate, 8)
-
-        if pos.side == "LONG":
-            result = other_portfolio.close_long(price, quantity=net_qty)
-            action_label = "CLOSE_LONG_NETTED"
-            db_side = "SELL"
-        else:
-            result = other_portfolio.close_short(price, quantity=net_qty)
-            action_label = "CLOSE_SHORT_NETTED"
-            db_side = "BUY"
-
-        other_portfolio.deduct_fee(fee_usdt)
-        result["fee_usdt"] = fee_usdt
-
-        logger.info(
-            f"[NETTING] {action_label} {net_qty:.6f}/{pos.quantity + net_qty:.6f} "
-            f"on {opposing_bot_id} @ {price:.2f} | "
-            f"PnL: {result.get('realized_pnl', 0.0):+.4f} USDT"
-        )
-
-        # Accumulate netting stats
-        ns = self._netting_stats.setdefault(symbol, {"events": 0, "qty_netted": 0.0, "fees_saved_usdt": 0.0})
-        ns["events"] += 1
-        ns["qty_netted"] += net_qty
-        # Fee saved = the open fee the opposing bot would have paid on its NEXT trade
-        # (it now re-enters fresh instead of holding a stale position until its own signal)
-        # Conservative estimate: one open fee on net_qty at current price
-        ns["fees_saved_usdt"] += fee_usdt  # opposing bot's close fee is what we calculate
-
-        if not self._skip_db:
-            trade = TradeRecord(
-                bot_id=opposing_bot_id,
-                side=db_side,
-                symbol=symbol,
-                quantity=net_qty,
-                price=price,
-                realized_pnl=result.get("realized_pnl"),
-                fee_usdt=fee_usdt,
-                position_side=action_label,
-                timestamp=datetime.now(timezone.utc),
-            )
-            await repo.insert_trade(trade)
-
-        return net_qty
-
-    def get_netting_stats(self) -> dict:
-        """
-        Return accumulated cross-bot netting statistics.
-
-        Returns a dict keyed by symbol with:
-          - events:          Number of netting operations performed
-          - qty_netted:      Total asset quantity netted across all operations
-          - fees_saved_usdt: Estimated fees saved (close fees on netted quantity)
-        Also includes a 'total' entry summing all symbols.
-        """
-        result = dict(self._netting_stats)
-        total_events = sum(v["events"] for v in result.values())
-        total_qty = sum(v["qty_netted"] for v in result.values())
-        total_fees = sum(v["fees_saved_usdt"] for v in result.values())
-        result["_total"] = {
-            "events": total_events,
-            "qty_netted": round(total_qty, 8),
-            "fees_saved_usdt": round(total_fees, 6),
-        }
-        return result
 
     def get_coin_positions(self) -> dict:
         """
@@ -313,16 +191,10 @@ class SimulationEngine(BaseOrderEngine):
         Execute a simulated futures order.
 
         Routing:
-            BUY + no position  → open LONG  (with cross-bot netting check)
+            BUY + no position  → open LONG
             BUY + SHORT open   → close SHORT
-            SELL + no position  → open SHORT (with cross-bot netting check)
+            SELL + no position  → open SHORT
             SELL + LONG open    → close LONG
-
-        Cross-bot netting:
-            Before opening a NEW position, if any other bot on the same symbol
-            holds the opposite position, that bot's position is closed first at
-            the current price. This avoids redundant open+close round trips and
-            saves fees for the opposing bot's next trade cycle.
 
         Fee is applied after the trade executes.
         """
@@ -340,14 +212,6 @@ class SimulationEngine(BaseOrderEngine):
                 result = portfolio.close_short(price)
                 quantity = close_qty  # for DB record
             elif not position.is_open:
-                # Net opposing SHORT positions before opening LONG
-                if self.enable_netting:
-                    remaining = quantity
-                    for opposing_id in self._find_opposing_bots(bot_id, symbol, "LONG"):
-                        if remaining <= 0:
-                            break
-                        netted = await self._net_opposing_position(opposing_id, symbol, price, remaining)
-                        remaining -= netted
                 # Open LONG — check margin + fee before executing
                 fee_usdt = round(quantity * price * fee_rate, 8)
                 notional = quantity * price
@@ -372,14 +236,6 @@ class SimulationEngine(BaseOrderEngine):
                 result = portfolio.close_long(price)
                 quantity = close_qty  # for DB record
             elif not position.is_open:
-                # Net opposing LONG positions before opening SHORT
-                if self.enable_netting:
-                    remaining = quantity
-                    for opposing_id in self._find_opposing_bots(bot_id, symbol, "SHORT"):
-                        if remaining <= 0:
-                            break
-                        netted = await self._net_opposing_position(opposing_id, symbol, price, remaining)
-                        remaining -= netted
                 # Open SHORT — check margin + fee before executing
                 fee_usdt = round(quantity * price * fee_rate, 8)
                 notional = quantity * price
