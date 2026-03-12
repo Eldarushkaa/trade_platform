@@ -246,6 +246,32 @@ async def run_backtest(
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 
+    # --- For OB-driven strategies, trim candles to orderbook data time range ---
+    # No point simulating 7 days of candles when OB data covers only ~1 day.
+    if orderbook_data and hasattr(strategy_class, "_inject_orderbook") and len(orderbook_data) > 0:
+        from datetime import datetime, timezone as _tz
+        first_ob_ts = orderbook_data[0].get("timestamp", "")
+        last_ob_ts = orderbook_data[-1].get("timestamp", "")
+        try:
+            ob_start_ms = int(datetime.fromisoformat(first_ob_ts.replace("Z", "+00:00")).timestamp() * 1000)
+            ob_end_ms = int(datetime.fromisoformat(last_ob_ts.replace("Z", "+00:00")).timestamp() * 1000)
+            original_count = len(candle_rows)
+            candle_rows = [r for r in candle_rows if ob_start_ms <= r["open_time"] <= ob_end_ms]
+            if not candle_rows:
+                raise ValueError(
+                    f"No candles overlap with orderbook data range "
+                    f"({first_ob_ts} → {last_ob_ts}). "
+                    f"Download candles covering the OB period."
+                )
+            logger.info(
+                f"Backtest {bot_id}: trimmed candles {original_count} → {len(candle_rows)} "
+                f"to match OB data range ({len(orderbook_data)} snapshots)"
+            )
+        except ValueError:
+            raise   # re-raise our "no overlap" error
+        except Exception as e:
+            logger.warning(f"Could not parse OB timestamps for trimming: {e}")
+
     # --- Create isolated engine + portfolio ---
     engine = SimulationEngine()
 
@@ -311,7 +337,6 @@ async def run_backtest(
 
     if ob_has_inject:
         # Pre-parse timestamps to epoch_ms for fast comparison
-        from datetime import datetime, timezone as _tz
         ob_times_ms: list[int] = []
         for ob_row in orderbook_data:
             try:

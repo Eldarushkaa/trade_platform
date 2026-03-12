@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from core.backtest_engine import run_backtest
 from core.optimizer import optimize_params
 from data.historical import download_klines, get_data_status
+from db import repository as repo
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,8 @@ async def run_backtest_endpoint(req: BacktestRequest):
     """
     Run a backtest for one bot using current (or overridden) parameters.
     Returns full results including equity curve and metrics.
+    For bots with _inject_orderbook (e.g. OrderbookWallBot), loads historical
+    orderbook snapshots and passes them to run_backtest for sequential injection.
     """
     strategy_class, symbol, current_params = _get_bot_info(req.bot_id)
 
@@ -140,6 +143,12 @@ async def run_backtest_endpoint(req: BacktestRequest):
     if task_id in _running_tasks and not _running_tasks[task_id].get("done", True):
         raise HTTPException(status_code=409, detail="A backtest is already running for this bot")
 
+    # Pre-load orderbook data for strategies that use it (e.g. OrderbookWallBot)
+    orderbook_data = None
+    if hasattr(strategy_class, "_inject_orderbook"):
+        orderbook_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
+        logger.info(f"Loaded {len(orderbook_data)} orderbook snapshots for backtest of '{req.bot_id}'")
+
     # Run backtest (blocking for the request — typically < 5 seconds)
     try:
         result = await run_backtest(
@@ -147,6 +156,7 @@ async def run_backtest_endpoint(req: BacktestRequest):
             symbol=symbol,
             strategy_class=strategy_class,
             params=params,
+            orderbook_data=orderbook_data,
         )
         return result.to_dict()
     except ValueError as e:

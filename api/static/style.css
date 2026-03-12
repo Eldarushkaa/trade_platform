@@ -46,9 +46,10 @@ header h1 span { color: var(--accent); }
 .gs-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
 .gs-value { font-size: 16px; font-weight: 700; }
 
-/* N×3 strategy/coin matrix (dynamic columns set inline) */
+/* 4-col strategy/coin matrix: label + BTC + ETH + SOL */
 .gs-matrix {
   display: grid;
+  grid-template-columns: auto repeat(3, 48px);
   gap: 3px;
   margin-left: 16px;
   padding-left: 16px;

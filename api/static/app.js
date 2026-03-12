@@ -141,10 +141,8 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
   const portMap = {};
   portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
-  // Matrix HTML — dynamic columns based on actual symbol count (min 3)
-  const numSymCols = Math.max(3, symbols.length);
-  const matrixCols = `auto repeat(${numSymCols}, 48px)`;
-  let matrixHTML = `<div class="gs-matrix" style="grid-template-columns:${matrixCols}">`;
+  // Matrix HTML — columns defined in CSS (.gs-matrix: auto repeat(3, 48px))
+  let matrixHTML = `<div class="gs-matrix">`;
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
     matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr">${sym}</div>`;
@@ -890,15 +888,13 @@ function toggleBacktest() {
 
 async function loadDataStatus() {
   try {
-    const [d, obStatus] = await Promise.all([
-      get(`${API}/backtest/data-status`),
-      get(`${API}/portfolio/orderbook-status`).catch(() => null),
-    ]);
+    let obStatus = null;
+    try { obStatus = await get(`${API}/portfolio/orderbook-status`); } catch(e) { console.warn('ob-status fetch failed:', e); }
 
     // Update orderbook snapshot count in sidebar
     const obInfoEl = document.getElementById('ob-data-info');
-    if (obInfoEl && obStatus && obStatus.orderbook) {
-      const ob = obStatus.orderbook;
+    if (obInfoEl) {
+      const ob = (obStatus && obStatus.orderbook) ? obStatus.orderbook : {};
       const syms = Object.keys(ob);
       if (syms.length > 0) {
         const totalSnaps = syms.reduce((s, sym) => s + (ob[sym].count || 0), 0);
@@ -908,10 +904,14 @@ async function loadDataStatus() {
         obInfoEl.textContent = `${perCoin}/coin${lastStr ? ' · ' + lastStr : ''}`;
         obInfoEl.style.color = 'var(--green)';
       } else {
-        obInfoEl.textContent = 'no data';
+        obInfoEl.textContent = obStatus === null ? 'fetch error' : 'no data yet';
         obInfoEl.style.color = 'var(--muted)';
       }
     }
+
+    const [d] = await Promise.all([
+      get(`${API}/backtest/data-status`),
+    ]);
 
     const info = document.getElementById('bt-data-info');
     const badge = document.getElementById('bt-data-badge');
