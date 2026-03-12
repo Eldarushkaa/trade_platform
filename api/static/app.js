@@ -473,14 +473,8 @@ async function loadHistory(name) {
     const shortMeta = {};
 
     if (trades.length > 0) {
-      // Chart timespan
-      const chartStart = snapTimestamps[0];
-      const chartEnd = snapTimestamps[snapTimestamps.length - 1];
-
       trades.forEach(t => {
         const tMs = new Date(t.timestamp).getTime();
-        // Only include trades within the chart timespan
-        if (tMs < chartStart || tMs > chartEnd) return;
 
         // Find nearest label index
         let bestIdx = 0;
@@ -492,6 +486,9 @@ async function loadHistory(name) {
             bestIdx = i;
           }
         }
+
+        // Skip if nearest snapshot is too far away (trade outside chart range)
+        if (bestDist > gapThreshold) return;
 
         const action = (t.position_side || '').toUpperCase();
         const isLong = action.includes('LONG');
