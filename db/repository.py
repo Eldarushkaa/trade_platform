@@ -503,3 +503,139 @@ async def reset_bot_trading_data(bot_id: str) -> dict:
     await db.commit()
 
     return {"trades_deleted": trades_count, "snapshots_deleted": snaps_count}
+
+
+# ====================================================================
+# Orderbook (DOM) snapshots
+# ====================================================================
+
+async def get_orderbook_status() -> dict:
+    """
+    Return collection stats for each symbol in orderbook_snapshots:
+      count, first/last timestamp, latest metrics.
+    """
+    db = get_db()
+
+    # Check if table exists (script may not have run yet)
+    async with db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_snapshots'"
+    ) as cur:
+        if await cur.fetchone() is None:
+            return {}
+
+    result = {}
+    async with db.execute("""
+        SELECT symbol,
+               COUNT(*) as cnt,
+               MIN(timestamp) as first_ts,
+               MAX(timestamp) as last_ts
+        FROM orderbook_snapshots
+        GROUP BY symbol
+        ORDER BY symbol
+    """) as cursor:
+        async for row in cursor:
+            result[row["symbol"]] = {
+                "count": row["cnt"],
+                "first": row["first_ts"],
+                "last": row["last_ts"],
+            }
+
+    # Add latest metrics for each symbol
+    for symbol in list(result.keys()):
+        async with db.execute("""
+            SELECT best_bid, best_ask, spread, mid_price,
+                   bid_depth_usdt, ask_depth_usdt, imbalance
+            FROM orderbook_snapshots
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (symbol,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                result[symbol]["latest"] = {
+                    "best_bid": row["best_bid"],
+                    "best_ask": row["best_ask"],
+                    "spread": row["spread"],
+                    "mid_price": row["mid_price"],
+                    "bid_depth_usdt": row["bid_depth_usdt"],
+                    "ask_depth_usdt": row["ask_depth_usdt"],
+                    "imbalance": row["imbalance"],
+                }
+
+    return result
+
+
+async def get_orderbook_snapshots(
+    symbol: str,
+    limit: int = 60,
+) -> list[dict]:
+    """
+    Fetch recent orderbook snapshots for a symbol (newest first).
+    Returns summary metrics only (not full bids/asks JSON).
+    """
+    db = get_db()
+    async with db.execute("""
+        SELECT symbol, timestamp, best_bid, best_ask, spread,
+               mid_price, bid_depth_usdt, ask_depth_usdt, imbalance
+        FROM orderbook_snapshots
+        WHERE symbol = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, (symbol, limit)) as cursor:
+        rows = []
+        async for row in cursor:
+            rows.append({
+                "symbol": row["symbol"],
+                "timestamp": row["timestamp"],
+                "best_bid": row["best_bid"],
+                "best_ask": row["best_ask"],
+                "spread": row["spread"],
+                "mid_price": row["mid_price"],
+                "bid_depth_usdt": row["bid_depth_usdt"],
+                "ask_depth_usdt": row["ask_depth_usdt"],
+                "imbalance": row["imbalance"],
+            })
+        return rows
+
+
+async def get_orderbook_full(symbol: str) -> dict | None:
+    """
+    Get the latest full orderbook snapshot (including bids/asks JSON)
+    for a single symbol. Returns None if no data.
+    """
+    db = get_db()
+
+    # Check if table exists
+    async with db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='orderbook_snapshots'"
+    ) as cur:
+        if await cur.fetchone() is None:
+            return None
+
+    async with db.execute("""
+        SELECT symbol, timestamp, depth_limit, bids_json, asks_json,
+               best_bid, best_ask, spread, mid_price,
+               bid_depth_usdt, ask_depth_usdt, imbalance
+        FROM orderbook_snapshots
+        WHERE symbol = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """, (symbol,)) as cur:
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        import json
+        return {
+            "symbol": row["symbol"],
+            "timestamp": row["timestamp"],
+            "depth_limit": row["depth_limit"],
+            "bids": json.loads(row["bids_json"]),
+            "asks": json.loads(row["asks_json"]),
+            "best_bid": row["best_bid"],
+            "best_ask": row["best_ask"],
+            "spread": row["spread"],
+            "mid_price": row["mid_price"],
+            "bid_depth_usdt": row["bid_depth_usdt"],
+            "ask_depth_usdt": row["ask_depth_usdt"],
+            "imbalance": row["imbalance"],
+        }

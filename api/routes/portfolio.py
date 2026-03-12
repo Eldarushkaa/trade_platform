@@ -49,6 +49,31 @@ async def get_coin_positions():
     }
 
 
+@router.get("/orderbook-status")
+async def get_orderbook_status():
+    """
+    Return DOM collection status per symbol: row count, time range, latest metrics.
+    Data is collected by the standalone scripts/collect_orderbook.py service.
+    """
+    status = await repo.get_orderbook_status()
+    return {"orderbook": status}
+
+
+@router.get("/orderbook/{symbol}")
+async def get_orderbook_latest(symbol: str):
+    """
+    Return the latest full orderbook snapshot (bids + asks) for a symbol.
+    """
+    data = await repo.get_orderbook_full(symbol.upper())
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No orderbook data for '{symbol.upper()}'. "
+                   "Is the collector running?",
+        )
+    return data
+
+
 @router.get("/all")
 async def get_all_portfolios():
     """
