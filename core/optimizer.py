@@ -351,23 +351,21 @@ async def optimize_params(
     logger.info(f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol}")
 
     # --- Pre-load orderbook data for ALL strategies ---
-    # Purpose 1: OB-signal strategies (_inject_orderbook) need it for signal generation.
-    # Purpose 2: ALL strategies benefit from OB-aware VWAP fill prices (same as /backtest/run).
-    #            Without this, optimizer uses fixed slippage but "Backtest with Optimized"
-    #            uses real OB slippage — params found by optimizer may produce 0 trades there.
+    # Bids/asks are pre-parsed once here (into (price,qty) tuples) so that
+    # engine.update_orderbook() uses the fast path (no json.loads per candle).
+    # This gives realistic VWAP fills for all strategies AND keeps optimizer fast.
     _cached_orderbook: list | None = None
     _ob_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
     if _ob_data:
         _cached_orderbook = _ob_data
         ob_aware = hasattr(strategy_class, "_inject_orderbook")
         logger.info(
-            f"Optimizer: pre-loaded {len(_cached_orderbook)} orderbook snapshots for {symbol} "
-            f"(fill slippage=OB-VWAP, signal_inject={ob_aware})"
+            f"Optimizer: pre-loaded {len(_cached_orderbook)} OB snapshots for {symbol} "
+            f"(pre-parsed bids/asks, fill=OB-VWAP, signal_inject={ob_aware})"
         )
     else:
         logger.info(
-            f"Optimizer: no orderbook snapshots for {symbol} — using fixed slippage fallback. "
-            f"Run scripts/collect_orderbook.py to gather data."
+            f"Optimizer: no OB snapshots for {symbol} — using fixed slippage fallback."
         )
 
     # Count optimizable dimensions

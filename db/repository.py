@@ -568,9 +568,15 @@ async def get_orderbook_snapshots_for_backtest(symbol: str) -> list[dict]:
     """
     Load ALL orderbook snapshots for a symbol ordered oldest→newest.
     Used by the backtest engine to replay historical orderbook state
-    alongside candle data. Returns compact dicts (no raw bids/asks JSON
-    to save memory — only metrics needed for signal detection + raw levels).
+    alongside candle data.
+
+    Performance note: bids/asks JSON is pre-parsed here (once) into
+    lists of (price, qty) tuples so that update_orderbook() in
+    SimulationEngine does NOT need to call json.loads on every candle
+    during backtest/optimizer runs (~20k calls per eval).
     """
+    import json as _json
+
     db = get_db()
 
     # Check if table exists
@@ -590,11 +596,26 @@ async def get_orderbook_snapshots_for_backtest(symbol: str) -> list[dict]:
         ORDER BY timestamp ASC
     """, (symbol,)) as cursor:
         async for row in cursor:
+            # Pre-parse bids/asks once at load time — avoids repeated json.loads
+            # per candle during backtest replay (significant speedup for optimizer)
+            try:
+                bids = [(float(p), float(q)) for p, q in _json.loads(row["bids_json"] or "[]")]
+            except Exception:
+                bids = []
+            try:
+                asks = [(float(p), float(q)) for p, q in _json.loads(row["asks_json"] or "[]")]
+            except Exception:
+                asks = []
+
             rows.append({
                 "timestamp": row["timestamp"],
                 "depth_limit": row["depth_limit"],
-                "bids": row["bids_json"],   # raw JSON string — parsed lazily by bot
-                "asks": row["asks_json"],
+                "bids": bids,   # pre-parsed list of (price, qty) tuples
+                "asks": asks,   # pre-parsed list of (price, qty) tuples
+                # Keep raw JSON strings as well for _inject_orderbook bots (ob_wall)
+                # that parse them independently
+                "bids_json": row["bids_json"],
+                "asks_json": row["asks_json"],
                 "best_bid": row["best_bid"],
                 "best_ask": row["best_ask"],
                 "spread": row["spread"],

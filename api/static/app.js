@@ -10,6 +10,25 @@ let _botsCache = [];           // last known bots list [{name, symbol, is_runnin
 let _statsMode = 'all';        // 'all' | '24h' | '3h' — period for stats grid + chart
 let _portfolioData = null;     // cached portfolio state + trade stats for current bot
 let _historyData = null;       // cached {snaps, trades} for chart re-render on mode switch
+let _globalStatsData = null;   // cached {portfolios, bots, coinData, obStatus, periodStats}
+                               // periodStats: { botId: {h24: {...}, h3: {...}} }
+
+// Moscow timezone formatter
+const _moscowTZ = 'Europe/Moscow';
+function fmtMoscow(isoStr) {
+  if (!isoStr) return '—';
+  try {
+    return new Date(isoStr).toLocaleString('ru-RU', {
+      timeZone: _moscowTZ,
+      day: '2-digit', month: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return isoStr; }
+}
+function fmtMoscowTime(d) {
+  // Format a Date object as HH:MM in Moscow time
+  return d.toLocaleTimeString('ru-RU', { timeZone: _moscowTZ, hour: '2-digit', minute: '2-digit' });
+}
 
 // ── Fetch helpers ──────────────────────────────────────────────
 async function get(url) {
@@ -113,26 +132,52 @@ async function loadBots() {
     // Cache bots list for use in loadDataStatus (symbol lookup)
     _botsCache = bots;
 
-    // Also refresh global stats whenever bots list refreshes
-    renderGlobalStats(portfolios, bots, coinData, obStatus);
+    // Fetch per-bot period stats in parallel for the global stats bar period toggle
+    const periodStats = {};
+    await Promise.all(bots.map(async bot => {
+      const [s24h, s3h] = await Promise.all([
+        get(`${API}/trades/${bot.name}/stats?hours=24`).catch(() => null),
+        get(`${API}/trades/${bot.name}/stats?hours=3`).catch(() => null),
+      ]);
+      periodStats[bot.name] = { h24: s24h, h3: s3h };
+    }));
+
+    // Cache for period toggle re-render
+    _globalStatsData = { portfolios, bots, coinData, obStatus, periodStats };
+
+    // Render global stats bar with current mode
+    renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats);
   } catch (e) {
     console.error('loadBots error', e);
   }
 }
 
 // ── Global stats bar ───────────────────────────────────────────
-function renderGlobalStats(portfolios, bots, coinData, obStatus) {
+function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
   const bar = document.getElementById('global-stats-bar');
   if (!bar || portfolios.length === 0) return;
 
   const totalUSDT = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
   const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
-  const totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
-  const totalFees = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
   const positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
   const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
   const overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
+  const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
+
+  // Trades & fees: period-aware if period stats available
+  let totalTrades, totalFees, totalPnl;
+  if (_statsMode !== 'all' && periodStats) {
+    const key = _statsMode === '3h' ? 'h3' : 'h24';
+    totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
+    totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
+    totalPnl    = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
+  } else {
+    totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
+    totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
+    totalPnl    = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+  }
+  const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
   // Build 3×3 matrix: strategies × coins
   const strategies = [...new Set(bots.map(b => {
@@ -149,6 +194,7 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
   portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
   // Matrix HTML — columns defined in CSS (.gs-matrix: auto repeat(3, 48px))
+  // In period mode, show period trades instead of all-time return
   let matrixHTML = `<div class="gs-matrix">`;
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
@@ -160,10 +206,18 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
     symbols.forEach(sym => {
       const botId = `${strat}_${sym.toLowerCase()}`;
       const p = portMap[botId];
-      const ret = p ? (p.return_pct || 0) : null;
       let cellClass = 'gs-matrix-cell gs-cell-neutral';
       let retStr = '—';
-      if (ret != null) {
+      if (_statsMode !== 'all' && periodStats && periodStats[botId]) {
+        const key = _statsMode === '3h' ? 'h3' : 'h24';
+        const ps = periodStats[botId][key];
+        if (ps) {
+          const pnl = ps.realized_pnl || 0;
+          cellClass = pnl >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+          retStr = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(1);
+        }
+      } else if (p) {
+        const ret = p.return_pct || 0;
         cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
         retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
       }
@@ -202,7 +256,7 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
     Object.entries(ob).sort(([a],[b]) => a.localeCompare(b)).forEach(([sym, info]) => {
       const asset = sym.replace('USDT','');
       const count = info.count || 0;
-      const last = info.last ? info.last.slice(11,16) + ' UTC' : '—';
+      const last = info.last ? fmtMoscow(info.last) + ' МСК' : '—';
       const ibal = info.latest ? (info.latest.imbalance * 100).toFixed(1) + '%' : '—';
       const ibalColor = info.latest
         ? (info.latest.imbalance > 0.55 ? 'var(--green)' : info.latest.imbalance < 0.45 ? 'var(--red)' : 'var(--muted)')
@@ -244,15 +298,19 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus) {
       <div class="gs-value" style="color:${returnColor}">${overallReturn >= 0 ? '+' : ''}${overallReturn.toFixed(2)}%</div>
     </div>
     <div class="gs-stat">
-      <div class="gs-label">Total Trades</div>
+      <div class="gs-label">Trades (${periodLabel})</div>
       <div class="gs-value">${totalTrades}</div>
+    </div>
+    <div class="gs-stat">
+      <div class="gs-label">P&L (${periodLabel})</div>
+      <div class="gs-value" style="color:${pnlColor}">${totalPnl >= 0 ? '+' : ''}$${fmt(totalPnl)}</div>
     </div>
     <div class="gs-stat">
       <div class="gs-label">Profitable Bots</div>
       <div class="gs-value" style="color:${positiveCount > 0 ? 'var(--green)' : 'var(--muted)'}">${positiveCount} / ${portfolios.length}</div>
     </div>
     <div class="gs-stat">
-      <div class="gs-label">Total Fees</div>
+      <div class="gs-label">Fees (${periodLabel})</div>
       <div class="gs-value" style="color:var(--yellow)">$${fmt(totalFees)}</div>
     </div>
     ${domHTML}
@@ -319,10 +377,15 @@ function toggleStatsMode(mode) {
     const btn = document.getElementById(`ptbtn-${m}`);
     if (btn) btn.classList.toggle('active', m === mode);
   });
+  // Re-render global stats bar with period-aware numbers
+  if (_globalStatsData) {
+    const { portfolios, bots, coinData, obStatus, periodStats } = _globalStatsData;
+    renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats);
+  }
+  // Re-render bot detail stats + chart
   if (_portfolioData) {
     _renderPortfolio(_portfolioData.p, _portfolioData.stats24h, _portfolioData.stats3h);
   }
-  // Re-render chart to match time window
   if (_historyData) {
     const windowMs = mode === '3h' ? 3 * 3600 * 1000
                    : mode === '24h' ? 24 * 3600 * 1000
@@ -716,7 +779,8 @@ function _renderChart(snaps, trades, windowMs) {
 }
 
 function fmtTime(d) {
-  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  // Chart axis labels in Moscow time
+  return fmtMoscowTime(d);
 }
 
 async function loadTrades(name) {
@@ -749,7 +813,7 @@ async function loadTrades(name) {
         <td>$${fmt(t.price)}</td>
         <td>${t.quantity.toFixed(6)}</td>
         <td>${pnlStr}</td>
-        <td style="color:var(--muted)">${new Date(t.timestamp).toLocaleString()}</td>`;
+        <td style="color:var(--muted)">${fmtMoscow(t.timestamp)} МСК</td>`;
       tbody.appendChild(tr);
     });
   } catch (e) { console.warn('loadTrades', e); }

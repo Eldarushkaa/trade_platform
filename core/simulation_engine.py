@@ -154,15 +154,27 @@ class SimulationEngine(BaseOrderEngine):
           - BotManager background task (live mode, every 60s from DB)
           - BacktestEngine before each candle (when OB data exists)
 
-        Snapshot format:
-            { "bids_json": "[[price, qty], ...]", "asks_json": "...", ... }
-            OR: { "bids": [(price, qty), ...], "asks": [(price, qty), ...] }
+        Snapshot formats accepted:
+          1. Pre-parsed (fast path):  { "bids": [(price, qty), ...], "asks": [...] }
+          2. Raw JSON strings:        { "bids_json": "[[p,q],...]", "asks_json": "..." }
+
+        Pre-parsed format is used by backtest/optimizer (loaded once at startup via
+        get_orderbook_snapshots_for_backtest) to avoid repeated json.loads per candle.
         """
         try:
-            bids_raw = snapshot.get("bids_json") or snapshot.get("bids", "[]")
-            asks_raw = snapshot.get("asks_json") or snapshot.get("asks", "[]")
-            bids = [(float(p), float(q)) for p, q in (json.loads(bids_raw) if isinstance(bids_raw, str) else bids_raw)]
-            asks = [(float(p), float(q)) for p, q in (json.loads(asks_raw) if isinstance(asks_raw, str) else asks_raw)]
+            bids_raw = snapshot.get("bids")
+            asks_raw = snapshot.get("asks")
+
+            # Fast path: already pre-parsed lists of (price, qty) tuples
+            if isinstance(bids_raw, list) and isinstance(asks_raw, list):
+                self._orderbooks[symbol] = {"bids": bids_raw, "asks": asks_raw}
+                return
+
+            # Slow path: raw JSON strings (live mode from DB)
+            bids_str = snapshot.get("bids_json") or (bids_raw if isinstance(bids_raw, str) else "[]")
+            asks_str = snapshot.get("asks_json") or (asks_raw if isinstance(asks_raw, str) else "[]")
+            bids = [(float(p), float(q)) for p, q in json.loads(bids_str or "[]")]
+            asks = [(float(p), float(q)) for p, q in json.loads(asks_str or "[]")]
             self._orderbooks[symbol] = {"bids": bids, "asks": asks}
         except Exception as e:
             logger.warning(f"Failed to parse orderbook snapshot for {symbol}: {e}")
@@ -175,75 +187,45 @@ class SimulationEngine(BaseOrderEngine):
         desired_price: float,
     ) -> tuple[float, str]:
         """
-        Compute a realistic fill price for a market order by walking OB levels.
+        Compute fill price. Two modes:
 
-        For BUY: walks ask side ascending (cheapest asks first).
-        For SELL: walks bid side descending (best bids first).
+        1. OB data available:
+           Fill at best_ask (BUY) or best_bid (SELL) from the current orderbook.
+           This is the real market price — no artificial slippage needed.
+           Only fee is charged (applied by caller).
 
-        Returns:
-            (fill_price, method) where method is "ob_vwap", "fallback", or raises
-            ValueError if slippage exceeds max_slippage_pct.
+        2. No OB data:
+           Fill at desired_price (candle close) ± base_slippage_pct.
+           Simulates the spread/market-impact cost without a real orderbook.
+
+        No order rejection — strategies should always be able to execute at
+        the current market price (best bid/ask).
         """
         ob = self._orderbooks.get(symbol)
-        max_slip = settings.max_slippage_pct / 100.0
         base_slip = settings.base_slippage_pct / 100.0
 
         if ob is None:
-            # No OB data: apply fixed base slippage
+            # No OB data: use candle price + base slippage spread
             if side == "BUY":
-                fill = desired_price * (1 + base_slip)
+                fill = desired_price * (1.0 + base_slip)
             else:
-                fill = desired_price * (1 - base_slip)
+                fill = desired_price * (1.0 - base_slip)
             return fill, "fallback"
 
-        # Walk levels to compute VWAP fill
+        # OB data available: use best bid/ask directly as fill price
         levels = ob["asks"] if side == "BUY" else ob["bids"]
         if not levels:
+            # OB exists but side is empty — fall back to candle price + slippage
             if side == "BUY":
-                fill = desired_price * (1 + base_slip)
+                fill = desired_price * (1.0 + base_slip)
             else:
-                fill = desired_price * (1 - base_slip)
+                fill = desired_price * (1.0 - base_slip)
             return fill, "fallback"
 
-        # Use the best available OB price as reference for slippage measurement.
-        # This avoids false rejections when the market has moved since the signal
-        # fired (desired_price may be stale by several minutes in live trading).
-        # best_ask = lowest ask (for BUY), best_bid = highest bid (for SELL)
-        reference_price = levels[0][0]
-
-        remaining = quantity
-        total_cost = 0.0
-        total_filled = 0.0
-
-        for level_price, level_qty in levels:
-            if remaining <= 0:
-                break
-            fill_qty = min(remaining, level_qty)
-            total_cost += fill_qty * level_price
-            total_filled += fill_qty
-            remaining -= fill_qty
-
-        if total_filled < quantity * 0.999:
-            # OB too thin to fill entirely — use last level price for remainder
-            if levels:
-                last_price = levels[-1][0]
-                extra = remaining * last_price
-                total_cost += extra
-                total_filled += remaining
-
-        fill_price = total_cost / total_filled if total_filled > 0 else desired_price
-
-        # Reject if VWAP fill deviates too much from the best OB price.
-        # Measures real market impact (walk of OB levels) vs best available price,
-        # NOT vs the strategy's signal price which may be stale.
-        slippage = abs(fill_price - reference_price) / reference_price
-        if slippage > max_slip:
-            raise ValueError(
-                f"Order rejected: slippage {slippage * 100:.3f}% > max {settings.max_slippage_pct:.2f}% "
-                f"(best={reference_price:.4f}, fill={fill_price:.4f})"
-            )
-
-        return fill_price, "ob_vwap"
+        # best_ask for BUY → cheapest available sell price
+        # best_bid for SELL → highest available buy price
+        fill_price = float(levels[0][0])
+        return fill_price, "ob_best"
 
     # ------------------------------------------------------------------
     # Per-symbol position aggregation (used by stats bar)

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Trade Platform — Futures Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <link rel="stylesheet" href="/static/style.css?v=8" />
 </head>
 <body>
 
@@ -24,6 +24,14 @@
     <span id="mode-badge">simulation</span>
   </div>
 </header>
+
+<!-- Period toggle bar — global, applies to stats bar + bot detail -->
+<div id="global-period-bar" style="display:flex;align-items:center;gap:8px;padding:7px 24px;background:var(--card);border-bottom:1px solid var(--border)">
+  <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Period:</span>
+  <button class="stats-period-btn active" id="ptbtn-all"  onclick="toggleStatsMode('all')">All time</button>
+  <button class="stats-period-btn"        id="ptbtn-24h"  onclick="toggleStatsMode('24h')">Last 24h</button>
+  <button class="stats-period-btn"        id="ptbtn-3h"   onclick="toggleStatsMode('3h')">Last 3h</button>
+</div>
 
 <!-- Global stats bar -->
 <div id="global-stats-bar" class="global-stats-bar"></div>
@@ -78,13 +86,6 @@
     <div id="bot-detail" style="display:none">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <h2 id="detail-title" style="margin:0">Portfolio</h2>
-        <!-- Period toggle — applies to both stats grid and chart -->
-        <div id="period-toggle-bar" style="display:flex;gap:6px;align-items:center">
-          <span style="font-size:10px;color:var(--muted)">Period:</span>
-          <button class="stats-period-btn active" id="ptbtn-all"  onclick="toggleStatsMode('all')">All time</button>
-          <button class="stats-period-btn"        id="ptbtn-24h"  onclick="toggleStatsMode('24h')">Last 24h</button>
-          <button class="stats-period-btn"        id="ptbtn-3h"   onclick="toggleStatsMode('3h')">Last 3h</button>
-        </div>
       </div>
 
       <!-- Position info row -->
@@ -208,6 +209,6 @@
 
 <!-- Lightweight chart via Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>
