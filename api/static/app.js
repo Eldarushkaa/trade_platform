@@ -159,24 +159,33 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
 
   const totalUSDT = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
   const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
-  const positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
-  const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
-  const overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
-  const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
   const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
 
-  // Trades & fees: period-aware if period stats available
-  let totalTrades, totalFees, totalPnl;
+  // Trades, fees, PnL: period-aware if period stats available
+  let totalTrades, totalFees, totalPnl, overallReturn, positiveCount;
   if (_statsMode !== 'all' && periodStats) {
     const key = _statsMode === '3h' ? 'h3' : 'h24';
     totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
     totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
     totalPnl    = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
+    // Period return % = periodPnl / (currentValue - periodPnl) * 100
+    // (approximates starting value as currentValue minus what was gained this period)
+    const startValue = totalValue - totalPnl;
+    overallReturn = startValue > 0 ? (totalPnl / startValue * 100) : 0;
+    // Count bots with positive period pnl
+    positiveCount = Object.entries(periodStats).filter(([botId, ps]) => {
+      const s = ps[key];
+      return s && (s.realized_pnl || 0) > 0;
+    }).length;
   } else {
     totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
     totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
     totalPnl    = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
+    const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
+    overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
   }
+  const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
   const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
   // Build 3×3 matrix: strategies × coins
@@ -610,12 +619,19 @@ function _renderChart(snaps, trades, windowMs) {
       }
     }
 
-    const usdtBal = s.usdt_balance ?? s.total_value_usdt;
-    const coinVal = s.total_value_usdt - usdtBal;
+    const total = s.total_value_usdt;
+    const usdtBal = s.usdt_balance ?? total;
+    // For futures: "coin value" = total - free_usdt (= margin locked + unrealized PnL).
+    // Only show as positive fill when there's an open position (asset_balance > 0).
+    // This avoids spikes at LONG→SHORT transitions where coinVal would otherwise
+    // jump from positive unrealized to negative and back.
+    const hasPosition = (s.asset_balance != null ? Math.abs(s.asset_balance) : 0) > 1e-8;
+    const coinVal = hasPosition ? Math.max(0, total - usdtBal) : 0;
+
     labels.push(fmtTime(d));
-    values.push(s.total_value_usdt);
+    values.push(total);
     usdtValues.push(usdtBal);
-    coinValues.push(coinVal > 0.01 ? coinVal : 0);
+    coinValues.push(coinVal);
     prices.push(s.asset_price ?? null);
     snapTimestamps.push(d.getTime());
   }
