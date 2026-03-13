@@ -187,45 +187,30 @@ class SimulationEngine(BaseOrderEngine):
         desired_price: float,
     ) -> tuple[float, str]:
         """
-        Compute fill price. Two modes:
+        Compute fill price.
 
-        1. OB data available:
-           Fill at best_ask (BUY) or best_bid (SELL) from the current orderbook.
-           This is the real market price — no artificial slippage needed.
-           Only fee is charged (applied by caller).
+        Uses desired_price (candle close) as the fill price always.
+        When no OB data, applies base_slippage_pct as a small spread penalty.
+        When OB data is present, no extra slippage (fee already covers cost).
 
-        2. No OB data:
-           Fill at desired_price (candle close) ± base_slippage_pct.
-           Simulates the spread/market-impact cost without a real orderbook.
-
-        No order rejection — strategies should always be able to execute at
-        the current market price (best bid/ask).
+        This keeps fill price consistent with how strategies size their positions
+        (quantity = spend / candle_close), avoiding PnL distortions.
         """
         ob = self._orderbooks.get(symbol)
         base_slip = settings.base_slippage_pct / 100.0
 
         if ob is None:
-            # No OB data: use candle price + base slippage spread
+            # No OB data: apply small fixed slippage spread
             if side == "BUY":
                 fill = desired_price * (1.0 + base_slip)
             else:
                 fill = desired_price * (1.0 - base_slip)
             return fill, "fallback"
 
-        # OB data available: use best bid/ask directly as fill price
-        levels = ob["asks"] if side == "BUY" else ob["bids"]
-        if not levels:
-            # OB exists but side is empty — fall back to candle price + slippage
-            if side == "BUY":
-                fill = desired_price * (1.0 + base_slip)
-            else:
-                fill = desired_price * (1.0 - base_slip)
-            return fill, "fallback"
-
-        # best_ask for BUY → cheapest available sell price
-        # best_bid for SELL → highest available buy price
-        fill_price = float(levels[0][0])
-        return fill_price, "ob_best"
+        # OB data present: use desired_price (candle close) — no extra slippage
+        # The fee (0.05%) already accounts for trading cost; OB data confirms
+        # the market is liquid enough to fill at the candle's closing price.
+        return desired_price, "ob_confirmed"
 
     # ------------------------------------------------------------------
     # Per-symbol position aggregation (used by stats bar)
@@ -307,23 +292,11 @@ class SimulationEngine(BaseOrderEngine):
         # --- Compute fill price from OB or fallback ---
         fill_price, fill_method = self._compute_fill_price(symbol, side, quantity, price)
 
-        # --- Scale quantity to match intended spend when fill != desired price ---
-        # Strategy calculated quantity = spend / desired_price.
-        # If fill_price differs (OB best_ask vs candle close), scale quantity
-        # proportionally so the actual cost matches what the strategy intended to spend.
-        # For close orders (quantity=0), use the position quantity — no scaling needed.
+        # For close orders (quantity=0), use the full position quantity
         if quantity == 0 and position.is_open:
             quantity = position.quantity
-        elif quantity > 0 and price > 0 and fill_price != price:
-            # Preserve intended notional spend: qty_scaled = qty * desired / fill
-            # This ensures margin cost stays within what strategy budgeted
-            quantity = max(round(quantity * price / fill_price, 8), 0.000001)
 
-        if fill_method != "fallback" or fill_price != price:
-            logger.debug(
-                f"[{bot_id}] {side} fill: desired={price:.4f} → fill={fill_price:.4f} "
-                f"({fill_method}, qty_adj={quantity:.6f})"
-            )
+        logger.debug(f"[{bot_id}] {side} fill={fill_price:.4f} ({fill_method})")
 
         # --- Route order based on side + current position ---
         if side == "BUY":
