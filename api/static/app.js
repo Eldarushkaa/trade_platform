@@ -694,15 +694,15 @@ function _renderChart(snaps, trades, windowMs) {
       labels,
       datasets: [
         {
-          label: 'Coin Value', data: values,
+          label: 'Margin / Unrealized', data: coinValues,
           borderColor: 'rgba(0,200,150,0.6)', backgroundColor: 'rgba(0,200,150,0.15)',
-          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true,
+          borderWidth: 0, pointRadius: 0, fill: 'origin', tension: 0.3, spanGaps: true,
           yAxisID: 'yPortfolio', order: 3,
         },
         {
           label: 'USDT Balance', data: usdtValues,
           borderColor: 'rgba(108,99,255,0.6)', backgroundColor: 'rgba(108,99,255,0.2)',
-          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true,
+          borderWidth: 0, pointRadius: 0, fill: 'origin', tension: 0.3, spanGaps: true,
           yAxisID: 'yPortfolio', order: 2,
         },
         {
