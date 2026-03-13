@@ -205,6 +205,12 @@ class SimulationEngine(BaseOrderEngine):
                 fill = desired_price * (1 - base_slip)
             return fill, "fallback"
 
+        # Use the best available OB price as reference for slippage measurement.
+        # This avoids false rejections when the market has moved since the signal
+        # fired (desired_price may be stale by several minutes in live trading).
+        # best_ask = lowest ask (for BUY), best_bid = highest bid (for SELL)
+        reference_price = levels[0][0]
+
         remaining = quantity
         total_cost = 0.0
         total_filled = 0.0
@@ -227,12 +233,14 @@ class SimulationEngine(BaseOrderEngine):
 
         fill_price = total_cost / total_filled if total_filled > 0 else desired_price
 
-        # Reject if slippage too high
-        slippage = abs(fill_price - desired_price) / desired_price
+        # Reject if VWAP fill deviates too much from the best OB price.
+        # Measures real market impact (walk of OB levels) vs best available price,
+        # NOT vs the strategy's signal price which may be stale.
+        slippage = abs(fill_price - reference_price) / reference_price
         if slippage > max_slip:
             raise ValueError(
                 f"Order rejected: slippage {slippage * 100:.3f}% > max {settings.max_slippage_pct:.2f}% "
-                f"(desired={desired_price:.4f}, fill={fill_price:.4f})"
+                f"(best={reference_price:.4f}, fill={fill_price:.4f})"
             )
 
         return fill_price, "ob_vwap"
