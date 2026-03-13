@@ -76,7 +76,16 @@
   <main class="main-panel">
     <div id="no-bot">← Select a bot to view details</div>
     <div id="bot-detail" style="display:none">
-      <h2 id="detail-title">Portfolio</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <h2 id="detail-title" style="margin:0">Portfolio</h2>
+        <!-- Period toggle — applies to both stats grid and chart -->
+        <div id="period-toggle-bar" style="display:flex;gap:6px;align-items:center">
+          <span style="font-size:10px;color:var(--muted)">Period:</span>
+          <button class="stats-period-btn active" id="ptbtn-all"  onclick="toggleStatsMode('all')">All time</button>
+          <button class="stats-period-btn"        id="ptbtn-24h"  onclick="toggleStatsMode('24h')">Last 24h</button>
+          <button class="stats-period-btn"        id="ptbtn-3h"   onclick="toggleStatsMode('3h')">Last 3h</button>
+        </div>
+      </div>
 
       <!-- Position info row -->
       <div class="position-row" id="position-row"></div>
@@ -199,6 +208,6 @@
 
 <!-- Lightweight chart via Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>

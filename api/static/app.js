@@ -314,6 +314,11 @@ async function loadPortfolio(name) {
 
 function toggleStatsMode(mode) {
   _statsMode = mode;
+  // Sync button active states
+  ['all', '24h', '3h'].forEach(m => {
+    const btn = document.getElementById(`ptbtn-${m}`);
+    if (btn) btn.classList.toggle('active', m === mode);
+  });
   if (_portfolioData) {
     _renderPortfolio(_portfolioData.p, _portfolioData.stats24h, _portfolioData.stats3h);
   }
@@ -397,28 +402,19 @@ function _renderPortfolio(p, stats24h, stats3h) {
       </div>`;
   }
 
-  // ── Stats grid with period toggle ─────────────────────────────
+  // ── Stats grid ────────────────────────────────────────────────
   const grid = document.getElementById('stats-grid');
   const s = _statsMode === '3h' ? stats3h
           : _statsMode === '24h' ? stats24h
           : null;
   const periodLabel = _statsMode === '3h' ? '3h' : _statsMode === '24h' ? '24h' : '';
 
-  // Period toggle buttons
-  const toggleHTML = `
-    <div class="stats-period-toggle" style="grid-column:1/-1;display:flex;gap:6px;align-items:center;margin-bottom:4px">
-      <span style="font-size:10px;color:var(--muted);margin-right:4px">Period:</span>
-      <button class="stats-period-btn${_statsMode === 'all' ? ' active' : ''}" onclick="toggleStatsMode('all')">All time</button>
-      <button class="stats-period-btn${_statsMode === '24h' ? ' active' : ''}" onclick="toggleStatsMode('24h')">Last 24h</button>
-      <button class="stats-period-btn${_statsMode === '3h' ? ' active' : ''}" onclick="toggleStatsMode('3h')">Last 3h</button>
-    </div>`;
-
   if (s && _statsMode !== 'all') {
     // Time-windowed mode: show trade-based stats for the selected period
     const winRate = (s.win_count + s.loss_count) > 0
       ? (s.win_count / (s.win_count + s.loss_count) * 100).toFixed(1) + '%'
       : '—';
-    grid.innerHTML = toggleHTML + `
+    grid.innerHTML = `
       <div class="stat-card">
         <div class="label">Realized P&L (${periodLabel})</div>
         <div class="value ${sign(s.realized_pnl)}">${s.realized_pnl >= 0 ? '+' : ''}$${fmt(s.realized_pnl)}</div>
@@ -453,7 +449,7 @@ function _renderPortfolio(p, stats24h, stats3h) {
       </div>`;
   } else {
     // All-time mode
-    grid.innerHTML = toggleHTML + `
+    grid.innerHTML = `
       <div class="stat-card">
         <div class="label">Free USDT</div>
         <div class="value neutral">$${fmt(p.usdt_balance)}</div>
@@ -492,8 +488,8 @@ function _renderPortfolio(p, stats24h, stats3h) {
 async function loadHistory(name) {
   try {
     const [snaps, trades] = await Promise.all([
-      get(`${API}/portfolio/${name}/history?limit=500`),
-      get(`${API}/trades/${name}?limit=500`).catch(() => []),
+      get(`${API}/portfolio/${name}/history?limit=1000`),
+      get(`${API}/trades/${name}?limit=1000`).catch(() => []),
     ]);
 
     if (snaps.length === 0) {
@@ -574,15 +570,17 @@ function _renderChart(snaps, trades, windowMs) {
   if (trades.length > 0) {
     trades.forEach(t => {
       const tMs = new Date(t.timestamp).getTime();
-      // Filter: only trades visible in current window (with generous buffer)
-      if (tMs < chartStart - gapThreshold * 2 || tMs > chartEnd + gapThreshold * 2) return;
+      // Filter: only trades within the visible window (with a 5-min buffer either side)
+      if (tMs < chartStart - 300000 || tMs > chartEnd + 300000) return;
 
+      // Find nearest snapshot — always show the marker even if far from a snapshot
       let bestIdx = 0, bestDist = Infinity;
       for (let i = 0; i < snapTimestamps.length; i++) {
         const dist = Math.abs(snapTimestamps[i] - tMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = i; }
       }
-      if (bestDist > gapThreshold) return;
+      // Only skip if snapshots array is empty or distance > 2 hours
+      if (bestDist > 2 * 3600 * 1000) return;
 
       const action = (t.position_side || '').toUpperCase();
       const isLong = action.includes('LONG');

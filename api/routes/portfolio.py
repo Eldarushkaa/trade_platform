@@ -129,7 +129,7 @@ async def get_portfolio(bot_name: str):
 @router.get("/{bot_name}/history", response_model=list[SnapshotOut])
 async def get_portfolio_history(
     bot_name: str,
-    limit: int = Query(default=200, ge=1, le=1000),
+    limit: int = Query(default=200, ge=1, le=2000),
 ):
     """
     Return historical portfolio snapshots for charting.

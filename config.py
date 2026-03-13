@@ -47,10 +47,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     # --- Trading fees ---
-    # Binance Futures taker fee: 0.05% (we always simulate market orders).
-    # This is roughly half of the spot fee (0.10%).
-    # 0.0005 = 0.05% per trade (deducted from USDT, invisible to strategies).
-    simulation_fee_rate: float = Field(default=0.0005, description="Fee rate per trade (0.0005 = 0.05%)")
+    # Binance Futures fees:
+    #   Maker (limit orders resting in book): 0.02%  → 0.0002
+    #   Taker (market orders, IOC, FOK):      0.05%  → 0.0005
+    # The simulation always places market orders → taker fee applies.
+    maker_fee_rate: float = Field(default=0.0002, description="Maker fee rate (0.0002 = 0.02%)")
+    taker_fee_rate: float = Field(default=0.0005, description="Taker fee rate (0.0005 = 0.05%)")
+    # Alias kept for backward compat — points to taker (market orders always eat the book)
+    simulation_fee_rate: float = Field(default=0.0005, description="Active fee rate for simulated market orders (taker)")
 
     # --- Slippage simulation ---
     # When an orderbook snapshot is available, we walk the OB levels to compute

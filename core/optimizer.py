@@ -350,25 +350,25 @@ async def optimize_params(
         raise ValueError(f"No historical data for {symbol}. Download it first.")
     logger.info(f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol}")
 
-    # --- Pre-load orderbook data if strategy supports injection ---
+    # --- Pre-load orderbook data for ALL strategies ---
+    # Purpose 1: OB-signal strategies (_inject_orderbook) need it for signal generation.
+    # Purpose 2: ALL strategies benefit from OB-aware VWAP fill prices (same as /backtest/run).
+    #            Without this, optimizer uses fixed slippage but "Backtest with Optimized"
+    #            uses real OB slippage — params found by optimizer may produce 0 trades there.
     _cached_orderbook: list | None = None
-    if hasattr(strategy_class, "_inject_orderbook") or (
-        hasattr(strategy_class, "__mro__") and any(
-            hasattr(c, "_inject_orderbook") for c in strategy_class.__mro__
+    _ob_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
+    if _ob_data:
+        _cached_orderbook = _ob_data
+        ob_aware = hasattr(strategy_class, "_inject_orderbook")
+        logger.info(
+            f"Optimizer: pre-loaded {len(_cached_orderbook)} orderbook snapshots for {symbol} "
+            f"(fill slippage=OB-VWAP, signal_inject={ob_aware})"
         )
-    ):
-        _cached_orderbook = await repo.get_orderbook_snapshots_for_backtest(symbol)
-        if _cached_orderbook:
-            logger.info(
-                f"Optimizer: pre-loaded {len(_cached_orderbook)} orderbook snapshots "
-                f"for {symbol} (orderbook-aware strategy)"
-            )
-        else:
-            logger.warning(
-                f"Optimizer: no orderbook snapshots for {symbol} — "
-                f"ob_wall signals will be inactive during backtest. "
-                f"Run scripts/collect_orderbook.py to gather data."
-            )
+    else:
+        logger.info(
+            f"Optimizer: no orderbook snapshots for {symbol} — using fixed slippage fallback. "
+            f"Run scripts/collect_orderbook.py to gather data."
+        )
 
     # Count optimizable dimensions
     n_dims = sum(1 for v in schema.values() if v.get("optimize", True))
