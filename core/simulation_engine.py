@@ -6,6 +6,7 @@ USDT-Margined Futures simulation:
   - Routes BUY/SELL to open/close positions based on current state
   - Checks liquidation on every price tick
   - Applies configurable trading fees
+  - OB-aware VWAP fill price (walks order book levels for realistic slippage)
 
 Order routing logic:
     BUY + no position  → open LONG
@@ -13,10 +14,22 @@ Order routing logic:
     SELL + no position  → open SHORT
     SELL + LONG open    → close LONG
 
+Slippage model:
+    When an orderbook snapshot is loaded via update_orderbook(), place_order()
+    walks the relevant side (asks for BUY, bids for SELL) to compute a VWAP
+    fill price that reflects real market impact.
+
+    If no OB data is available, a small fixed slippage (settings.base_slippage_pct)
+    is applied as a fallback.
+
+    If VWAP fill price deviates more than settings.max_slippage_pct from the
+    strategy's desired price, the order is rejected (simulating reject-on-slippage).
+
 Key design: SimulationEngine and (future) LiveBinanceEngine both inherit
 from BaseOrderEngine. Strategies only ever call BaseOrderEngine methods,
 so switching to live trading requires ZERO strategy code changes.
 """
+import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -90,6 +103,9 @@ class SimulationEngine(BaseOrderEngine):
         self._prices: dict[str, float] = {}
         self._fee_rates: dict[str, float] = {}
         self._skip_db: bool = False  # Set True during backtest to avoid DB writes
+        # Latest orderbook snapshots per symbol for realistic fill simulation
+        # { "BTCUSDT": {"bids": [(price, qty), ...], "asks": [(price, qty), ...]} }
+        self._orderbooks: dict[str, dict] = {}
 
     def register_bot(
         self,
@@ -130,6 +146,96 @@ class SimulationEngine(BaseOrderEngine):
     def get_price(self, symbol: str) -> Optional[float]:
         """Return the latest known price for a symbol."""
         return self._prices.get(symbol)
+
+    def update_orderbook(self, symbol: str, snapshot: dict) -> None:
+        """
+        Store the latest orderbook snapshot for a symbol.
+        Called by:
+          - BotManager background task (live mode, every 60s from DB)
+          - BacktestEngine before each candle (when OB data exists)
+
+        Snapshot format:
+            { "bids_json": "[[price, qty], ...]", "asks_json": "...", ... }
+            OR: { "bids": [(price, qty), ...], "asks": [(price, qty), ...] }
+        """
+        try:
+            bids_raw = snapshot.get("bids_json") or snapshot.get("bids", "[]")
+            asks_raw = snapshot.get("asks_json") or snapshot.get("asks", "[]")
+            bids = [(float(p), float(q)) for p, q in (json.loads(bids_raw) if isinstance(bids_raw, str) else bids_raw)]
+            asks = [(float(p), float(q)) for p, q in (json.loads(asks_raw) if isinstance(asks_raw, str) else asks_raw)]
+            self._orderbooks[symbol] = {"bids": bids, "asks": asks}
+        except Exception as e:
+            logger.warning(f"Failed to parse orderbook snapshot for {symbol}: {e}")
+
+    def _compute_fill_price(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        desired_price: float,
+    ) -> tuple[float, str]:
+        """
+        Compute a realistic fill price for a market order by walking OB levels.
+
+        For BUY: walks ask side ascending (cheapest asks first).
+        For SELL: walks bid side descending (best bids first).
+
+        Returns:
+            (fill_price, method) where method is "ob_vwap", "fallback", or raises
+            ValueError if slippage exceeds max_slippage_pct.
+        """
+        ob = self._orderbooks.get(symbol)
+        max_slip = settings.max_slippage_pct / 100.0
+        base_slip = settings.base_slippage_pct / 100.0
+
+        if ob is None:
+            # No OB data: apply fixed base slippage
+            if side == "BUY":
+                fill = desired_price * (1 + base_slip)
+            else:
+                fill = desired_price * (1 - base_slip)
+            return fill, "fallback"
+
+        # Walk levels to compute VWAP fill
+        levels = ob["asks"] if side == "BUY" else ob["bids"]
+        if not levels:
+            if side == "BUY":
+                fill = desired_price * (1 + base_slip)
+            else:
+                fill = desired_price * (1 - base_slip)
+            return fill, "fallback"
+
+        remaining = quantity
+        total_cost = 0.0
+        total_filled = 0.0
+
+        for level_price, level_qty in levels:
+            if remaining <= 0:
+                break
+            fill_qty = min(remaining, level_qty)
+            total_cost += fill_qty * level_price
+            total_filled += fill_qty
+            remaining -= fill_qty
+
+        if total_filled < quantity * 0.999:
+            # OB too thin to fill entirely — use last level price for remainder
+            if levels:
+                last_price = levels[-1][0]
+                extra = remaining * last_price
+                total_cost += extra
+                total_filled += remaining
+
+        fill_price = total_cost / total_filled if total_filled > 0 else desired_price
+
+        # Reject if slippage too high
+        slippage = abs(fill_price - desired_price) / desired_price
+        if slippage > max_slip:
+            raise ValueError(
+                f"Order rejected: slippage {slippage * 100:.3f}% > max {settings.max_slippage_pct:.2f}% "
+                f"(desired={desired_price:.4f}, fill={fill_price:.4f})"
+            )
+
+        return fill_price, "ob_vwap"
 
     # ------------------------------------------------------------------
     # Per-symbol position aggregation (used by stats bar)
@@ -188,13 +294,18 @@ class SimulationEngine(BaseOrderEngine):
         price: float,
     ) -> dict:
         """
-        Execute a simulated futures order.
+        Execute a simulated futures order with realistic fill price.
 
         Routing:
             BUY + no position  → open LONG
             BUY + SHORT open   → close SHORT
             SELL + no position  → open SHORT
             SELL + LONG open    → close LONG
+
+        Fill price:
+            Uses OB-aware VWAP fill if orderbook snapshot is available,
+            otherwise applies base_slippage_pct as a fixed spread.
+            Rejects if fill deviates > max_slippage_pct from desired price.
 
         Fee is applied after the trade executes.
         """
@@ -203,18 +314,29 @@ class SimulationEngine(BaseOrderEngine):
         position = portfolio.position
         fee_rate = self._fee_rates.get(bot_id, settings.simulation_fee_rate)
 
+        # --- Compute realistic fill price ---
+        # For close orders (quantity=0), use the position quantity
+        fill_qty = position.quantity if quantity == 0 and position.is_open else quantity
+        fill_price, fill_method = self._compute_fill_price(symbol, side, fill_qty, price)
+
+        if fill_method != "fallback" or fill_price != price:
+            logger.debug(
+                f"[{bot_id}] {side} fill: desired={price:.4f} → fill={fill_price:.4f} "
+                f"({fill_method}, slip={(abs(fill_price - price) / price * 100):.4f}%)"
+            )
+
         # --- Route order based on side + current position ---
         if side == "BUY":
             if position.side == "SHORT" and position.is_open:
                 # Close SHORT — use position's quantity for fee calc
                 close_qty = position.quantity
-                fee_usdt = round(close_qty * price * fee_rate, 8)
-                result = portfolio.close_short(price)
+                fee_usdt = round(close_qty * fill_price * fee_rate, 8)
+                result = portfolio.close_short(fill_price)
                 quantity = close_qty  # for DB record
             elif not position.is_open:
                 # Open LONG — check margin + fee before executing
-                fee_usdt = round(quantity * price * fee_rate, 8)
-                notional = quantity * price
+                fee_usdt = round(quantity * fill_price * fee_rate, 8)
+                notional = quantity * fill_price
                 margin_needed = notional / portfolio.leverage
                 if margin_needed + fee_usdt > portfolio.usdt_balance:
                     raise ValueError(
@@ -222,7 +344,7 @@ class SimulationEngine(BaseOrderEngine):
                         f"Need {margin_needed + fee_usdt:.4f} (margin + fee), "
                         f"have {portfolio.usdt_balance:.4f}"
                     )
-                result = portfolio.open_long(quantity, price)
+                result = portfolio.open_long(quantity, fill_price)
             else:
                 raise ValueError(
                     f"[{bot_id}] Cannot BUY — already in {position.side} position"
@@ -232,13 +354,13 @@ class SimulationEngine(BaseOrderEngine):
             if position.side == "LONG" and position.is_open:
                 # Close LONG — use position's quantity for fee calc
                 close_qty = position.quantity
-                fee_usdt = round(close_qty * price * fee_rate, 8)
-                result = portfolio.close_long(price)
+                fee_usdt = round(close_qty * fill_price * fee_rate, 8)
+                result = portfolio.close_long(fill_price)
                 quantity = close_qty  # for DB record
             elif not position.is_open:
                 # Open SHORT — check margin + fee before executing
-                fee_usdt = round(quantity * price * fee_rate, 8)
-                notional = quantity * price
+                fee_usdt = round(quantity * fill_price * fee_rate, 8)
+                notional = quantity * fill_price
                 margin_needed = notional / portfolio.leverage
                 if margin_needed + fee_usdt > portfolio.usdt_balance:
                     raise ValueError(
@@ -246,13 +368,16 @@ class SimulationEngine(BaseOrderEngine):
                         f"Need {margin_needed + fee_usdt:.4f} (margin + fee), "
                         f"have {portfolio.usdt_balance:.4f}"
                     )
-                result = portfolio.open_short(quantity, price)
+                result = portfolio.open_short(quantity, fill_price)
             else:
                 raise ValueError(
                     f"[{bot_id}] Cannot SELL — already in {position.side} position"
                 )
         else:
             raise ValueError(f"Invalid order side: '{side}'. Must be 'BUY' or 'SELL'.")
+
+        result["desired_price"] = price
+        result["fill_method"] = fill_method
 
         # --- Apply fee ---
         portfolio.deduct_fee(fee_usdt)

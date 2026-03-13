@@ -216,6 +216,37 @@ async def get_bot_trade_stats(bot_id: str) -> dict:
     }
 
 
+async def get_bot_trade_stats_since(bot_id: str, since: "datetime") -> dict:
+    """Return aggregated trade stats for a bot since a given datetime.
+    Includes: trade_count, total_fees_paid, realized_pnl, win_count, loss_count."""
+    from datetime import datetime as _dt
+    db = get_db()
+    since_str = since.isoformat()
+    async with db.execute(
+        """
+        SELECT
+            COUNT(*) AS trade_count,
+            COALESCE(SUM(fee_usdt), 0.0) AS total_fees_paid,
+            COALESCE(SUM(realized_pnl), 0.0) AS realized_pnl,
+            SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count,
+            SUM(CASE WHEN realized_pnl <= 0 AND realized_pnl IS NOT NULL THEN 1 ELSE 0 END) AS loss_count
+        FROM trades
+        WHERE bot_id = ? AND timestamp >= ?
+        """,
+        (bot_id, since_str),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return {"trade_count": 0, "total_fees_paid": 0.0, "realized_pnl": 0.0, "win_count": 0, "loss_count": 0}
+    return {
+        "trade_count": row["trade_count"] or 0,
+        "total_fees_paid": float(row["total_fees_paid"] or 0),
+        "realized_pnl": float(row["realized_pnl"] or 0),
+        "win_count": row["win_count"] or 0,
+        "loss_count": row["loss_count"] or 0,
+    }
+
+
 # ------------------------------------------------------------------
 # Portfolio Snapshots
 # ------------------------------------------------------------------

@@ -2,10 +2,11 @@
 API routes for trade history.
 
 GET /api/trades/{bot_name}?limit=100&offset=0  — paginated trade history
+GET /api/trades/{bot_name}/stats?hours=24      — aggregated stats for time window
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from db import repository as repo
@@ -70,3 +71,21 @@ async def get_trade_count(bot_name: str):
         raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
     count = await repo.get_trade_count(bot_name)
     return {"bot_id": bot_name, "trade_count": count}
+
+
+@router.get("/{bot_name}/stats")
+async def get_trade_stats(
+    bot_name: str,
+    hours: int = Query(default=24, ge=1, le=720, description="Time window in hours"),
+):
+    """
+    Return aggregated trade statistics for a bot over the last N hours.
+    Includes: trade_count, total_fees_paid, realized_pnl, win_count, loss_count.
+    """
+    bot_record = await repo.get_bot(bot_name)
+    if bot_record is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
+
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stats = await repo.get_bot_trade_stats_since(bot_name, since)
+    return {"bot_id": bot_name, "hours": hours, **stats}

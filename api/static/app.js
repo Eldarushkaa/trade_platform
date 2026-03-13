@@ -6,6 +6,10 @@ let _settingsOpen = false;
 let _backtestOpen = false;
 let _backtestChart = null;
 let _lastOptResult = null;     // cached optimization result for "Apply" button
+let _botsCache = [];           // last known bots list [{name, symbol, is_running}]
+let _statsMode = 'all';        // 'all' | '24h' | '3h' — period for stats grid + chart
+let _portfolioData = null;     // cached portfolio state + trade stats for current bot
+let _historyData = null;       // cached {snaps, trades} for chart re-render on mode switch
 
 // ── Fetch helpers ──────────────────────────────────────────────
 async function get(url) {
@@ -105,6 +109,9 @@ async function loadBots() {
       card.addEventListener('click', () => selectBot(bot.name));
       container.appendChild(card);
     });
+
+    // Cache bots list for use in loadDataStatus (symbol lookup)
+    _botsCache = bots;
 
     // Also refresh global stats whenever bots list refreshes
     renderGlobalStats(portfolios, bots, coinData, obStatus);
@@ -292,80 +299,161 @@ async function loadBotDetail(name) {
 
 async function loadPortfolio(name) {
   try {
-    const p = await get(`${API}/portfolio/${name}`);
-    const sign = v => v >= 0 ? 'positive' : 'negative';
+    const [p, stats24h, stats3h] = await Promise.all([
+      get(`${API}/portfolio/${name}`),
+      get(`${API}/trades/${name}/stats?hours=24`).catch(() => null),
+      get(`${API}/trades/${name}/stats?hours=3`).catch(() => null),
+    ]);
 
-    // ── Position info row ──────────────────────────────
-    const posRow = document.getElementById('position-row');
-    const side = p.position_side || 'NONE';
-    const badgeClass = side === 'LONG' ? 'long' : side === 'SHORT' ? 'short' : 'none';
-    const hasPosition = side !== 'NONE' && p.position_qty > 0;
+    // Cache for toggle re-render
+    _portfolioData = { p, stats24h, stats3h };
 
-    // Margin ratio color: green < 0.3, yellow 0.3-0.6, orange 0.6-0.8, red > 0.8
-    const mr = p.margin_ratio || 0;
-    let mrColor = 'var(--green)';
-    if (mr >= 0.8) mrColor = 'var(--red)';
-    else if (mr >= 0.6) mrColor = 'var(--orange)';
-    else if (mr >= 0.3) mrColor = 'var(--yellow)';
+    _renderPortfolio(p, stats24h, stats3h);
+  } catch (e) { console.warn('loadPortfolio', e); }
+}
 
-    if (hasPosition) {
-      posRow.style.display = 'grid';
-      posRow.innerHTML = `
-        <div>
-          <div class="label">Position</div>
-          <div class="val"><span class="pos-badge ${badgeClass}">${side}</span></div>
-        </div>
-        <div>
-          <div class="label">Size</div>
-          <div class="val">${p.position_qty.toFixed(6)}</div>
-        </div>
-        <div>
-          <div class="label">Entry Price</div>
-          <div class="val">$${fmt(p.entry_price)}</div>
-        </div>
-        <div>
-          <div class="label">Leverage</div>
-          <div class="val">${p.leverage}×</div>
-        </div>
-        <div>
-          <div class="label">Margin Locked</div>
-          <div class="val">$${fmt(p.margin_locked)}</div>
-        </div>
-        <div>
-          <div class="label">Liq. Price</div>
-          <div class="val" style="color:var(--red)">$${fmt(p.liquidation_price)}</div>
-        </div>
-        <div>
-          <div class="label">Margin Ratio</div>
-          <div class="val" style="color:${mrColor}">${(mr * 100).toFixed(1)}%</div>
-          <div class="margin-bar-bg">
-            <div class="margin-bar-fill" style="width:${Math.min(mr * 100, 100)}%;background:${mrColor}"></div>
-          </div>
-        </div>
-        <div>
-          <div class="label">Unrealized P&L</div>
-          <div class="val ${sign(p.unrealized_pnl)}">${p.unrealized_pnl >= 0 ? '+' : ''}$${fmt(p.unrealized_pnl)}</div>
-        </div>`;
-    } else {
-      posRow.style.display = 'grid';
-      posRow.innerHTML = `
-        <div>
-          <div class="label">Position</div>
-          <div class="val"><span class="pos-badge none">NONE</span></div>
-        </div>
-        <div>
-          <div class="label">Leverage</div>
-          <div class="val">${p.leverage || '—'}×</div>
-        </div>
-        <div>
-          <div class="label">Status</div>
-          <div class="val" style="color:var(--muted)">Waiting for signal...</div>
-        </div>`;
-    }
+function toggleStatsMode(mode) {
+  _statsMode = mode;
+  if (_portfolioData) {
+    _renderPortfolio(_portfolioData.p, _portfolioData.stats24h, _portfolioData.stats3h);
+  }
+  // Re-render chart to match time window
+  if (_historyData) {
+    const windowMs = mode === '3h' ? 3 * 3600 * 1000
+                   : mode === '24h' ? 24 * 3600 * 1000
+                   : null;
+    _renderChart(_historyData.snaps, _historyData.trades, windowMs);
+  }
+}
 
-    // ── Stats grid ─────────────────────────────────────
-    const grid = document.getElementById('stats-grid');
-    grid.innerHTML = `
+function _renderPortfolio(p, stats24h, stats3h) {
+  const sign = v => v >= 0 ? 'positive' : 'negative';
+
+  // ── Position info row ──────────────────────────────
+  const posRow = document.getElementById('position-row');
+  const side = p.position_side || 'NONE';
+  const badgeClass = side === 'LONG' ? 'long' : side === 'SHORT' ? 'short' : 'none';
+  const hasPosition = side !== 'NONE' && p.position_qty > 0;
+
+  // Margin ratio color: green < 0.3, yellow 0.3-0.6, orange 0.6-0.8, red > 0.8
+  const mr = p.margin_ratio || 0;
+  let mrColor = 'var(--green)';
+  if (mr >= 0.8) mrColor = 'var(--red)';
+  else if (mr >= 0.6) mrColor = 'var(--orange)';
+  else if (mr >= 0.3) mrColor = 'var(--yellow)';
+
+  if (hasPosition) {
+    posRow.style.display = 'grid';
+    posRow.innerHTML = `
+      <div>
+        <div class="label">Position</div>
+        <div class="val"><span class="pos-badge ${badgeClass}">${side}</span></div>
+      </div>
+      <div>
+        <div class="label">Size</div>
+        <div class="val">${p.position_qty.toFixed(6)}</div>
+      </div>
+      <div>
+        <div class="label">Entry Price</div>
+        <div class="val">$${fmt(p.entry_price)}</div>
+      </div>
+      <div>
+        <div class="label">Leverage</div>
+        <div class="val">${p.leverage}×</div>
+      </div>
+      <div>
+        <div class="label">Margin Locked</div>
+        <div class="val">$${fmt(p.margin_locked)}</div>
+      </div>
+      <div>
+        <div class="label">Liq. Price</div>
+        <div class="val" style="color:var(--red)">$${fmt(p.liquidation_price)}</div>
+      </div>
+      <div>
+        <div class="label">Margin Ratio</div>
+        <div class="val" style="color:${mrColor}">${(mr * 100).toFixed(1)}%</div>
+        <div class="margin-bar-bg">
+          <div class="margin-bar-fill" style="width:${Math.min(mr * 100, 100)}%;background:${mrColor}"></div>
+        </div>
+      </div>
+      <div>
+        <div class="label">Unrealized P&L</div>
+        <div class="val ${sign(p.unrealized_pnl)}">${p.unrealized_pnl >= 0 ? '+' : ''}$${fmt(p.unrealized_pnl)}</div>
+      </div>`;
+  } else {
+    posRow.style.display = 'grid';
+    posRow.innerHTML = `
+      <div>
+        <div class="label">Position</div>
+        <div class="val"><span class="pos-badge none">NONE</span></div>
+      </div>
+      <div>
+        <div class="label">Leverage</div>
+        <div class="val">${p.leverage || '—'}×</div>
+      </div>
+      <div>
+        <div class="label">Status</div>
+        <div class="val" style="color:var(--muted)">Waiting for signal...</div>
+      </div>`;
+  }
+
+  // ── Stats grid with period toggle ─────────────────────────────
+  const grid = document.getElementById('stats-grid');
+  const s = _statsMode === '3h' ? stats3h
+          : _statsMode === '24h' ? stats24h
+          : null;
+  const periodLabel = _statsMode === '3h' ? '3h' : _statsMode === '24h' ? '24h' : '';
+
+  // Period toggle buttons
+  const toggleHTML = `
+    <div class="stats-period-toggle" style="grid-column:1/-1;display:flex;gap:6px;align-items:center;margin-bottom:4px">
+      <span style="font-size:10px;color:var(--muted);margin-right:4px">Period:</span>
+      <button class="stats-period-btn${_statsMode === 'all' ? ' active' : ''}" onclick="toggleStatsMode('all')">All time</button>
+      <button class="stats-period-btn${_statsMode === '24h' ? ' active' : ''}" onclick="toggleStatsMode('24h')">Last 24h</button>
+      <button class="stats-period-btn${_statsMode === '3h' ? ' active' : ''}" onclick="toggleStatsMode('3h')">Last 3h</button>
+    </div>`;
+
+  if (s && _statsMode !== 'all') {
+    // Time-windowed mode: show trade-based stats for the selected period
+    const winRate = (s.win_count + s.loss_count) > 0
+      ? (s.win_count / (s.win_count + s.loss_count) * 100).toFixed(1) + '%'
+      : '—';
+    grid.innerHTML = toggleHTML + `
+      <div class="stat-card">
+        <div class="label">Realized P&L (${periodLabel})</div>
+        <div class="value ${sign(s.realized_pnl)}">${s.realized_pnl >= 0 ? '+' : ''}$${fmt(s.realized_pnl)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Net P&L after fees (${periodLabel})</div>
+        <div class="value ${sign(s.realized_pnl - s.total_fees_paid)}">${(s.realized_pnl - s.total_fees_paid) >= 0 ? '+' : ''}$${fmt(s.realized_pnl - s.total_fees_paid)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Trades (${periodLabel})</div>
+        <div class="value neutral">${s.trade_count}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Win Rate (${periodLabel})</div>
+        <div class="value ${s.win_count > s.loss_count ? 'positive' : s.win_count < s.loss_count ? 'negative' : 'neutral'}">${winRate}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Fees Paid (${periodLabel})</div>
+        <div class="value" style="color:var(--yellow)">$${fmt(s.total_fees_paid)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Free USDT</div>
+        <div class="value neutral">$${fmt(p.usdt_balance)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total Value</div>
+        <div class="value neutral">$${fmt(p.total_value_usdt)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Return (all time)</div>
+        <div class="value ${sign(p.return_pct)}">${p.return_pct >= 0 ? '+' : ''}${p.return_pct.toFixed(2)}%</div>
+      </div>`;
+  } else {
+    // All-time mode
+    grid.innerHTML = toggleHTML + `
       <div class="stat-card">
         <div class="label">Free USDT</div>
         <div class="value neutral">$${fmt(p.usdt_balance)}</div>
@@ -398,304 +486,235 @@ async function loadPortfolio(name) {
         <div class="label">Liquidations</div>
         <div class="value ${p.liquidation_count > 0 ? 'negative' : 'neutral'}">${p.liquidation_count}</div>
       </div>`;
-  } catch (e) { console.warn('loadPortfolio', e); }
+  }
 }
 
 async function loadHistory(name) {
   try {
-    // Fetch snapshots and trades in parallel
     const [snaps, trades] = await Promise.all([
-      get(`${API}/portfolio/${name}/history?limit=200`),
-      get(`${API}/trades/${name}?limit=200`).catch(() => []),
+      get(`${API}/portfolio/${name}/history?limit=500`),
+      get(`${API}/trades/${name}?limit=500`).catch(() => []),
     ]);
 
     if (snaps.length === 0) {
-      const ctx = document.getElementById('portfolio-chart').getContext('2d');
       if (portfolioChart) { portfolioChart.destroy(); portfolioChart = null; }
       return;
     }
 
-    const t0 = new Date(snaps[0].timestamp).getTime();
+    // Cache for mode switching
+    _historyData = { snaps, trades };
 
-    // Detect gap threshold
-    const deltas = [];
-    for (let i = 1; i < Math.min(snaps.length, 11); i++) {
-      deltas.push(new Date(snaps[i].timestamp) - new Date(snaps[i-1].timestamp));
-    }
-    deltas.sort((a,b)=>a-b);
-    const medianDelta = deltas.length ? deltas[Math.floor(deltas.length/2)] : 30000;
-    const gapThreshold = Math.max(medianDelta * 3, 120000);
+    // Render with current window
+    const windowMs = _statsMode === '3h' ? 3 * 3600 * 1000
+                   : _statsMode === '24h' ? 24 * 3600 * 1000
+                   : null;
+    _renderChart(snaps, trades, windowMs);
+  } catch (e) { console.warn('loadHistory', e); }
+}
 
-    // Build arrays with timestamps for matching, inserting null sentinels at gaps
-    const labels = [];
-    const values = [];
-    const usdtValues = [];       // USDT balance component
-    const coinValues = [];       // coin position value in USDT
-    const prices = [];
-    const snapTimestamps = [];   // ms timestamps for each label index
+function _renderChart(snaps, trades, windowMs) {
+  // Apply time window filter
+  let visSnaps = snaps;
+  if (windowMs) {
+    const cutoff = Date.now() - windowMs;
+    visSnaps = snaps.filter(s => new Date(s.timestamp).getTime() >= cutoff);
+    if (visSnaps.length === 0) visSnaps = snaps.slice(-10); // fallback: show last 10
+  }
 
-    for (let i = 0; i < snaps.length; i++) {
-      const s = snaps[i];
-      const d = new Date(s.timestamp);
+  // Detect gap threshold from visible snaps
+  const deltas = [];
+  for (let i = 1; i < Math.min(visSnaps.length, 11); i++) {
+    deltas.push(new Date(visSnaps[i].timestamp) - new Date(visSnaps[i-1].timestamp));
+  }
+  deltas.sort((a,b)=>a-b);
+  const medianDelta = deltas.length ? deltas[Math.floor(deltas.length/2)] : 30000;
+  const gapThreshold = Math.max(medianDelta * 3, 120000);
 
-      if (i > 0) {
-        const prev = new Date(snaps[i-1].timestamp);
-        if ((d - prev) > gapThreshold) {
-          const midMs = prev.getTime() + (d - prev) / 2;
-          const mid = new Date(midMs);
-          labels.push(fmtTime(mid));
-          values.push(null);
-          usdtValues.push(null);
-          coinValues.push(null);
-          prices.push(null);
-          snapTimestamps.push(midMs);
-        }
+  const labels = [];
+  const values = [];
+  const usdtValues = [];
+  const coinValues = [];
+  const prices = [];
+  const snapTimestamps = [];
+
+  for (let i = 0; i < visSnaps.length; i++) {
+    const s = visSnaps[i];
+    const d = new Date(s.timestamp);
+
+    if (i > 0) {
+      const prev = new Date(visSnaps[i-1].timestamp);
+      if ((d - prev) > gapThreshold) {
+        const midMs = prev.getTime() + (d - prev) / 2;
+        labels.push(fmtTime(new Date(midMs)));
+        values.push(null); usdtValues.push(null); coinValues.push(null);
+        prices.push(null); snapTimestamps.push(midMs);
       }
-
-      const usdtBal = s.usdt_balance ?? s.total_value_usdt;
-      const coinVal = s.total_value_usdt - usdtBal;
-
-      labels.push(fmtTime(d));
-      values.push(s.total_value_usdt);
-      usdtValues.push(usdtBal);
-      coinValues.push(coinVal > 0.01 ? coinVal : 0);
-      prices.push(s.asset_price ?? null);
-      snapTimestamps.push(d.getTime());
     }
 
-    const hasPriceData = prices.some(p => p !== null);
+    const usdtBal = s.usdt_balance ?? s.total_value_usdt;
+    const coinVal = s.total_value_usdt - usdtBal;
+    labels.push(fmtTime(d));
+    values.push(s.total_value_usdt);
+    usdtValues.push(usdtBal);
+    coinValues.push(coinVal > 0.01 ? coinVal : 0);
+    prices.push(s.asset_price ?? null);
+    snapTimestamps.push(d.getTime());
+  }
 
-    // ── Build trade marker datasets ──────────────────────
-    // Map each trade to the nearest chart label index by timestamp
-    const longData = new Array(labels.length).fill(null);
-    const shortData = new Array(labels.length).fill(null);
-    const longMeta = {};   // index → trade info for tooltip
-    const shortMeta = {};
+  const hasPriceData = prices.some(p => p !== null);
 
-    if (trades.length > 0) {
-      trades.forEach(t => {
-        const tMs = new Date(t.timestamp).getTime();
+  // Trade markers — only trades within visible time window
+  const longData = new Array(labels.length).fill(null);
+  const shortData = new Array(labels.length).fill(null);
+  const longMeta = {};
+  const shortMeta = {};
+  const chartStart = snapTimestamps[0] || 0;
+  const chartEnd = snapTimestamps[snapTimestamps.length - 1] || Infinity;
 
-        // Find nearest label index
-        let bestIdx = 0;
-        let bestDist = Infinity;
-        for (let i = 0; i < snapTimestamps.length; i++) {
-          const dist = Math.abs(snapTimestamps[i] - tMs);
-          if (dist < bestDist) {
-            bestDist = dist;
-            bestIdx = i;
-          }
-        }
+  if (trades.length > 0) {
+    trades.forEach(t => {
+      const tMs = new Date(t.timestamp).getTime();
+      // Filter: only trades visible in current window (with generous buffer)
+      if (tMs < chartStart - gapThreshold * 2 || tMs > chartEnd + gapThreshold * 2) return;
 
-        // Skip if nearest snapshot is too far away (trade outside chart range)
-        if (bestDist > gapThreshold) return;
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < snapTimestamps.length; i++) {
+        const dist = Math.abs(snapTimestamps[i] - tMs);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      if (bestDist > gapThreshold) return;
 
-        const action = (t.position_side || '').toUpperCase();
-        const isLong = action.includes('LONG');
-        const isShort = action.includes('SHORT');
-        const isOpen = action.startsWith('OPEN');
+      const action = (t.position_side || '').toUpperCase();
+      const isLong = action.includes('LONG');
+      const isOpen = action.startsWith('OPEN');
 
-        if (isLong || action === 'BUY') {
-          longData[bestIdx] = t.price;
-          longMeta[bestIdx] = { action: action || 'BUY', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
-        } else if (isShort || action === 'SELL') {
-          shortData[bestIdx] = t.price;
-          shortMeta[bestIdx] = { action: action || 'SELL', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
-        }
-      });
-    }
-
-    const hasTradeMarkers = longData.some(v => v !== null) || shortData.some(v => v !== null);
-
-    const assetSym = snaps[0].asset_symbol || 'Coin';
-    document.getElementById('price-legend-label').textContent = assetSym + ' Price';
-    document.getElementById('price-legend').style.display = hasPriceData ? 'flex' : 'none';
-    document.getElementById('long-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
-    document.getElementById('short-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
-
-    const ctx = document.getElementById('portfolio-chart').getContext('2d');
-    if (portfolioChart) portfolioChart.destroy();
-
-    const dashedSegment = (ctx, def) =>
-      (ctx.p0.skip || ctx.p1.skip) ? [4, 4] : def;
-
-    portfolioChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          // ── Coin value area (stacked on top of USDT) ──
-          {
-            label: 'Coin Value',
-            data: values,  // total value = top of stack
-            borderColor: 'rgba(0,200,150,0.6)',
-            backgroundColor: 'rgba(0,200,150,0.15)',
-            borderWidth: 0,
-            pointRadius: 0,
-            fill: true,
-            tension: 0.3,
-            spanGaps: true,
-            yAxisID: 'yPortfolio',
-            order: 3,
-          },
-          // ── USDT balance area (bottom of stack) ──
-          {
-            label: 'USDT Balance',
-            data: usdtValues,
-            borderColor: 'rgba(108,99,255,0.6)',
-            backgroundColor: 'rgba(108,99,255,0.2)',
-            borderWidth: 0,
-            pointRadius: 0,
-            fill: true,
-            tension: 0.3,
-            spanGaps: true,
-            yAxisID: 'yPortfolio',
-            order: 2,
-          },
-          // ── Total value line (on top) ──
-          {
-            label: 'Total Value',
-            data: values,
-            borderColor: '#6c63ff',
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.3,
-            spanGaps: true,
-            yAxisID: 'yPortfolio',
-            order: 1,
-            segment: {
-              borderDash: ctx => dashedSegment(ctx, []),
-              borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(108,99,255,0.3)' : '#6c63ff',
-            }
-          },
-          {
-            label: 'Coin Price',
-            data: prices,
-            borderColor: '#f5a623',
-            backgroundColor: 'rgba(245,166,35,0.05)',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.2,
-            spanGaps: true,
-            yAxisID: 'yPrice',
-            segment: {
-              borderDash: ctx => dashedSegment(ctx, []),
-              borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(245,166,35,0.3)' : '#f5a623',
-            }
-          },
-          // ── LONG trade markers (green ▲) ──
-          {
-            label: 'Long',
-            data: longData,
-            borderColor: '#00c896',
-            backgroundColor: '#00c896',
-            pointRadius: longData.map(v => v !== null ? 7 : 0),
-            pointHoverRadius: longData.map(v => v !== null ? 9 : 0),
-            pointStyle: 'triangle',
-            pointRotation: 0,
-            borderWidth: 2,
-            showLine: false,
-            fill: false,
-            yAxisID: 'yPrice',
-            order: -1,
-          },
-          // ── SHORT trade markers (red ▼) ──
-          {
-            label: 'Short',
-            data: shortData,
-            borderColor: '#ff4d6d',
-            backgroundColor: '#ff4d6d',
-            pointRadius: shortData.map(v => v !== null ? 7 : 0),
-            pointHoverRadius: shortData.map(v => v !== null ? 9 : 0),
-            pointStyle: 'triangle',
-            pointRotation: 180,
-            borderWidth: 2,
-            showLine: false,
-            fill: false,
-            yAxisID: 'yPrice',
-            order: -1,
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            filter: item => item.parsed.y !== null,
-            callbacks: {
-              label: tooltipCtx => {
-                const v = tooltipCtx.parsed.y;
-                if (v === null || v === undefined) return null;
-                const dsLabel = tooltipCtx.dataset.label;
-                const idx = tooltipCtx.dataIndex;
-                const fmtUsd = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-                if (dsLabel === 'Total Value') {
-                  return `Total: ${fmtUsd(v)}`;
-                }
-                if (dsLabel === 'USDT Balance') {
-                  return `USDT: ${fmtUsd(v)}`;
-                }
-                if (dsLabel === 'Coin Value') {
-                  // Show coin value = total - usdt
-                  const coinV = coinValues[idx] ?? 0;
-                  return `Coin: ${fmtUsd(coinV)}`;
-                }
-                if (dsLabel === 'Coin Price') {
-                  return `${assetSym}: ${fmtUsd(v)}`;
-                }
-
-                // Trade markers
-                const meta = dsLabel === 'Long' ? longMeta[idx] : shortMeta[idx];
-                if (!meta) return null;
-                const actionLabel = meta.action.replace('_', ' ');
-                let line = `${actionLabel} @ $${fmt(meta.price)} × ${meta.qty.toFixed(6)}`;
-                if (meta.pnl != null) {
-                  line += ` | P&L: ${meta.pnl >= 0 ? '+' : ''}$${fmt(meta.pnl)}`;
-                }
-                return line;
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            display: true,
-            ticks: {
-              color: '#8892a4',
-              maxTicksLimit: 10,
-              maxRotation: 0,
-            },
-            grid: { color: '#2a2d3a' }
-          },
-          yPortfolio: {
-            type: 'linear',
-            position: 'left',
-            ticks: {
-              color: '#8892a4',
-              callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0})
-            },
-            grid: { color: '#2a2d3a' }
-          },
-          yPrice: {
-            type: 'linear',
-            position: 'right',
-            display: hasPriceData || hasTradeMarkers,
-            ticks: {
-              color: '#f5a623',
-              callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0})
-            },
-            grid: { drawOnChartArea: false }
-          }
-        }
+      if (isLong || action === 'BUY') {
+        longData[bestIdx] = t.price;
+        longMeta[bestIdx] = { action: action || 'BUY', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
+      } else {
+        shortData[bestIdx] = t.price;
+        shortMeta[bestIdx] = { action: action || 'SELL', price: t.price, qty: t.quantity, pnl: t.realized_pnl, open: isOpen };
       }
     });
-  } catch (e) { console.warn('loadHistory', e); }
+  }
+
+  const hasTradeMarkers = longData.some(v => v !== null) || shortData.some(v => v !== null);
+  const assetSym = visSnaps[0]?.asset_symbol || snaps[0]?.asset_symbol || 'Coin';
+  document.getElementById('price-legend-label').textContent = assetSym + ' Price';
+  document.getElementById('price-legend').style.display = hasPriceData ? 'flex' : 'none';
+  document.getElementById('long-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
+  document.getElementById('short-legend').style.display = hasTradeMarkers ? 'flex' : 'none';
+
+  const ctx = document.getElementById('portfolio-chart').getContext('2d');
+  if (portfolioChart) portfolioChart.destroy();
+
+  const dashedSegment = (ctx, def) =>
+    (ctx.p0.skip || ctx.p1.skip) ? [4, 4] : def;
+
+  portfolioChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Coin Value', data: values,
+          borderColor: 'rgba(0,200,150,0.6)', backgroundColor: 'rgba(0,200,150,0.15)',
+          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true,
+          yAxisID: 'yPortfolio', order: 3,
+        },
+        {
+          label: 'USDT Balance', data: usdtValues,
+          borderColor: 'rgba(108,99,255,0.6)', backgroundColor: 'rgba(108,99,255,0.2)',
+          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3, spanGaps: true,
+          yAxisID: 'yPortfolio', order: 2,
+        },
+        {
+          label: 'Total Value', data: values,
+          borderColor: '#6c63ff', backgroundColor: 'transparent',
+          borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3, spanGaps: true,
+          yAxisID: 'yPortfolio', order: 1,
+          segment: {
+            borderDash: ctx => dashedSegment(ctx, []),
+            borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(108,99,255,0.3)' : '#6c63ff',
+          }
+        },
+        {
+          label: 'Coin Price', data: prices,
+          borderColor: '#f5a623', backgroundColor: 'rgba(245,166,35,0.05)',
+          borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2, spanGaps: true,
+          yAxisID: 'yPrice',
+          segment: {
+            borderDash: ctx => dashedSegment(ctx, []),
+            borderColor: ctx => (ctx.p0.skip || ctx.p1.skip) ? 'rgba(245,166,35,0.3)' : '#f5a623',
+          }
+        },
+        {
+          label: 'Long', data: longData,
+          borderColor: '#00c896', backgroundColor: '#00c896',
+          pointRadius: longData.map(v => v !== null ? 7 : 0),
+          pointHoverRadius: longData.map(v => v !== null ? 9 : 0),
+          pointStyle: 'triangle', pointRotation: 0,
+          borderWidth: 2, showLine: false, fill: false,
+          yAxisID: 'yPrice', order: -1,
+        },
+        {
+          label: 'Short', data: shortData,
+          borderColor: '#ff4d6d', backgroundColor: '#ff4d6d',
+          pointRadius: shortData.map(v => v !== null ? 7 : 0),
+          pointHoverRadius: shortData.map(v => v !== null ? 9 : 0),
+          pointStyle: 'triangle', pointRotation: 180,
+          borderWidth: 2, showLine: false, fill: false,
+          yAxisID: 'yPrice', order: -1,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: item => item.parsed.y !== null,
+          callbacks: {
+            label: tooltipCtx => {
+              const v = tooltipCtx.parsed.y;
+              if (v === null || v === undefined) return null;
+              const dsLabel = tooltipCtx.dataset.label;
+              const idx = tooltipCtx.dataIndex;
+              const fmtUsd = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+              if (dsLabel === 'Total Value') return `Total: ${fmtUsd(v)}`;
+              if (dsLabel === 'USDT Balance') return `USDT: ${fmtUsd(v)}`;
+              if (dsLabel === 'Coin Value') return `Coin: ${fmtUsd(coinValues[idx] ?? 0)}`;
+              if (dsLabel === 'Coin Price') return `${assetSym}: ${fmtUsd(v)}`;
+              const meta = dsLabel === 'Long' ? longMeta[idx] : shortMeta[idx];
+              if (!meta) return null;
+              let line = `${meta.action.replace('_',' ')} @ $${fmt(meta.price)} × ${meta.qty.toFixed(6)}`;
+              if (meta.pnl != null) line += ` | P&L: ${meta.pnl >= 0 ? '+' : ''}$${fmt(meta.pnl)}`;
+              return line;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          display: true,
+          ticks: { color: '#8892a4', maxTicksLimit: 10, maxRotation: 0 },
+          grid: { color: '#2a2d3a' }
+        },
+        yPortfolio: {
+          type: 'linear', position: 'left',
+          ticks: { color: '#8892a4', callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0}) },
+          grid: { color: '#2a2d3a' }
+        },
+        yPrice: {
+          type: 'linear', position: 'right',
+          display: hasPriceData || hasTradeMarkers,
+          ticks: { color: '#f5a623', callback: v => '$' + v.toLocaleString('en-US',{maximumFractionDigits:0}) },
+          grid: { drawOnChartArea: false }
+        }
+      }
+    }
+  });
 }
 
 function fmtTime(d) {
@@ -914,7 +933,27 @@ async function loadDataStatus() {
     const badge = document.getElementById('bt-data-badge');
     const total = d.total_candles || 0;
 
-    if (total > 0) {
+    // Determine if the selected bot is OB-driven (ob_wall uses OB snapshots as primary data)
+    const isObBot = selectedBot && selectedBot.includes('ob_wall');
+
+    if (isObBot) {
+      // For OB-driven bots, show OB snapshot count instead of candle count
+      const botInfo = _botsCache.find(b => b.name === selectedBot);
+      const symbol = botInfo ? botInfo.symbol : null;
+      const obCounts = d.ob_snapshots || {};
+      const obCount = symbol ? (obCounts[symbol] || 0) : Object.values(obCounts).reduce((s, v) => s + v, 0);
+      if (obCount > 0) {
+        info.innerHTML = `${obCount} OB snapshots · ${symbol || 'all coins'}<br><span style="color:var(--muted);font-size:9px">Backtest uses OB data range</span>`;
+        badge.textContent = `(${obCount} OB snaps)`;
+        document.getElementById('bt-run-btn').disabled = false;
+        document.getElementById('bt-opt-btn').disabled = false;
+      } else {
+        info.innerHTML = 'No OB data — run collect_orderbook.py first';
+        badge.textContent = '';
+        document.getElementById('bt-run-btn').disabled = true;
+        document.getElementById('bt-opt-btn').disabled = true;
+      }
+    } else if (total > 0) {
       const syms = Object.entries(d.symbols).filter(([,v]) => v.count > 0);
       const coinCount = syms.length;
       // Find most recent candle end date across all symbols

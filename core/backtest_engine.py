@@ -246,8 +246,10 @@ async def run_backtest(
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 
-    # --- For OB-driven strategies, trim candles to orderbook data time range ---
-    # No point simulating 7 days of candles when OB data covers only ~1 day.
+    # --- For OB-signal strategies (ob_wall), trim candles to OB data time range ---
+    # These bots have no useful signal outside OB coverage, so trimming is correct.
+    # For pure candle strategies (RSI, MA, BB), keep the full candle history even
+    # when OB data exists — they use OB only for realistic fill prices, not signals.
     if orderbook_data and hasattr(strategy_class, "_inject_orderbook") and len(orderbook_data) > 0:
         from datetime import datetime, timezone as _tz
         first_ob_ts = orderbook_data[0].get("timestamp", "")
@@ -332,10 +334,15 @@ async def run_backtest(
     # --- Sequential orderbook injection setup ---
     # Both candles and orderbook snapshots are 1-minute frequency.
     # We use a simple forward pointer — no binary search needed.
-    ob_has_inject = bool(orderbook_data) and hasattr(bot, "_inject_orderbook")
+    #
+    # Two independent flags:
+    #   ob_has_data   — OB snapshots exist → update engine for realistic VWAP fills
+    #   ob_has_inject — bot also has _inject_orderbook() → feed OB into strategy signals
+    ob_has_data = bool(orderbook_data)
+    ob_has_inject = ob_has_data and hasattr(bot, "_inject_orderbook")
     ob_index = [0]   # mutable pointer into orderbook_data
 
-    if ob_has_inject:
+    if ob_has_data:
         # Pre-parse timestamps to epoch_ms for fast comparison
         ob_times_ms: list[int] = []
         for ob_row in orderbook_data:
@@ -346,8 +353,8 @@ async def run_backtest(
             except Exception:
                 ob_times_ms.append(0)
         logger.info(
-            f"Backtest {bot_id}: {len(orderbook_data)} orderbook snapshots "
-            f"→ sequential injection into {strategy_class.__name__}"
+            f"Backtest {bot_id}: {len(orderbook_data)} orderbook snapshots loaded "
+            f"(engine VWAP fills=yes, bot inject={ob_has_inject})"
         )
     else:
         ob_times_ms = []
@@ -387,11 +394,15 @@ async def run_backtest(
             # Update engine price (for liquidation checks etc.)
             engine.update_price(symbol, candle.close)
 
-            # Inject current orderbook snapshot before the candle fires
-            if ob_has_inject:
+            # Inject current orderbook snapshot before the candle fires:
+            # 1. Always feed into engine for realistic VWAP fill prices (all strategies)
+            # 2. Feed into the bot via _inject_orderbook() only for OB-signal bots (ob_wall)
+            if ob_has_data:
                 ob_snap = _advance_ob_pointer(row["open_time"])
                 if ob_snap is not None:
-                    bot._inject_orderbook(ob_snap)  # type: ignore[attr-defined]
+                    engine.update_orderbook(symbol, ob_snap)        # realistic fills (all bots)
+                    if ob_has_inject:
+                        bot._inject_orderbook(ob_snap)              # type: ignore[attr-defined]
 
             # Feed candle to strategy
             try:

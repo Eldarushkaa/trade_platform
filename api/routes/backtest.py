@@ -43,7 +43,7 @@ def set_dependencies(bot_manager, symbols: list[str]) -> None:
 
 class DownloadRequest(BaseModel):
     symbols: list[str] | None = None   # defaults to all configured symbols
-    days: int = 2
+    days: int = 14
 
 
 class BacktestRequest(BaseModel):
@@ -115,12 +115,19 @@ async def download_historical(req: DownloadRequest):
 
 @router.get("/data-status")
 async def data_status():
-    """Check what historical data is available."""
+    """Check what historical data is available, including OB snapshot counts."""
     symbols = _symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     status = await get_data_status(symbols)
+
+    # Also fetch OB snapshot counts per symbol
+    ob_status = await repo.get_orderbook_status()
+    ob_counts: dict[str, int] = {sym: info.get("count", 0) for sym, info in ob_status.items()}
+
     return {
         "symbols": status,
         "total_candles": sum(s["count"] for s in status.values()),
+        "ob_snapshots": ob_counts,           # { "BTCUSDT": 1440, ... }
+        "total_ob_snapshots": sum(ob_counts.values()),
     }
 
 
@@ -143,11 +150,15 @@ async def run_backtest_endpoint(req: BacktestRequest):
     if task_id in _running_tasks and not _running_tasks[task_id].get("done", True):
         raise HTTPException(status_code=409, detail="A backtest is already running for this bot")
 
-    # Pre-load orderbook data for strategies that use it (e.g. OrderbookWallBot)
-    orderbook_data = None
-    if hasattr(strategy_class, "_inject_orderbook"):
-        orderbook_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
+    # Always load orderbook data when available — used for two purposes:
+    #   1. Realistic VWAP fill prices in the engine (all strategies benefit)
+    #   2. Signal generation via _inject_orderbook() for OB-aware bots (ob_wall only)
+    orderbook_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
+    if orderbook_data:
         logger.info(f"Loaded {len(orderbook_data)} orderbook snapshots for backtest of '{req.bot_id}'")
+    else:
+        orderbook_data = None
+        logger.info(f"No orderbook snapshots found for '{symbol}' — backtest will use fixed slippage fallback")
 
     # Run backtest (blocking for the request — typically < 5 seconds)
     try:

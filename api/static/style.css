@@ -164,6 +164,16 @@ header h1 span { color: var(--accent); }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px;
   margin-bottom: 20px;
 }
+.stats-period-btn {
+  background: var(--card); border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.stats-period-btn:hover { border-color: var(--accent); color: var(--text); }
+.stats-period-btn.active {
+  background: rgba(108,99,255,0.15); border-color: var(--accent);
+  color: var(--accent); font-weight: 600;
+}
 .stat-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
 }

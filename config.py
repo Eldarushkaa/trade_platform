@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     # 0.0005 = 0.05% per trade (deducted from USDT, invisible to strategies).
     simulation_fee_rate: float = Field(default=0.0005, description="Fee rate per trade (0.0005 = 0.05%)")
 
+    # --- Slippage simulation ---
+    # When an orderbook snapshot is available, we walk the OB levels to compute
+    # a realistic VWAP fill price (market order eats through levels).
+    # base_slippage_pct: fallback when no OB data (simple fixed spread, 2 bps).
+    # max_slippage_pct: reject order if OB fill would exceed this % vs desired price.
+    base_slippage_pct: float = Field(default=0.02, description="Fallback slippage % when no OB available (0.02 = 2 bps)")
+    max_slippage_pct: float = Field(default=0.10, description="Max allowed slippage % (0.10 = 10 bps) — reject if exceeded")
+
     # --- Portfolio snapshot interval (seconds) ---
     snapshot_interval_seconds: int = Field(default=60)
 
