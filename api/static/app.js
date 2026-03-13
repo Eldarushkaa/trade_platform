@@ -1168,14 +1168,10 @@ function renderBacktestChart(curve) {
 
   const labels = curve.map(p => {
     const d = new Date(p.time);
-    return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    return fmtMoscow(new Date(p.time).toISOString());
   });
   const values = curve.map(p => p.value);
   const usdtValues = curve.map(p => p.usdt ?? p.value);
-  const coinValues = curve.map((p, i) => {
-    const cv = (p.value || 0) - (p.usdt ?? p.value);
-    return cv > 0.01 ? cv : 0;
-  });
   const prices = curve.map(p => p.price);
   const sides = curve.map(p => p.side || 'NONE');
 
@@ -1191,29 +1187,17 @@ function renderBacktestChart(curve) {
     data: {
       labels,
       datasets: [
-        // Position area fill — colored by LONG/SHORT
-        {
-          label: 'Position',
-          data: values,
-          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
-          yAxisID: 'yEq',
-          order: 4,
-          segment: {
-            backgroundColor: ctx => sideBg(sides[ctx.p0DataIndex]),
-          },
-          backgroundColor: 'rgba(130,130,160,0.05)',
-        },
-        // USDT balance area (bottom)
+        // USDT balance area fill (always flat bottom)
         {
           label: 'USDT Balance',
           data: usdtValues,
-          borderColor: 'rgba(108,99,255,0.6)',
-          backgroundColor: 'rgba(108,99,255,0.18)',
-          borderWidth: 0, pointRadius: 0, fill: true, tension: 0.3,
+          borderColor: 'rgba(108,99,255,0.5)',
+          backgroundColor: 'rgba(108,99,255,0.15)',
+          borderWidth: 0, pointRadius: 0, fill: 'origin', tension: 0.3,
           yAxisID: 'yEq',
           order: 3,
         },
-        // Total value line — colored by position side
+        // Total value line — colored by position side, fill between usdt and total
         {
           label: 'Total Value',
           data: values,
@@ -1223,6 +1207,7 @@ function renderBacktestChart(curve) {
           order: 1,
           segment: {
             borderColor: ctx => sideColor(sides[ctx.p0DataIndex]),
+            backgroundColor: ctx => sideBg(sides[ctx.p0DataIndex]),
           },
           borderColor: 'rgba(130,130,160,0.5)',
         },

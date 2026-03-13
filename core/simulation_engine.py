@@ -304,15 +304,25 @@ class SimulationEngine(BaseOrderEngine):
         position = portfolio.position
         fee_rate = self._fee_rates.get(bot_id, settings.simulation_fee_rate)
 
-        # --- Compute realistic fill price ---
-        # For close orders (quantity=0), use the position quantity
-        fill_qty = position.quantity if quantity == 0 and position.is_open else quantity
-        fill_price, fill_method = self._compute_fill_price(symbol, side, fill_qty, price)
+        # --- Compute fill price from OB or fallback ---
+        fill_price, fill_method = self._compute_fill_price(symbol, side, quantity, price)
+
+        # --- Scale quantity to match intended spend when fill != desired price ---
+        # Strategy calculated quantity = spend / desired_price.
+        # If fill_price differs (OB best_ask vs candle close), scale quantity
+        # proportionally so the actual cost matches what the strategy intended to spend.
+        # For close orders (quantity=0), use the position quantity — no scaling needed.
+        if quantity == 0 and position.is_open:
+            quantity = position.quantity
+        elif quantity > 0 and price > 0 and fill_price != price:
+            # Preserve intended notional spend: qty_scaled = qty * desired / fill
+            # This ensures margin cost stays within what strategy budgeted
+            quantity = max(round(quantity * price / fill_price, 8), 0.000001)
 
         if fill_method != "fallback" or fill_price != price:
             logger.debug(
                 f"[{bot_id}] {side} fill: desired={price:.4f} → fill={fill_price:.4f} "
-                f"({fill_method}, slip={(abs(fill_price - price) / price * 100):.4f}%)"
+                f"({fill_method}, qty_adj={quantity:.6f})"
             )
 
         # --- Route order based on side + current position ---
