@@ -169,52 +169,37 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
   const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
 
   // Trades, fees, PnL: period-aware if period stats available
-  // Unrealized PnL is always included (current open position P&L from live portfolio state)
+  // IMPORTANT: "Overall Return" always uses return_pct from portfolio API — it's the authoritative
+  // server-computed value (total_value - initial) / initial. Never re-derive it from period stats
+  // to avoid timezone / rounding mismatches.
   const totalUnrealized = portfolios.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
 
   let totalTrades, totalFees, totalPnl, overallReturn, positiveCount;
+
+  // Overall return % — always average of return_pct (includes unrealized, matches sidebar)
+  const botsWithReturn = portfolios.filter(p => p.return_pct != null);
+  overallReturn = botsWithReturn.length > 0
+    ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
+    : 0;
+
   if (_statsMode !== 'all' && periodStats) {
     const key = _statsMode === '3h' ? 'h3' : 'h24';
     totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
     totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
     const totalPeriodRealized = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
-    // Add current unrealized to period realized for total net PnL
-    totalPnl = totalPeriodRealized + totalUnrealized;
-
-    // Overall return = average of (period_realized + unrealized) / initial_balance per bot
-    const portMap2 = {};
-    portfolios.forEach(p => { portMap2[p.bot_id] = p; });
-    const periodReturns = Object.entries(periodStats).map(([botId, ps]) => {
-      const s = ps[key];
-      if (!s) return null;
-      const periodRealized = s.realized_pnl || 0;
-      const unrealized = portMap2[botId] ? (portMap2[botId].unrealized_pnl || 0) : 0;
-      const totalBotPnl = periodRealized + unrealized;
-      const botValue = portMap2[botId] ? (portMap2[botId].total_value_usdt || 0) : 0;
-      const returnPct = portMap2[botId] ? (portMap2[botId].return_pct || 0) : 0;
-      const initialBal = returnPct !== -100 ? botValue / (1 + returnPct / 100) : botValue;
-      return initialBal > 0 ? (totalBotPnl / initialBal * 100) : 0;
-    }).filter(r => r !== null);
-    overallReturn = periodReturns.length > 0
-      ? periodReturns.reduce((s, r) => s + r, 0) / periodReturns.length
-      : 0;
-    // Count bots with positive net pnl (realized + unrealized)
-    positiveCount = Object.entries(periodStats).filter(([botId, ps]) => {
-      const s = ps[key];
-      const unrealized = portMap2[botId] ? (portMap2[botId].unrealized_pnl || 0) : 0;
-      return s && ((s.realized_pnl || 0) + unrealized) > 0;
-    }).length;
+    // Net PnL for period = period_realized - period_fees + current_unrealized
+    totalPnl = totalPeriodRealized - totalFees + totalUnrealized;
+    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
   } else {
     totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
     totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
-    // All-time: realized + unrealized = net_pnl (total gain since inception)
-    totalPnl    = portfolios.reduce((s, p) => s + (p.net_pnl || 0) + (p.unrealized_pnl || 0), 0);
+    // All-time net P&L = return_pct * initial_balance
+    totalPnl = portfolios.reduce((s, p) => {
+      const rp = p.return_pct || 0;
+      const init = rp !== -100 ? (p.total_value_usdt || 0) / (1 + rp / 100) : (p.total_value_usdt || 0);
+      return s + rp / 100 * init;
+    }, 0);
     positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
-    // Overall return = average of return_pct (already includes unrealized)
-    const botsWithReturn = portfolios.filter(p => p.return_pct != null);
-    overallReturn = botsWithReturn.length > 0
-      ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
-      : 0;
   }
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
   const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -252,24 +237,9 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
       // Always show return % for consistency across modes
       // For period modes, compute: period_realized_pnl / initial_balance * 100
       // initial_balance derived from current total_value and all-time return_pct
-      if (_statsMode !== 'all' && periodStats && periodStats[botId] && p) {
-        const key = _statsMode === '3h' ? 'h3' : 'h24';
-        const ps = periodStats[botId][key];
-        if (ps) {
-          // Period realized + current unrealized = total net PnL for this period
-          const periodRealized = ps.realized_pnl || 0;
-          const unrealized = p.unrealized_pnl || 0;
-          const totalPnlBot = periodRealized + unrealized;
-          const returnPct = p.return_pct || 0;
-          const initialBal = returnPct !== -100
-            ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
-            : (p.total_value_usdt || 0);
-          const retPct = initialBal > 0 ? (totalPnlBot / initialBal * 100) : 0;
-          cellClass = retPct >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
-          retStr = (retPct >= 0 ? '+' : '') + retPct.toFixed(1) + '%';
-        }
-      } else if (p) {
-        // All-time: return_pct already includes unrealized PnL (same as sidebar)
+      // Matrix cells: ALWAYS use return_pct (same as sidebar) — it's the authoritative value.
+      // This ensures matrix ↔ sidebar are always consistent regardless of period selection.
+      if (p) {
         const ret = p.return_pct || 0;
         cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
         retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
