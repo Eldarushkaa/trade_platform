@@ -15,10 +15,17 @@ let _globalStatsData = null;   // cached {portfolios, bots, coinData, obStatus, 
 
 // Moscow timezone formatter
 const _moscowTZ = 'Europe/Moscow';
+// Ensure a timestamp string is parsed as UTC (append Z if no timezone info)
+function _toUtcDate(isoStr) {
+  if (!isoStr) return new Date(NaN);
+  const s = (typeof isoStr === 'string' && !isoStr.endsWith('Z') && !isoStr.includes('+')) ? isoStr + 'Z' : isoStr;
+  return new Date(s);
+}
+
 function fmtMoscow(isoStr) {
   if (!isoStr) return '—';
   try {
-    return new Date(isoStr).toLocaleString('ru-RU', {
+    return _toUtcDate(isoStr).toLocaleString('ru-RU', {
       timeZone: _moscowTZ,
       day: '2-digit', month: '2-digit',
       hour: '2-digit', minute: '2-digit',
@@ -594,12 +601,20 @@ async function loadHistory(name) {
   } catch (e) { console.warn('loadHistory', e); }
 }
 
+// Parse a snapshot/trade timestamp correctly as UTC regardless of whether it has a Z suffix
+function _tsMs(ts) {
+  if (!ts) return 0;
+  // If string lacks timezone info, append 'Z' so JS parses it as UTC (not local time)
+  const s = (typeof ts === 'string' && !ts.endsWith('Z') && !ts.includes('+')) ? ts + 'Z' : ts;
+  return new Date(s).getTime();
+}
+
 function _renderChart(snaps, trades, windowMs) {
-  // Apply time window filter
+  // Apply time window filter — use _tsMs to avoid UTC vs local bug
   let visSnaps = snaps;
   if (windowMs) {
     const cutoff = Date.now() - windowMs;
-    const filtered = snaps.filter(s => new Date(s.timestamp).getTime() >= cutoff);
+    const filtered = snaps.filter(s => _tsMs(s.timestamp) >= cutoff);
     // Use filtered results even if few — don't fall back to old data outside the window
     visSnaps = filtered.length > 0 ? filtered : [];
   }
@@ -619,12 +634,6 @@ function _renderChart(snaps, trades, windowMs) {
     return;
   }
 
-  // Determine if we should show date in axis labels (range > 12h)
-  const rangeMs = visSnaps.length > 1
-    ? new Date(visSnaps[visSnaps.length - 1].timestamp) - new Date(visSnaps[0].timestamp)
-    : 0;
-  const showDateInLabel = rangeMs > 12 * 3600 * 1000;
-
   // Detect gap threshold from visible snaps
   const deltas = [];
   for (let i = 1; i < Math.min(visSnaps.length, 11); i++) {
@@ -643,13 +652,13 @@ function _renderChart(snaps, trades, windowMs) {
 
   for (let i = 0; i < visSnaps.length; i++) {
     const s = visSnaps[i];
-    const d = new Date(s.timestamp);
+    const d = new Date(_tsMs(s.timestamp));
 
     if (i > 0) {
-      const prev = new Date(visSnaps[i-1].timestamp);
+      const prev = new Date(_tsMs(visSnaps[i-1].timestamp));
       if ((d - prev) > gapThreshold) {
         const midMs = prev.getTime() + (d - prev) / 2;
-          labels.push(fmtTime(new Date(midMs), showDateInLabel));
+        labels.push(fmtTime(new Date(midMs)));
         values.push(null); usdtValues.push(null); coinValues.push(null);
         prices.push(null); snapTimestamps.push(midMs);
       }
@@ -664,7 +673,7 @@ function _renderChart(snaps, trades, windowMs) {
     const hasPosition = (s.asset_balance != null ? Math.abs(s.asset_balance) : 0) > 1e-8;
     const coinVal = hasPosition ? Math.max(0, total - usdtBal) : 0;
 
-    labels.push(fmtTime(d, showDateInLabel));
+    labels.push(fmtTime(d));
     values.push(total);
     usdtValues.push(usdtBal);
     coinValues.push(coinVal);
@@ -684,7 +693,7 @@ function _renderChart(snaps, trades, windowMs) {
 
   if (trades.length > 0) {
     trades.forEach(t => {
-      const tMs = new Date(t.timestamp).getTime();
+      const tMs = _tsMs(t.timestamp);
       // Filter: only trades within the visible window (with a 5-min buffer either side)
       if (tMs < chartStart - 300000 || tMs > chartEnd + 300000) return;
 
@@ -830,16 +839,8 @@ function _renderChart(snaps, trades, windowMs) {
   });
 }
 
-function fmtTime(d, showDate) {
-  // Chart axis labels in Moscow time
-  if (showDate) {
-    // Show "DD.MM HH:MM" for multi-day ranges
-    return d.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: '2-digit', month: '2-digit',
-      hour: '2-digit', minute: '2-digit',
-    });
-  }
+function fmtTime(d) {
+  // Chart axis labels in Moscow time — HH:MM only
   return fmtMoscowTime(d);
 }
 
