@@ -169,48 +169,51 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
   const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
 
   // Trades, fees, PnL: period-aware if period stats available
+  // Unrealized PnL is always included (current open position P&L from live portfolio state)
+  const totalUnrealized = portfolios.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+
   let totalTrades, totalFees, totalPnl, overallReturn, positiveCount;
   if (_statsMode !== 'all' && periodStats) {
     const key = _statsMode === '3h' ? 'h3' : 'h24';
     totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
     totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
-    totalPnl    = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
-    // Overall return = simple average of per-bot period return %
-    // per-bot period return ≈ periodPnl / (currentBotValue - periodPnl) * 100
+    const totalPeriodRealized = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
+    // Add current unrealized to period realized for total net PnL
+    totalPnl = totalPeriodRealized + totalUnrealized;
+
+    // Overall return = average of (period_realized + unrealized) / initial_balance per bot
     const portMap2 = {};
     portfolios.forEach(p => { portMap2[p.bot_id] = p; });
     const periodReturns = Object.entries(periodStats).map(([botId, ps]) => {
       const s = ps[key];
       if (!s) return null;
-      const pnl = s.realized_pnl || 0;
+      const periodRealized = s.realized_pnl || 0;
+      const unrealized = portMap2[botId] ? (portMap2[botId].unrealized_pnl || 0) : 0;
+      const totalBotPnl = periodRealized + unrealized;
       const botValue = portMap2[botId] ? (portMap2[botId].total_value_usdt || 0) : 0;
-      const startVal = botValue - pnl;
-      return startVal > 0 ? (pnl / startVal * 100) : 0;
+      const returnPct = portMap2[botId] ? (portMap2[botId].return_pct || 0) : 0;
+      const initialBal = returnPct !== -100 ? botValue / (1 + returnPct / 100) : botValue;
+      return initialBal > 0 ? (totalBotPnl / initialBal * 100) : 0;
     }).filter(r => r !== null);
     overallReturn = periodReturns.length > 0
       ? periodReturns.reduce((s, r) => s + r, 0) / periodReturns.length
       : 0;
-    // Count bots with positive period pnl
+    // Count bots with positive net pnl (realized + unrealized)
     positiveCount = Object.entries(periodStats).filter(([botId, ps]) => {
       const s = ps[key];
-      return s && (s.realized_pnl || 0) > 0;
+      const unrealized = portMap2[botId] ? (portMap2[botId].unrealized_pnl || 0) : 0;
+      return s && ((s.realized_pnl || 0) + unrealized) > 0;
     }).length;
   } else {
     totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
     totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
-    totalPnl    = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
-    positiveCount = portfolios.filter(p => (p.realized_pnl || 0) > 0).length;
-    // Overall return = average of realized_pnl / initial_balance across all bots
-    // (consistent with matrix cells and with period mode)
-    const allTimeReturns = portfolios.map(p => {
-      const returnPct = p.return_pct || 0;
-      const initialBal = returnPct !== -100
-        ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
-        : (p.total_value_usdt || 0);
-      return initialBal > 0 ? ((p.realized_pnl || 0) / initialBal * 100) : 0;
-    });
-    overallReturn = allTimeReturns.length > 0
-      ? allTimeReturns.reduce((s, r) => s + r, 0) / allTimeReturns.length
+    // All-time: realized + unrealized = net_pnl (total gain since inception)
+    totalPnl    = portfolios.reduce((s, p) => s + (p.net_pnl || 0) + (p.unrealized_pnl || 0), 0);
+    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
+    // Overall return = average of return_pct (already includes unrealized)
+    const botsWithReturn = portfolios.filter(p => p.return_pct != null);
+    overallReturn = botsWithReturn.length > 0
+      ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
       : 0;
   }
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
@@ -253,25 +256,23 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
         const key = _statsMode === '3h' ? 'h3' : 'h24';
         const ps = periodStats[botId][key];
         if (ps) {
-          const pnl = ps.realized_pnl || 0;
-          // Derive initial balance: total_value / (1 + return_pct/100)
+          // Period realized + current unrealized = total net PnL for this period
+          const periodRealized = ps.realized_pnl || 0;
+          const unrealized = p.unrealized_pnl || 0;
+          const totalPnlBot = periodRealized + unrealized;
           const returnPct = p.return_pct || 0;
           const initialBal = returnPct !== -100
             ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
             : (p.total_value_usdt || 0);
-          const retPct = initialBal > 0 ? (pnl / initialBal * 100) : 0;
+          const retPct = initialBal > 0 ? (totalPnlBot / initialBal * 100) : 0;
           cellClass = retPct >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
           retStr = (retPct >= 0 ? '+' : '') + retPct.toFixed(1) + '%';
         }
       } else if (p) {
-        // All-time: use realized_pnl / initial_balance for consistency (not return_pct which includes unrealized)
-        const returnPct = p.return_pct || 0;
-        const initialBal = returnPct !== -100
-          ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
-          : (p.total_value_usdt || 0);
-        const realizedRetPct = initialBal > 0 ? ((p.realized_pnl || 0) / initialBal * 100) : 0;
-        cellClass = realizedRetPct >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
-        retStr = (realizedRetPct >= 0 ? '+' : '') + realizedRetPct.toFixed(1) + '%';
+        // All-time: return_pct already includes unrealized PnL (same as sidebar)
+        const ret = p.return_pct || 0;
+        cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+        retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
       }
       matrixHTML += `<div class="${cellClass}" title="${botId}">${retStr}</div>`;
     });
@@ -526,17 +527,29 @@ function _renderPortfolio(p, stats24h, stats3h) {
 
   if (s && _statsMode !== 'all') {
     // Time-windowed mode: show trade-based stats for the selected period
+    // Include current unrealized PnL in displayed figures
+    const unrealized = p.unrealized_pnl || 0;
+    const periodNetWithUnrealized = s.realized_pnl + unrealized;
+    const periodAfterFeesWithUnrealized = s.realized_pnl - s.total_fees_paid + unrealized;
     const winRate = (s.win_count + s.loss_count) > 0
       ? (s.win_count / (s.win_count + s.loss_count) * 100).toFixed(1) + '%'
       : '—';
     grid.innerHTML = `
       <div class="stat-card">
-        <div class="label">Realized P&L (${periodLabel})</div>
+        <div class="label">Net P&L (${periodLabel})</div>
+        <div class="value ${sign(periodNetWithUnrealized)}">${periodNetWithUnrealized >= 0 ? '+' : ''}$${fmt(periodNetWithUnrealized)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Realized (${periodLabel})</div>
         <div class="value ${sign(s.realized_pnl)}">${s.realized_pnl >= 0 ? '+' : ''}$${fmt(s.realized_pnl)}</div>
       </div>
       <div class="stat-card">
-        <div class="label">Net P&L after fees (${periodLabel})</div>
-        <div class="value ${sign(s.realized_pnl - s.total_fees_paid)}">${(s.realized_pnl - s.total_fees_paid) >= 0 ? '+' : ''}$${fmt(s.realized_pnl - s.total_fees_paid)}</div>
+        <div class="label">Unrealized now</div>
+        <div class="value ${sign(unrealized)}">${unrealized >= 0 ? '+' : ''}$${fmt(unrealized)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">After fees (${periodLabel})</div>
+        <div class="value ${sign(periodAfterFeesWithUnrealized)}">${periodAfterFeesWithUnrealized >= 0 ? '+' : ''}$${fmt(periodAfterFeesWithUnrealized)}</div>
       </div>
       <div class="stat-card">
         <div class="label">Trades (${periodLabel})</div>
@@ -549,14 +562,6 @@ function _renderPortfolio(p, stats24h, stats3h) {
       <div class="stat-card">
         <div class="label">Fees Paid (${periodLabel})</div>
         <div class="value" style="color:var(--yellow)">$${fmt(s.total_fees_paid)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Free USDT</div>
-        <div class="value neutral">$${fmt(p.usdt_balance)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Total Value</div>
-        <div class="value neutral">$${fmt(p.total_value_usdt)}</div>
       </div>
       <div class="stat-card">
         <div class="label">Return (all time)</div>
