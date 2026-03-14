@@ -599,9 +599,31 @@ function _renderChart(snaps, trades, windowMs) {
   let visSnaps = snaps;
   if (windowMs) {
     const cutoff = Date.now() - windowMs;
-    visSnaps = snaps.filter(s => new Date(s.timestamp).getTime() >= cutoff);
-    if (visSnaps.length === 0) visSnaps = snaps.slice(-10); // fallback: show last 10
+    const filtered = snaps.filter(s => new Date(s.timestamp).getTime() >= cutoff);
+    // Use filtered results even if few — don't fall back to old data outside the window
+    visSnaps = filtered.length > 0 ? filtered : [];
   }
+
+  // If nothing to show, clear chart and return
+  if (visSnaps.length === 0) {
+    const ctx = document.getElementById('portfolio-chart').getContext('2d');
+    if (portfolioChart) portfolioChart.destroy();
+    portfolioChart = null;
+    // Draw a placeholder message
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.fillStyle = '#8892a4';
+    ctx.font = '14px Segoe UI, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    const windowLabel = windowMs === 3 * 3600000 ? '3 hours' : windowMs === 24 * 3600000 ? '24 hours' : '';
+    ctx.fillText(`No data in the last ${windowLabel}`, ctx.canvas.width / 2, ctx.canvas.height / 2);
+    return;
+  }
+
+  // Determine if we should show date in axis labels (range > 12h)
+  const rangeMs = visSnaps.length > 1
+    ? new Date(visSnaps[visSnaps.length - 1].timestamp) - new Date(visSnaps[0].timestamp)
+    : 0;
+  const showDateInLabel = rangeMs > 12 * 3600 * 1000;
 
   // Detect gap threshold from visible snaps
   const deltas = [];
@@ -627,7 +649,7 @@ function _renderChart(snaps, trades, windowMs) {
       const prev = new Date(visSnaps[i-1].timestamp);
       if ((d - prev) > gapThreshold) {
         const midMs = prev.getTime() + (d - prev) / 2;
-        labels.push(fmtTime(new Date(midMs)));
+          labels.push(fmtTime(new Date(midMs), showDateInLabel));
         values.push(null); usdtValues.push(null); coinValues.push(null);
         prices.push(null); snapTimestamps.push(midMs);
       }
@@ -642,7 +664,7 @@ function _renderChart(snaps, trades, windowMs) {
     const hasPosition = (s.asset_balance != null ? Math.abs(s.asset_balance) : 0) > 1e-8;
     const coinVal = hasPosition ? Math.max(0, total - usdtBal) : 0;
 
-    labels.push(fmtTime(d));
+    labels.push(fmtTime(d, showDateInLabel));
     values.push(total);
     usdtValues.push(usdtBal);
     coinValues.push(coinVal);
@@ -808,8 +830,16 @@ function _renderChart(snaps, trades, windowMs) {
   });
 }
 
-function fmtTime(d) {
+function fmtTime(d, showDate) {
   // Chart axis labels in Moscow time
+  if (showDate) {
+    // Show "DD.MM HH:MM" for multi-day ranges
+    return d.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: '2-digit', month: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    });
+  }
   return fmtMoscowTime(d);
 }
 
