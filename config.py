@@ -20,15 +20,9 @@ class Settings(BaseSettings):
     # "live"       = real Binance orders (Phase 5)
     trading_mode: Literal["simulation", "live"] = "simulation"
 
-    # --- Market Type ---
-    # "futures" = USDT-M perpetual futures (leverage, short positions)
-    # "spot"    = legacy spot trading (LONG only, no leverage)
-    market_type: Literal["futures", "spot"] = "futures"
-
     # --- Binance API ---
     binance_api_key: str = Field(default="", description="Binance API key")
     binance_api_secret: str = Field(default="", description="Binance API secret")
-    binance_testnet: bool = Field(default=True, description="Use Binance testnet")
 
     # --- Database ---
     db_path: str = Field(default="trade_platform.db", description="Path to SQLite DB file")
@@ -48,12 +42,10 @@ class Settings(BaseSettings):
 
     # --- Trading fees ---
     # Binance Futures fees:
-    #   Maker (limit orders resting in book): 0.02%  → 0.0002
-    #   Taker (market orders, IOC, FOK):      0.05%  → 0.0005
+    #   Taker (market orders, IOC, FOK): 0.05% → 0.0005
     # The simulation always places market orders → taker fee applies.
-    maker_fee_rate: float = Field(default=0.0002, description="Maker fee rate (0.0002 = 0.02%)")
     taker_fee_rate: float = Field(default=0.0005, description="Taker fee rate (0.0005 = 0.05%)")
-    # Alias kept for backward compat — points to taker (market orders always eat the book)
+    # Alias for readability — the simulation uses taker (market orders always eat the book)
     simulation_fee_rate: float = Field(default=0.0005, description="Active fee rate for simulated market orders (taker)")
 
     # --- Slippage simulation ---

@@ -9,8 +9,9 @@ GET  /api/backtest/status         — check running backtest/optimization status
 """
 import asyncio
 import logging
+import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.backtest_engine import run_backtest
@@ -23,18 +24,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
 # ------------------------------------------------------------------
-# Module-level state — injected from main.py
+# Module-level state — task tracking only (no injected dependencies)
 # ------------------------------------------------------------------
-_bot_manager = None
-_symbols: list[str] = []
-_running_tasks: dict[str, dict] = {}   # task_id → {task, type, status, result}
+_running_tasks: dict[str, dict] = {}   # task_id → {task, type, status, result, completed_at}
+
+_TASK_TTL_SECONDS = 3600  # evict completed tasks after 1 hour
 
 
-def set_dependencies(bot_manager, symbols: list[str]) -> None:
-    """Inject BotManager and known symbols."""
-    global _bot_manager, _symbols
-    _bot_manager = bot_manager
-    _symbols = symbols
+def _evict_old_tasks() -> None:
+    """Remove completed tasks that finished more than _TASK_TTL_SECONDS ago."""
+    now = time.monotonic()
+    stale = [
+        tid for tid, info in _running_tasks.items()
+        if info.get("done") and (now - info.get("completed_at", now)) > _TASK_TTL_SECONDS
+    ]
+    for tid in stale:
+        _running_tasks.pop(tid, None)
+    if stale:
+        logger.debug(f"Evicted {len(stale)} stale task(s): {stale}")
+
+
+def _get_bot_manager(request: Request):
+    manager = getattr(request.app.state, "bot_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=500, detail="Bot manager not initialized")
+    return manager
+
+
+def _get_symbols(request: Request) -> list[str]:
+    return getattr(request.app.state, "symbols", [])
 
 
 # ------------------------------------------------------------------
@@ -60,15 +78,12 @@ class OptimizeRequest(BaseModel):
 # Helpers
 # ------------------------------------------------------------------
 
-def _get_bot_info(bot_id: str) -> tuple:
+def _get_bot_info(request: Request, bot_id: str) -> tuple:
     """
     Get (strategy_class, symbol, current_params) for a registered bot.
     The strategy_class returned is the for_symbol() subclass, ready to instantiate.
     """
-    if _bot_manager is None:
-        raise HTTPException(status_code=500, detail="Bot manager not initialized")
-
-    bot = _bot_manager.get_bot(bot_id)
+    bot = _get_bot_manager(request).get_bot(bot_id)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"Bot '{bot_id}' not found")
 
@@ -85,9 +100,9 @@ def _get_bot_info(bot_id: str) -> tuple:
 # ------------------------------------------------------------------
 
 @router.post("/download")
-async def download_historical(req: DownloadRequest):
+async def download_historical(request: Request, req: DownloadRequest):
     """Download historical 1m klines from Binance and store in DB."""
-    symbols = req.symbols or _symbols
+    symbols = req.symbols or _get_symbols(request)
     if not symbols:
         raise HTTPException(status_code=400, detail="No symbols specified")
 
@@ -114,9 +129,9 @@ async def download_historical(req: DownloadRequest):
 
 
 @router.get("/data-status")
-async def data_status():
+async def data_status(request: Request):
     """Check what historical data is available, including OB snapshot counts."""
-    symbols = _symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    symbols = _get_symbols(request) or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     status = await get_data_status(symbols)
 
     # Also fetch OB snapshot counts per symbol
@@ -132,14 +147,14 @@ async def data_status():
 
 
 @router.post("/run")
-async def run_backtest_endpoint(req: BacktestRequest):
+async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     """
     Run a backtest for one bot using current (or overridden) parameters.
     Returns full results including equity curve and metrics.
     For bots with _inject_orderbook (e.g. OrderbookWallBot), loads historical
     orderbook snapshots and passes them to run_backtest for sequential injection.
     """
-    strategy_class, symbol, current_params = _get_bot_info(req.bot_id)
+    strategy_class, symbol, current_params = _get_bot_info(request, req.bot_id)
 
     # Use provided params or fall back to current
     params = req.params if req.params else current_params
@@ -178,7 +193,7 @@ async def run_backtest_endpoint(req: BacktestRequest):
 
 
 @router.post("/optimize")
-async def optimize_endpoint(req: OptimizeRequest):
+async def optimize_endpoint(request: Request, req: OptimizeRequest):
     """
     Run parameter optimization for one bot.
     Uses a genetic algorithm (population, crossover, adaptive mutation, restarts)
@@ -186,7 +201,7 @@ async def optimize_endpoint(req: OptimizeRequest):
     This is a long-running operation — starts in background and returns task_id.
     Poll /api/backtest/status?task_id=... for progress.
     """
-    strategy_class, symbol, current_params = _get_bot_info(req.bot_id)
+    strategy_class, symbol, current_params = _get_bot_info(request, req.bot_id)
 
     iterations = max(10, min(req.iterations, 10000))
     task_id = f"opt_{req.bot_id}"
@@ -222,11 +237,13 @@ async def optimize_endpoint(req: OptimizeRequest):
             _running_tasks[task_id]["result"] = result.to_dict()
             _running_tasks[task_id]["done"] = True
             _running_tasks[task_id]["status"] = "completed"
+            _running_tasks[task_id]["completed_at"] = time.monotonic()
         except Exception as e:
             logger.error(f"Optimization error: {e}", exc_info=True)
             _running_tasks[task_id]["done"] = True
             _running_tasks[task_id]["status"] = "error"
             _running_tasks[task_id]["error"] = str(e)
+            _running_tasks[task_id]["completed_at"] = time.monotonic()
 
     task = asyncio.create_task(_run(), name=task_id)
     _running_tasks[task_id] = {
@@ -255,7 +272,9 @@ async def get_status(task_id: str | None = None):
     """
     Get status of running/completed backtest or optimization tasks.
     If task_id is given, return that task. Otherwise return all.
+    Completed tasks are automatically evicted after 1 hour.
     """
+    _evict_old_tasks()
     if task_id:
         info = _running_tasks.get(task_id)
         if not info:

@@ -24,16 +24,16 @@ from db import repository as repo
 
 logger = logging.getLogger(__name__)
 
-# Will be injected from main.py
-_bot_manager = None
-_simulation_engine = None
+# FastAPI app reference — set during start_agent(app)
+_app = None
 
 
-def set_dependencies(bot_manager, engine) -> None:
-    """Inject BotManager and SimulationEngine references."""
-    global _bot_manager, _simulation_engine
-    _bot_manager = bot_manager
-    _simulation_engine = engine
+def _get_bot_manager():
+    return getattr(_app.state, "bot_manager", None) if _app else None
+
+
+def _get_engine():
+    return getattr(_app.state, "engine", None) if _app else None
 
 
 # ------------------------------------------------------------------
@@ -94,20 +94,23 @@ If no changes needed:
 
 async def _collect_bot_states() -> list[dict]:
     """Gather current state of all bots for the LLM prompt."""
-    if _bot_manager is None:
+    bot_manager = _get_bot_manager()
+    engine = _get_engine()
+    if bot_manager is None:
         return []
 
     states = []
-    for bot_info in _bot_manager.list_bots():
+    for bot_info in bot_manager.list_bots():
         bot_id = bot_info["name"]
-        bot = _bot_manager.get_bot(bot_id)
+        bot = bot_manager.get_bot(bot_id)
         if bot is None:
             continue
 
         # Portfolio state
         portfolio = {}
         try:
-            portfolio = await _simulation_engine.get_portfolio_state(bot_id)
+            if engine is not None:
+                portfolio = await engine.get_portfolio_state(bot_id)
         except Exception:
             pass
 
@@ -231,7 +234,8 @@ async def _execute_actions(actions: list[dict], dry_run: bool = False) -> list[s
         action_type = action.get("type", "")
         bot_id = action.get("bot_id", "")
 
-        if not bot_id or _bot_manager.get_bot(bot_id) is None:
+        bot_manager = _get_bot_manager()
+        if not bot_id or bot_manager is None or bot_manager.get_bot(bot_id) is None:
             results.append(f"SKIP: unknown bot '{bot_id}'")
             continue
 
@@ -246,7 +250,7 @@ async def _execute_actions(actions: list[dict], dry_run: bool = False) -> list[s
                 continue
 
             try:
-                bot = _bot_manager.get_bot(bot_id)
+                bot = bot_manager.get_bot(bot_id)
                 applied = bot.set_params(params)
                 # Persist
                 current_values = {k: v["value"] for k, v in bot.get_params().items()}
@@ -260,7 +264,7 @@ async def _execute_actions(actions: list[dict], dry_run: bool = False) -> list[s
                 results.append(f"DRY-RUN: would stop {bot_id}")
                 continue
             try:
-                await _bot_manager.stop_bot(bot_id)
+                await bot_manager.stop_bot(bot_id)
                 results.append(f"OK: stopped {bot_id}")
             except Exception as e:
                 results.append(f"FAIL: stop {bot_id}: {e}")
@@ -270,7 +274,7 @@ async def _execute_actions(actions: list[dict], dry_run: bool = False) -> list[s
                 results.append(f"DRY-RUN: would start {bot_id}")
                 continue
             try:
-                await _bot_manager.start_bot(bot_id)
+                await bot_manager.start_bot(bot_id)
                 results.append(f"OK: started {bot_id}")
             except Exception as e:
                 results.append(f"FAIL: start {bot_id}: {e}")
@@ -390,9 +394,11 @@ async def _periodic_loop():
         await asyncio.sleep(interval_secs)
 
 
-async def start_agent() -> None:
+async def start_agent(app=None) -> None:
     """Start the LLM agent periodic task (if enabled in config)."""
-    global _agent_task, _agent_enabled
+    global _agent_task, _agent_enabled, _app
+    if app is not None:
+        _app = app
 
     if not settings.llm_enabled:
         logger.info("LLM Agent: disabled (set LLM_ENABLED=true to activate)")

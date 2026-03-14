@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 
 from core.backtest_engine import run_backtest
+from core.utils import safe_float as _safe
 from db import repository as repo
 
 logger = logging.getLogger(__name__)
@@ -69,22 +70,12 @@ class OptimizationResult:
         self.stagnation_restarts: int = 0
         self.concurrency: int = 1
 
-    @staticmethod
-    def _safe(v):
-        """Replace inf/nan with JSON-safe values."""
-        if isinstance(v, float):
-            if math.isinf(v):
-                return 9999.99 if v > 0 else -9999.99
-            if math.isnan(v):
-                return 0.0
-        return v
-
     def _safe_trial(self, t: dict) -> dict:
         """Sanitize a trial dict so all floats are JSON-safe."""
-        return {k: self._safe(v) if isinstance(v, float) else v for k, v in t.items()}
+        return {k: _safe(v) if isinstance(v, float) else v for k, v in t.items()}
 
     def to_dict(self) -> dict:
-        s = self._safe
+        s = _safe
         best_sharpe = s(self.best_sharpe)
         current_sharpe = s(self.current_sharpe)
         best_return = s(self.best_return_pct)

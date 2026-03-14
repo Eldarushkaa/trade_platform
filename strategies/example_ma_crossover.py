@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 
 class MACrossoverBot(BaseStrategy):
+    name_prefix = "ma"
     # --- Required class attributes ---
     name = "ma_crossover_bot"
     symbol = "BTCUSDT"
@@ -58,19 +59,6 @@ class MACrossoverBot(BaseStrategy):
     }
 
     # ------------------------------------------------------------------
-    # Factory
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def for_symbol(cls, symbol: str) -> type:
-        asset = symbol.replace("USDT", "").lower()
-        return type(
-            f"{cls.__name__}_{asset.upper()}",
-            (cls,),
-            {"name": f"ma_{asset}", "symbol": symbol},
-        )
-
-    # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
 
@@ -83,7 +71,6 @@ class MACrossoverBot(BaseStrategy):
         self._histogram: Optional[float] = None
         self._prev_macd: Optional[float] = None
         self._prev_signal: Optional[float] = None
-        self._candle_count: int = 0
         self._warmup_closes: list[float] = []
         self._signal_warmup: list[float] = []
 
@@ -183,45 +170,3 @@ class MACrossoverBot(BaseStrategy):
                 await self._close_position(price, "SELL", "Close LONG → SHORT")
             await self._open_position(price, "SELL")
 
-    # ------------------------------------------------------------------
-    # Order helpers
-    # ------------------------------------------------------------------
-
-    async def _open_position(self, price: float, side: str) -> None:
-        usdt = await self.engine.get_balance(self.name, "USDT")
-        if usdt < 10:
-            self.logger.warning("Insufficient USDT for margin")
-            return
-
-        spend = usdt * self.TRADE_FRACTION
-        quantity = round(spend / price, 6)
-        direction = "LONG" if side == "BUY" else "SHORT"
-
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name, symbol=self.symbol,
-                side=side, quantity=quantity, price=price,
-            )
-            self.logger.info(
-                f"MACD → OPEN {direction} {quantity:.6f} @ {price:.4f}  "
-                f"MACD={self._macd:.6f}  Hist={self._histogram:.6f}  "
-                f"fee={result.get('fee_usdt', 0):.4f}  "
-                f"(trade_id={result.get('trade_id')})"
-            )
-        except ValueError as exc:
-            self.logger.error(f"OPEN {direction} failed: {exc}")
-
-    async def _close_position(self, price: float, side: str, reason: str) -> None:
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name, symbol=self.symbol,
-                side=side, quantity=0, price=price,
-            )
-            pnl = result.get("realized_pnl", 0)
-            self.logger.info(
-                f"{reason} @ {price:.4f}  P&L={pnl:+.4f}  "
-                f"fee={result.get('fee_usdt', 0):.4f}  "
-                f"(trade_id={result.get('trade_id')})"
-            )
-        except ValueError as exc:
-            self.logger.error(f"Close failed: {exc}")

@@ -117,8 +117,6 @@ class BotManager:
 
         # Candle queue: receives completed Candle objects from CandleAggregator
         bot._candle_queue = asyncio.Queue()
-        # Price queue: receives raw ticks (used for engine price cache updates only)
-        bot._price_queue = asyncio.Queue()
 
         task = asyncio.create_task(
             self._candle_loop(bot),
@@ -276,14 +274,7 @@ class BotManager:
 
         # Reset in-memory portfolio
         if isinstance(self.engine, SimulationEngine):
-            portfolio = self.engine._portfolios.get(bot_id)
-            if portfolio:
-                portfolio.usdt_balance = settings.initial_usdt_balance
-                portfolio.position.reset()
-                portfolio.realized_pnl = 0.0
-                portfolio.total_fees_paid = 0.0
-                portfolio.trade_count = 0
-                portfolio.liquidation_count = 0
+            self.engine.reset_portfolio(bot_id, settings.initial_usdt_balance)
 
         # Restart if it was running
         if was_running:
@@ -384,7 +375,7 @@ class BotManager:
             logger.debug(f"No snapshot for '{bot_id}' — starting with default balance")
             return
 
-        portfolio = self.engine._portfolios.get(bot_id)
+        portfolio = self.engine.get_portfolio(bot_id)
         if portfolio is None:
             return
 

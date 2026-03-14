@@ -20,10 +20,11 @@ Data flow:
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (3 strategies × 3 coins = 9 bots):
+Bot instances (4 strategies × 3 coins = 12 bots):
     rsi_btc, rsi_eth, rsi_sol       — Wilder RSI + trend filter
     ma_btc, ma_eth, ma_sol          — MACD crossover + histogram
     bb_btc, bb_eth, bb_sol          — Bollinger Band mean reversion
+    ob_btc, ob_eth, ob_sol          — Orderbook wall / gap detection
 """
 import asyncio
 import logging
@@ -84,9 +85,6 @@ _install_log_handler()
 bot_manager = BotManager(engine=simulation_engine)
 candle_aggregator = CandleAggregator(interval_seconds=60)  # 1-minute candles
 
-# Inject dependencies into LLM agent
-llm_agent.set_dependencies(bot_manager, simulation_engine)
-
 # ------------------------------------------------------------------
 # FastAPI lifespan: startup / shutdown
 # ------------------------------------------------------------------
@@ -129,8 +127,13 @@ async def lifespan(app: FastAPI):
     feed_task = asyncio.create_task(feed.start(), name="binance-feed")
     logger.info(f"Binance feed started for symbols: {symbols}")
 
-    # 6. Start LLM agent (if enabled in config)
-    await llm_agent.start_agent()
+    # 6. Wire app.state so all routes and the LLM agent can access singletons
+    app.state.bot_manager = bot_manager
+    app.state.engine = simulation_engine
+    app.state.symbols = SYMBOLS
+
+    # 7. Start LLM agent (if enabled in config)
+    await llm_agent.start_agent(app)
 
     yield  # ← App is running
 
@@ -145,6 +148,8 @@ async def lifespan(app: FastAPI):
         pass
     price_cache.unsubscribe(bot_manager.dispatch_price)
     price_cache.unsubscribe(candle_aggregator.on_tick)
+    # Flush any partial in-progress candle before stopping bots
+    await candle_aggregator.flush()
     candle_aggregator.unsubscribe(bot_manager.dispatch_candle)
     await bot_manager.stop_all()
     await close_db()
@@ -170,10 +175,6 @@ from api.routes import portfolio as portfolio_router
 from api.routes import llm as llm_router
 from api.routes import backtest as backtest_router
 from api.routes import logs as logs_router
-
-bots_router.set_bot_manager(bot_manager)
-portfolio_router.set_engine(simulation_engine)
-backtest_router.set_dependencies(bot_manager, SYMBOLS)
 
 app.include_router(bots_router.router, prefix="/api")
 app.include_router(trades_router.router, prefix="/api")
@@ -202,7 +203,6 @@ async def health():
     return {
         "status": "ok",
         "mode": settings.trading_mode,
-        "market_type": settings.market_type,
         "leverage": settings.leverage,
         "fee_rate_pct": settings.simulation_fee_rate * 100,
         "candle_interval": "1m",

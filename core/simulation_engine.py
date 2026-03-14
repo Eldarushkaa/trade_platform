@@ -77,6 +77,14 @@ class BaseOrderEngine(ABC):
         """Return the full portfolio state for a bot."""
         ...
 
+    async def get_orderbook_snapshot(self, symbol: str) -> Optional[dict]:
+        """Return the latest orderbook snapshot for *symbol*, or None.
+
+        Base implementation returns None. Engines that have access to a DB or
+        live OB feed should override this to supply real data.
+        """
+        return None
+
 
 # ------------------------------------------------------------------
 # Simulation Engine — Futures Mode
@@ -98,11 +106,22 @@ class SimulationEngine(BaseOrderEngine):
         and all margin is lost.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, skip_db: bool = False) -> None:
+        """
+        Args:
+            skip_db: When True, all DB writes (trade inserts, snapshots) are
+                     suppressed. Pass True when creating an isolated engine for
+                     backtesting or optimization so historical runs never write
+                     to the live database. Defaults to False (normal live mode).
+
+                     Previously this was set from outside as ``engine._skip_db = True``,
+                     which was fragile (private attribute, easy to forget resetting).
+                     Making it a constructor parameter enforces intent at creation time.
+        """
         self._portfolios: dict[str, VirtualPortfolio] = {}
         self._prices: dict[str, float] = {}
         self._fee_rates: dict[str, float] = {}
-        self._skip_db: bool = False  # Set True during backtest to avoid DB writes
+        self._skip_db: bool = skip_db
         # Latest orderbook snapshots per symbol for realistic fill simulation
         # { "BTCUSDT": {"bids": [(price, qty), ...], "asks": [(price, qty), ...]} }
         self._orderbooks: dict[str, dict] = {}
@@ -136,9 +155,26 @@ class SimulationEngine(BaseOrderEngine):
         """
         Update the latest price for a symbol. Called by BinanceFeed.
         Also checks liquidation for all portfolios trading this symbol.
+
+        Simulation assumption — tick-based liquidation vs real exchange behaviour:
+            Real Binance uses "mark price" (index + basis smoothing) for liquidation,
+            not last-trade price. Mark price filters out individual-candle wicks.
+            Here we check every raw aggTrade tick, which means a momentary wick that
+            touches the liquidation price will trigger a force-close even if the
+            candle closes safely on the other side.
+
+            Impact: this produces slightly more liquidations than would occur on a
+            real exchange in volatile sessions. Entry prices are candle-close prices,
+            so the asymmetry is: entries are coarse (1-min) but liquidations are fine
+            (tick resolution). For a simulation platform this is an acceptable and
+            conservative approximation (errs toward safety, not over-confidence).
+
+            Future improvement: move liquidation checks to candle boundaries only
+            (call check_liquidation from dispatch_candle instead of update_price),
+            which would better match real exchange mark-price behaviour.
         """
         self._prices[symbol] = price
-        # Check liquidation on every tick
+        # Check liquidation on every tick (see note above on simulation assumption)
         for portfolio in self._portfolios.values():
             if portfolio.symbol == symbol:
                 portfolio.check_liquidation(price)
@@ -432,6 +468,38 @@ class SimulationEngine(BaseOrderEngine):
             timestamp=datetime.now(timezone.utc),
         )
         await repo.insert_snapshot(snap)
+
+    async def get_orderbook_snapshot(self, symbol: str) -> Optional[dict]:
+        """Return the latest orderbook snapshot for *symbol* from the DB.
+
+        This overrides the no-op base implementation so strategies never need
+        to import `db.repository` directly.
+        """
+        return await repo.get_orderbook_full(symbol)
+
+    # ------------------------------------------------------------------
+    # Public portfolio helpers (preferred over direct _portfolios access)
+    # ------------------------------------------------------------------
+
+    def get_portfolio(self, bot_id: str) -> Optional["VirtualPortfolio"]:
+        """Return the VirtualPortfolio for *bot_id*, or None if not registered."""
+        return self._portfolios.get(bot_id)
+
+    def reset_portfolio(self, bot_id: str, initial_balance: float) -> None:
+        """Reset *bot_id*'s portfolio to a clean state with *initial_balance* USDT.
+
+        Resets position, all counters, and USDT balance in a single atomic call so
+        callers don't need to know the internal structure of VirtualPortfolio.
+        """
+        portfolio = self._portfolios.get(bot_id)
+        if portfolio is None:
+            return
+        portfolio.usdt_balance = initial_balance
+        portfolio.position.reset()
+        portfolio.realized_pnl = 0.0
+        portfolio.total_fees_paid = 0.0
+        portfolio.trade_count = 0
+        portfolio.liquidation_count = 0
 
     # ------------------------------------------------------------------
     # Internal helpers

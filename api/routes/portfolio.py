@@ -4,7 +4,7 @@ API routes for portfolio data.
 GET /api/portfolio/{bot_name}          — current live portfolio state (futures)
 GET /api/portfolio/{bot_name}/history  — historical snapshots (for charting)
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
@@ -13,13 +13,12 @@ from db import repository as repo
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
-# Injected at startup
-_engine = None
 
-
-def set_engine(engine) -> None:
-    global _engine
-    _engine = engine
+def _get_engine(request: Request):
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Engine not available")
+    return engine
 
 
 class SnapshotOut(BaseModel):
@@ -34,7 +33,7 @@ class SnapshotOut(BaseModel):
 
 
 @router.get("/coin-positions")
-async def get_coin_positions():
+async def get_coin_positions(request: Request):
     """
     Return per-symbol aggregate position view across all bots.
 
@@ -42,10 +41,9 @@ async def get_coin_positions():
       coin_positions: {symbol: {total_long_qty, total_short_qty, net_qty, net_side,
                                 long_bots, short_bots}}
     """
-    if _engine is None:
-        raise HTTPException(status_code=503, detail="Engine not available")
+    engine = _get_engine(request)
     return {
-        "coin_positions": _engine.get_coin_positions(),
+        "coin_positions": engine.get_coin_positions(),
     }
 
 
@@ -75,7 +73,7 @@ async def get_orderbook_latest(symbol: str):
 
 
 @router.get("/all")
-async def get_all_portfolios():
+async def get_all_portfolios(request: Request):
     """
     Return current portfolio state for every registered bot in one call.
     Used by the dashboard global stats bar and bot card mini-stats.
@@ -85,14 +83,12 @@ async def get_all_portfolios():
     NOTE: This route MUST be declared before /{bot_name} to prevent FastAPI
     from matching the literal "all" as a bot_name path parameter.
     """
-    if _engine is None:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
+    engine = _get_engine(request)
     bots = await repo.get_all_bots()
     results = []
     for bot in bots:
         try:
-            state = await _engine.get_portfolio_state(bot.id)  # BotRecord uses .id not .bot_id
+            state = await engine.get_portfolio_state(bot.id)  # BotRecord uses .id not .bot_id
             results.append(state)
         except (KeyError, Exception):
             pass
@@ -100,7 +96,7 @@ async def get_all_portfolios():
 
 
 @router.get("/{bot_name}")
-async def get_portfolio(bot_name: str):
+async def get_portfolio(request: Request, bot_name: str):
     """
     Return the current live portfolio state for a bot.
 
@@ -112,15 +108,13 @@ async def get_portfolio(bot_name: str):
       - total_value_usdt, return_pct
       - trade_count, total_fees_paid, liquidation_count
     """
-    if _engine is None:
-        raise HTTPException(status_code=503, detail="Engine not available")
-
+    engine = _get_engine(request)
     bot_record = await repo.get_bot(bot_name)
     if bot_record is None:
         raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
 
     try:
-        state = await _engine.get_portfolio_state(bot_name)
+        state = await engine.get_portfolio_state(bot_name)
         return state
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Portfolio for '{bot_name}' not found in engine")

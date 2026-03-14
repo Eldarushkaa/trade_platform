@@ -10,7 +10,7 @@ PUT  /api/bots/{name}/params  — update strategy parameters
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from db import repository as repo
@@ -20,19 +20,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bots", tags=["Bots"])
 
 
-# Injected at startup from main.py
-_bot_manager = None
-
-
-def set_bot_manager(manager) -> None:
-    global _bot_manager
-    _bot_manager = manager
-
-
-def _get_manager():
-    if _bot_manager is None:
-        raise RuntimeError("BotManager not injected")
-    return _bot_manager
+def _get_manager(request: Request):
+    """Read BotManager from app.state (stored during startup)."""
+    manager = getattr(request.app.state, "bot_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=500, detail="BotManager not initialized")
+    return manager
 
 
 # ------------------------------------------------------------------
@@ -57,15 +50,15 @@ class BotDetail(BaseModel):
 # ------------------------------------------------------------------
 
 @router.get("", response_model=list[BotSummary])
-async def list_bots():
+async def list_bots(request: Request):
     """List all registered bots and their running status."""
-    return _get_manager().list_bots()
+    return _get_manager(request).list_bots()
 
 
 @router.get("/{name}", response_model=BotDetail)
-async def get_bot(name: str):
+async def get_bot(request: Request, name: str):
     """Get detailed status and current portfolio for a single bot."""
-    manager = _get_manager()
+    manager = _get_manager(request)
     bot = manager.get_bot(name)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
@@ -74,9 +67,9 @@ async def get_bot(name: str):
 
 
 @router.post("/{name}/start")
-async def start_bot(name: str):
+async def start_bot(request: Request, name: str):
     """Start a registered bot."""
-    manager = _get_manager()
+    manager = _get_manager(request)
     if manager.get_bot(name) is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
     try:
@@ -87,9 +80,9 @@ async def start_bot(name: str):
 
 
 @router.post("/{name}/stop")
-async def stop_bot(name: str):
+async def stop_bot(request: Request, name: str):
     """Stop a running bot."""
-    manager = _get_manager()
+    manager = _get_manager(request)
     if manager.get_bot(name) is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
     try:
@@ -104,13 +97,13 @@ async def stop_bot(name: str):
 # ------------------------------------------------------------------
 
 @router.post("/{name}/reset")
-async def reset_bot(name: str):
+async def reset_bot(request: Request, name: str):
     """
     Reset a bot's trading state to defaults.
     Clears all trades and snapshots, resets balance to initial.
     Keeps: strategy parameters, historical candle data.
     """
-    manager = _get_manager()
+    manager = _get_manager(request)
     if manager.get_bot(name) is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
     try:
@@ -124,9 +117,9 @@ async def reset_bot(name: str):
 
 
 @router.post("/reset-all")
-async def reset_all_bots():
+async def reset_all_bots(request: Request):
     """Reset ALL bots' trading state to defaults."""
-    manager = _get_manager()
+    manager = _get_manager(request)
     total = {"trades_deleted": 0, "snapshots_deleted": 0, "bots_reset": 0}
     for info in manager.list_bots():
         try:
@@ -144,21 +137,25 @@ async def reset_all_bots():
 # ------------------------------------------------------------------
 
 @router.get("/{name}/params")
-async def get_params(name: str):
+async def get_params(request: Request, name: str):
     """Return the current parameter values and schema for a bot."""
-    manager = _get_manager()
+    manager = _get_manager(request)
     bot = manager.get_bot(name)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
+    strategy_name = (
+        bot.strategy_class_name
+        or bot.__class__.__name__  # fallback for bots not created via for_symbol()
+    )
     return {
         "bot_id": bot.name,
-        "strategy": bot.__class__.__bases__[0].__name__,
+        "strategy": strategy_name,
         "params": bot.get_params(),
     }
 
 
 @router.put("/{name}/params")
-async def update_params(name: str, body: dict):
+async def update_params(request: Request, name: str, body: dict):
     """
     Update strategy parameters for a bot.
 
@@ -166,7 +163,7 @@ async def update_params(name: str, body: dict):
     Validates types and min/max bounds. Returns the applied values.
     Changes take effect immediately on the next candle.
     """
-    manager = _get_manager()
+    manager = _get_manager(request)
     bot = manager.get_bot(name)
     if bot is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
@@ -177,7 +174,6 @@ async def update_params(name: str, body: dict):
         raise HTTPException(status_code=422, detail=str(exc))
 
     # Persist to DB so params survive restarts
-    # Build full current param values dict for storage
     current_values = {k: v["value"] for k, v in bot.get_params().items()}
     await repo.save_bot_params(bot.name, current_values)
 

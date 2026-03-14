@@ -14,6 +14,8 @@ import logging
 import math
 from dataclasses import dataclass, field
 
+from core.utils import safe_float as _safe
+
 from config import settings
 from core.simulation_engine import SimulationEngine
 from data.candle_aggregator import Candle
@@ -80,15 +82,6 @@ class BacktestResult:
     longest_loss_streak: int = 0
 
     def to_dict(self) -> dict:
-        def _safe(v):
-            """Replace inf/nan with JSON-safe values."""
-            if isinstance(v, float):
-                if math.isinf(v):
-                    return 9999.99 if v > 0 else -9999.99
-                if math.isnan(v):
-                    return 0.0
-            return v
-
         return {
             "bot_id": self.bot_id,
             "symbol": self.symbol,
@@ -275,7 +268,10 @@ async def run_backtest(
             logger.warning(f"Could not parse OB timestamps for trimming: {e}")
 
     # --- Create isolated engine + portfolio ---
-    engine = SimulationEngine()
+    # skip_db=True: this engine is ephemeral — all trades stay in memory only.
+    # Previously done as engine._skip_db = True (external private flag mutation),
+    # which required a try/finally restore block. Constructor param is safer.
+    engine = SimulationEngine(skip_db=True)
 
     # --- Create fresh strategy instance ---
     bot = strategy_class(engine=engine)
@@ -305,11 +301,14 @@ async def run_backtest(
         initial_balance=balance,
     )
 
-    # --- Tell engine to skip DB writes during backtest ---
-    engine._skip_db = True
-
     # --- Track trades by intercepting engine ---
-    trade_index = [0]  # mutable counter
+    trade_index = [0]       # mutable counter
+    # Holds the open_time of the candle currently being processed.
+    # Updated each loop iteration BEFORE on_candle() fires so that any
+    # trade placed inside on_candle() records the correct candle timestamp.
+    # Using result.candles_processed for this was off-by-one because that
+    # counter is incremented AFTER on_candle() returns.
+    current_candle_open_time = [0]
     original_place_order = engine.place_order
 
     async def intercepting_place_order(bot_id, symbol, side, quantity, price):
@@ -319,7 +318,7 @@ async def run_backtest(
         actual_qty = order_result.get("quantity", quantity)
         result.trades.append({
             "index": trade_index[0],
-            "timestamp": candle_rows[min(result.candles_processed, len(candle_rows) - 1)]["open_time"],
+            "timestamp": current_candle_open_time[0],
             "side": side,
             "action": order_result.get("action", side),
             "price": round(price, 2),
@@ -375,68 +374,68 @@ async def run_backtest(
             return orderbook_data[ob_index[0]]
         return None
 
-    # --- Replay candles (wrapped in try/finally to always restore flag) ---
+    # --- Replay candles ---
     error_count = [0]
-    try:
-        for i, row in enumerate(candle_rows):
-            candle = Candle(
-                symbol=symbol,
-                interval_seconds=60,
-                open=row["open"],
-                high=row["high"],
-                low=row["low"],
-                close=row["close"],
-                volume=row["volume"],
-                open_time=row["open_time"] / 1000.0,    # convert ms → seconds
-                close_time=row["close_time"] / 1000.0,
-            )
+    for i, row in enumerate(candle_rows):
+        # Set before on_candle() so the intercepting_place_order closure
+        # captures the correct timestamp for any trades placed this candle.
+        current_candle_open_time[0] = row["open_time"]
 
-            # Update engine price (for liquidation checks etc.)
-            engine.update_price(symbol, candle.close)
+        candle = Candle(
+            symbol=symbol,
+            interval_seconds=60,
+            open=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+            open_time=row["open_time"] / 1000.0,    # convert ms → seconds
+            close_time=row["close_time"] / 1000.0,
+        )
 
-            # Inject current orderbook snapshot before the candle fires:
-            # 1. Always feed into engine for realistic VWAP fill prices (all strategies)
-            # 2. Feed into the bot via _inject_orderbook() only for OB-signal bots (ob_wall)
-            if ob_has_data:
-                ob_snap = _advance_ob_pointer(row["open_time"])
-                if ob_snap is not None:
-                    engine.update_orderbook(symbol, ob_snap)        # realistic fills (all bots)
-                    if ob_has_inject:
-                        bot._inject_orderbook(ob_snap)              # type: ignore[attr-defined]
+        # Update engine price (for liquidation checks etc.)
+        engine.update_price(symbol, candle.close)
 
-            # Feed candle to strategy
-            try:
-                await bot.on_candle(candle)
-            except Exception as e:
-                error_count[0] += 1
-                if error_count[0] <= 5:  # Log first 5 errors with traceback
-                    logger.error(f"Backtest candle {i} error: {e}", exc_info=True)
+        # Inject current orderbook snapshot before the candle fires:
+        # 1. Always feed into engine for realistic VWAP fill prices (all strategies)
+        # 2. Feed into the bot via _inject_orderbook() only for OB-signal bots (ob_wall)
+        if ob_has_data:
+            ob_snap = _advance_ob_pointer(row["open_time"])
+            if ob_snap is not None:
+                engine.update_orderbook(symbol, ob_snap)        # realistic fills (all bots)
+                if ob_has_inject:
+                    bot._inject_orderbook(ob_snap)              # type: ignore[attr-defined]
 
-            result.candles_processed = i + 1
+        # Feed candle to strategy
+        try:
+            await bot.on_candle(candle)
+        except Exception as e:
+            error_count[0] += 1
+            if error_count[0] <= 5:  # Log first 5 errors with traceback
+                logger.error(f"Backtest candle {i} error: {e}", exc_info=True)
 
-            # Record equity point at intervals
-            if i % equity_interval == 0 or i == len(candle_rows) - 1:
-                state = await engine.get_portfolio_state(bot.name)
-                total = state["total_value_usdt"]
-                usdt = state.get("usdt_balance", total)
-                result.equity_curve.append({
-                    "time": row["open_time"],
-                    "value": round(total, 2),
-                    "usdt": round(usdt, 2),
-                    "price": round(candle.close, 2),
-                    "side": state.get("position_side", "NONE"),
-                })
+        result.candles_processed = i + 1
 
-        # --- Final state ---
-        final_state = await engine.get_portfolio_state(bot.name)
-        result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
-        result.liquidations = final_state.get("liquidation_count", 0)
+        # Record equity point at intervals
+        if i % equity_interval == 0 or i == len(candle_rows) - 1:
+            state = await engine.get_portfolio_state(bot.name)
+            total = state["total_value_usdt"]
+            usdt = state.get("usdt_balance", total)
+            result.equity_curve.append({
+                "time": row["open_time"],
+                "value": round(total, 2),
+                "usdt": round(usdt, 2),
+                "price": round(candle.close, 2),
+                "side": state.get("position_side", "NONE"),
+            })
 
-        if error_count[0] > 0:
-            logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
-    finally:
-        # --- Always restore DB writes ---
-        engine._skip_db = False
+    # --- Final state ---
+    final_state = await engine.get_portfolio_state(bot.name)
+    result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
+    result.liquidations = final_state.get("liquidation_count", 0)
+
+    if error_count[0] > 0:
+        logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
 
     result.duration_seconds = time.monotonic() - start_time
 

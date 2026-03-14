@@ -32,9 +32,12 @@ class PriceCache:
         Schedules subscriber notifications as a fire-and-forget coroutine.
         """
         self._prices[symbol] = price
-        # Schedule async notifications without blocking the WebSocket receive loop
-        loop = asyncio.get_event_loop()
-        loop.create_task(self._notify(symbol, price))
+        # Schedule async notifications without blocking the WebSocket receive loop.
+        # get_running_loop() is correct here: update() is always called from within
+        # an active asyncio event loop (via BinanceFeed WebSocket handler).
+        # get_event_loop() is deprecated since Python 3.10 and raises RuntimeError
+        # in Python 3.12+ when no current event loop is set on the thread.
+        asyncio.get_running_loop().create_task(self._notify(symbol, price))
 
     def get(self, symbol: str) -> Optional[float]:
         """Return the latest cached price for a symbol, or None if not yet received."""

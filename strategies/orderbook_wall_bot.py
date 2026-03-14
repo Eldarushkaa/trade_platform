@@ -40,7 +40,6 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Optional
 
-from db import repository as repo
 from core.base_strategy import BaseStrategy
 from core.simulation_engine import BaseOrderEngine
 
@@ -156,6 +155,7 @@ def detect_gap_and_wall(
 
 class OrderbookWallBot(BaseStrategy):
     """Trades liquidity gaps before order-book walls (rush-to-wall thesis)."""
+    name_prefix = "ob_wall"
 
     name = "ob_wall_bot"
     symbol = "BTCUSDT"
@@ -215,23 +215,12 @@ class OrderbookWallBot(BaseStrategy):
     # Factory
     # ------------------------------------------------------------------
 
-    @classmethod
-    def for_symbol(cls, symbol: str) -> type:
-        asset = symbol.replace("USDT", "").lower()
-        return type(
-            f"{cls.__name__}_{asset.upper()}",
-            (cls,),
-            {"name": f"ob_wall_{asset}", "symbol": symbol},
-        )
-
     # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
 
     def __init__(self, engine: "BaseOrderEngine") -> None:
         super().__init__(engine)
-        self._candle_count: int = 0
-        self._last_trade_candle: int = -999
         # Track open position targets for exit logic
         self._entry_price: Optional[float] = None
         self._position_side: Optional[str] = None  # "LONG" or "SHORT"
@@ -397,72 +386,43 @@ class OrderbookWallBot(BaseStrategy):
 
     async def _open(self, price: float, side: str, signal: dict) -> None:
         """Open a position based on the gap+wall signal."""
-        usdt = await self.engine.get_balance(self.name, "USDT")
-        if usdt < 10:
-            self.logger.warning("Insufficient USDT for margin")
-            return
-
-        spend = usdt * self.TRADE_FRACTION
-        quantity = round(spend / price, 6)
         direction = "LONG" if side == "BUY" else "SHORT"
         wall_price = signal["wall_price"]
 
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name,
-                symbol=self.symbol,
-                side=side,
-                quantity=quantity,
-                price=price,
-            )
-            self._last_trade_candle = self._candle_count
-            self._entry_price = price
-            self._position_side = direction
-            self._wall_price = wall_price
+        result = await self._open_position(
+            price, side,
+            wall=f"{wall_price:.4f}",
+            gap=f"{signal['gap_pct']:.3f}%",
+        )
+        if result is None:
+            return
 
-            # Set TP near the wall (slightly before it to exit before wall absorbs)
-            # Set SL as fixed % from entry (invalidation of the gap thesis)
-            if direction == "LONG":
-                # TP = wall price minus a small buffer
-                self._take_profit = wall_price * (1 - self.TP_BUFFER_PCT / 100)
-                self._stop_loss = price * (1 - self.STOP_LOSS_PCT / 100)
-            else:
-                # TP = wall price plus a small buffer
-                self._take_profit = wall_price * (1 + self.TP_BUFFER_PCT / 100)
-                self._stop_loss = price * (1 + self.STOP_LOSS_PCT / 100)
+        self._entry_price = price
+        self._position_side = direction
+        self._wall_price = wall_price
 
-            self.logger.info(
-                f"OPEN {direction} {quantity:.6f} @ {price:.4f}  "
-                f"wall={wall_price:.4f} gap={signal['gap_pct']:.3f}%  "
-                f"TP={self._take_profit:.4f}  SL={self._stop_loss:.4f}  "
-                f"fee={result.get('fee_usdt', 0):.4f}"
-            )
-        except ValueError as exc:
-            self.logger.error(f"OPEN {direction} failed: {exc}")
+        # Set TP near the wall (slightly before it to exit before wall absorbs)
+        # Set SL as fixed % from entry (invalidation of the gap thesis)
+        if direction == "LONG":
+            self._take_profit = wall_price * (1 - self.TP_BUFFER_PCT / 100)
+            self._stop_loss = price * (1 - self.STOP_LOSS_PCT / 100)
+        else:
+            self._take_profit = wall_price * (1 + self.TP_BUFFER_PCT / 100)
+            self._stop_loss = price * (1 + self.STOP_LOSS_PCT / 100)
+
+        self.logger.info(
+            f"  TP={self._take_profit:.4f}  SL={self._stop_loss:.4f}"
+        )
 
     async def _close(self, price: float, side: str, reason: str) -> None:
         """Close the current position."""
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name,
-                symbol=self.symbol,
-                side=side,
-                quantity=0,
-                price=price,
-            )
-            self._last_trade_candle = self._candle_count
+        result = await self._close_position(price, side, reason)
+        if result is not None:
             self._entry_price = None
             self._position_side = None
             self._take_profit = None
             self._stop_loss = None
             self._wall_price = None
-
-            pnl = result.get("realized_pnl", 0)
-            self.logger.info(
-                f"{reason}  P&L={pnl:+.4f}  fee={result.get('fee_usdt', 0):.4f}"
-            )
-        except ValueError as exc:
-            self.logger.error(f"Close failed: {exc}")
 
     # ------------------------------------------------------------------
     # Snapshot fetching
@@ -482,10 +442,10 @@ class OrderbookWallBot(BaseStrategy):
             self._bt_snapshot = None  # consume — prevents reuse across candles
             return snap
 
-        # --- Live mode: fetch from DB and check staleness ---
+        # --- Live mode: fetch via engine (keeps DB import out of strategy) ---
         from datetime import datetime, timezone, timedelta
 
-        snap = await repo.get_orderbook_full(self.symbol)
+        snap = await self.engine.get_orderbook_snapshot(self.symbol)
         if snap is None:
             self.logger.debug(f"No orderbook snapshot for {self.symbol}")
             return None
