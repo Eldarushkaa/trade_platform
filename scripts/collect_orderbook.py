@@ -61,6 +61,11 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 # Binance Futures public depth endpoint (no auth required)
 DEPTH_URL = "https://fapi.binance.com/fapi/v1/depth"
 
+# Retry / back-off config
+RETRY_BASE_DELAY  = 5    # seconds — first retry delay
+RETRY_MAX_DELAY   = 300  # seconds — cap back-off at 5 minutes
+RETRY_MULTIPLIER  = 2.0  # exponential factor
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -118,6 +123,16 @@ INSERT INTO orderbook_snapshots
      mid_price, imbalance)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
+
+
+async def open_db() -> aiosqlite.Connection:
+    """Open the SQLite DB with WAL mode for concurrent access."""
+    db = await aiosqlite.connect(DB_PATH)
+    # WAL mode allows the main app to read while we write
+    await db.execute("PRAGMA journal_mode=WAL")
+    # Wait up to 15 seconds if the DB is locked (avoids SQLITE_BUSY crashes)
+    await db.execute("PRAGMA busy_timeout=15000")
+    return db
 
 
 async def init_table(db: aiosqlite.Connection) -> None:
@@ -227,8 +242,34 @@ async def collect_and_store(
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main loop — infinite retry with exponential back-off
 # ---------------------------------------------------------------------------
+async def _run_collector() -> None:
+    """Inner loop: open DB + HTTP client, collect until shutdown or fatal error."""
+    db = await open_db()
+    try:
+        await init_table(db)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            cycle = 0
+            while _running:
+                cycle += 1
+                try:
+                    stored = await collect_and_store(client, db)
+                    logger.info(
+                        f"Cycle #{cycle}: stored {stored}/{len(SYMBOLS)} orderbook snapshots"
+                    )
+                except Exception as exc:
+                    logger.error(f"Cycle #{cycle} failed: {exc}", exc_info=True)
+
+                # Sleep in small chunks so we can respond to SIGTERM quickly
+                for _ in range(INTERVAL_SECONDS):
+                    if not _running:
+                        break
+                    await asyncio.sleep(1)
+    finally:
+        await db.close()
+
+
 async def main() -> None:
     logger.info(
         f"Orderbook Collector starting | "
@@ -236,28 +277,30 @@ async def main() -> None:
         f"depth={DEPTH_LIMIT} levels | db={DB_PATH}"
     )
 
-    db = await aiosqlite.connect(DB_PATH)
-    await init_table(db)
+    delay = RETRY_BASE_DELAY
+    attempt = 0
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        cycle = 0
-        while _running:
-            cycle += 1
-            try:
-                stored = await collect_and_store(client, db)
-                logger.info(
-                    f"Cycle #{cycle}: stored {stored}/{len(SYMBOLS)} orderbook snapshots"
-                )
-            except Exception as exc:
-                logger.error(f"Cycle #{cycle} failed: {exc}", exc_info=True)
-
-            # Sleep in small chunks so we can respond to SIGTERM quickly
-            for _ in range(INTERVAL_SECONDS):
+    while _running:
+        attempt += 1
+        try:
+            await _run_collector()
+            # _run_collector returned cleanly → normal shutdown
+            break
+        except Exception as exc:
+            if not _running:
+                break
+            logger.error(
+                f"Collector crashed (attempt #{attempt}): {exc} — "
+                f"retrying in {delay}s",
+                exc_info=True,
+            )
+            # Back-off sleep, interruptible by shutdown signal
+            for _ in range(int(delay)):
                 if not _running:
                     break
                 await asyncio.sleep(1)
+            delay = min(delay * RETRY_MULTIPLIER, RETRY_MAX_DELAY)
 
-    await db.close()
     logger.info("Orderbook Collector stopped cleanly")
 
 

@@ -22,6 +22,10 @@ async def init_db() -> None:
     _db = await aiosqlite.connect(settings.db_path)
     _db.row_factory = aiosqlite.Row  # rows accessible by column name
 
+    # Enable WAL mode so the collector script can write concurrently
+    await _db.execute("PRAGMA journal_mode=WAL")
+    await _db.execute("PRAGMA busy_timeout=10000")  # wait up to 10 s on lock
+
     await _create_tables()
     logger.info("Database ready")
 

@@ -388,20 +388,27 @@ class BotManager:
         if portfolio is None:
             return
 
-        # --- Use total_value_usdt as the reliable anchor ---
-        total_value = snap.total_value_usdt
+        # --- Use snap.usdt_balance as the reliable free-cash anchor ---
+        # snapshot.usdt_balance = free USDT (not locked in margin) at save time
+        # snapshot.total_value_usdt = usdt_balance + margin + unrealized_pnl at save time
+        # Using total_value - margin is wrong: it includes unrealized_pnl from save time.
+        free_usdt = snap.usdt_balance
 
-        # If latest snapshot is at default balance, try to find a real one
-        if abs(total_value - settings.initial_usdt_balance) < 0.01:
+        # If snapshot is at exactly the default balance with no trades, try a better one
+        if abs(free_usdt - settings.initial_usdt_balance) < 0.01:
             better_snap = await repo.get_latest_nondefault_snapshot(
                 bot_id, settings.initial_usdt_balance
             )
             if better_snap is not None:
-                total_value = better_snap.total_value_usdt
+                free_usdt = better_snap.usdt_balance
+                snap = better_snap
                 logger.info(
                     f"Restored '{bot_id}' from older non-default snapshot: "
-                    f"total=${total_value:.2f} (from {better_snap.timestamp})"
+                    f"free_usdt=${free_usdt:.2f} (from {better_snap.timestamp})"
                 )
+
+        # Restore free USDT balance directly from snapshot
+        portfolio.usdt_balance = free_usdt
 
         # --- Check if there's an open position from last trade ---
         last_trade = await repo.get_latest_trade(bot_id)
@@ -428,21 +435,15 @@ class BotManager:
                     liq = entry + (margin / qty) if qty > 0 else 0.0
                     portfolio.position.liquidation_price = liq
 
-                # Free cash = total - margin (unrealized treated as 0 at restart)
-                portfolio.usdt_balance = max(0.0, total_value - margin)
                 has_open_position = True
 
                 logger.info(
                     f"Restored '{bot_id}' open {side} position: "
                     f"{qty:.6f} @ {entry:.2f} | margin={margin:.2f} | "
-                    f"free={portfolio.usdt_balance:.2f} | total={total_value:.2f}"
+                    f"free_usdt={free_usdt:.2f}"
                 )
             else:
                 logger.debug(f"'{bot_id}' last trade was '{ps}' — no open position to restore")
-
-        if not has_open_position:
-            # No position — all value is free cash
-            portfolio.usdt_balance = total_value
 
         # --- Restore cumulative counters from DB aggregates ---
         trade_stats = await repo.get_bot_trade_stats(bot_id)
@@ -450,8 +451,9 @@ class BotManager:
         portfolio.total_fees_paid = trade_stats["total_fees_paid"]
         portfolio.realized_pnl = trade_stats["realized_pnl"]
 
+        total_value = snap.total_value_usdt
         logger.info(
-            f"Restored '{bot_id}': total={total_value:.2f} | "
+            f"Restored '{bot_id}': snap_total={total_value:.2f} | "
             f"free={portfolio.usdt_balance:.2f} USDT | "
             f"position={portfolio.position.side} qty={portfolio.position.quantity:.6f} | "
             f"trades={portfolio.trade_count} fees={portfolio.total_fees_paid:.4f} "

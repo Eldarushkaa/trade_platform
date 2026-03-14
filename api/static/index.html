@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Trade Platform — Futures Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css?v=8" />
+  <link rel="stylesheet" href="/static/style.css?v=9" />
 </head>
 <body>
 
@@ -20,6 +20,8 @@
       </select>
     </label>
     <button onclick="resetAllBots()" style="background:#e74c3c;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;font-weight:600" title="Reset all bots to default balance (keeps params & data)">🔄 Reset All</button>
+    <!-- OB collector live status badge -->
+    <span id="ob-live-badge" class="ob-live-badge ob-live-unknown" title="Orderbook collector status">📖 OB: …</span>
     <span id="market-badge">futures</span>
     <span id="mode-badge">simulation</span>
   </div>
@@ -41,7 +43,10 @@
   <aside class="sidebar">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <button class="bt-btn bt-btn-dl" onclick="downloadHistory(14)" style="font-size:11px;padding:5px 10px">📥 Download 14d Data</button>
-      <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
+      <span style="display:flex;align-items:center;gap:6px">
+        <span id="msk-clock" style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums" title="Moscow time (UTC+3)"></span>
+        <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
+      </span>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:10px;color:var(--muted)">
       <span>📖 DOM snapshots:</span>
@@ -76,6 +81,25 @@
           <button class="btn" onclick="loadLLMLog()" style="background:transparent;color:var(--muted);border:1px solid var(--border);font-size:10px;padding:3px 8px">↻ Refresh</button>
         </div>
         <div id="llm-log-entries" style="max-height:300px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- Log viewer panel -->
+    <div class="log-panel" id="log-panel">
+      <div class="log-panel-header" onclick="toggleLogPanel()">
+        <span>⚠️ Warnings &amp; Errors <span class="log-count-badge" id="log-count-badge" style="display:none"></span></span>
+        <span class="chevron" id="log-chevron">▶</span>
+      </div>
+      <div class="log-panel-body" id="log-panel-body">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <select id="log-level-select" onchange="loadLogs()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px">
+            <option value="WARNING">WARNING+</option>
+            <option value="ERROR">ERROR only</option>
+          </select>
+          <button class="btn" onclick="loadLogs()" style="background:transparent;color:var(--muted);border:1px solid var(--border);font-size:10px;padding:3px 8px">↻ Refresh</button>
+          <button class="btn" onclick="clearLogs()" style="background:transparent;color:var(--red);border:1px solid var(--border);font-size:10px;padding:3px 8px">🗑 Clear</button>
+        </div>
+        <div id="log-entries" style="max-height:280px;overflow-y:auto;font-size:10px;font-family:monospace"></div>
       </div>
     </div>
   </aside>
@@ -209,6 +233,6 @@
 
 <!-- Lightweight chart via Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

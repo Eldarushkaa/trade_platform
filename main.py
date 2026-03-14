@@ -74,6 +74,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Install in-memory log handler for the /api/logs endpoint (WARNING+)
+from api.routes.logs import install_handler as _install_log_handler
+_install_log_handler()
+
 # ------------------------------------------------------------------
 # Global singletons
 # ------------------------------------------------------------------
@@ -165,6 +169,7 @@ from api.routes import trades as trades_router
 from api.routes import portfolio as portfolio_router
 from api.routes import llm as llm_router
 from api.routes import backtest as backtest_router
+from api.routes import logs as logs_router
 
 bots_router.set_bot_manager(bot_manager)
 portfolio_router.set_engine(simulation_engine)
@@ -175,6 +180,7 @@ app.include_router(trades_router.router, prefix="/api")
 app.include_router(portfolio_router.router, prefix="/api")
 app.include_router(llm_router.router, prefix="/api")
 app.include_router(backtest_router.router, prefix="/api")
+app.include_router(logs_router.router, prefix="/api")
 
 # ------------------------------------------------------------------
 # Serve static dashboard

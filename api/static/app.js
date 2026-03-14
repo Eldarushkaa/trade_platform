@@ -168,10 +168,21 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
     totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
     totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
     totalPnl    = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
-    // Period return % = periodPnl / (currentValue - periodPnl) * 100
-    // (approximates starting value as currentValue minus what was gained this period)
-    const startValue = totalValue - totalPnl;
-    overallReturn = startValue > 0 ? (totalPnl / startValue * 100) : 0;
+    // Overall return = simple average of per-bot period return %
+    // per-bot period return ≈ periodPnl / (currentBotValue - periodPnl) * 100
+    const portMap2 = {};
+    portfolios.forEach(p => { portMap2[p.bot_id] = p; });
+    const periodReturns = Object.entries(periodStats).map(([botId, ps]) => {
+      const s = ps[key];
+      if (!s) return null;
+      const pnl = s.realized_pnl || 0;
+      const botValue = portMap2[botId] ? (portMap2[botId].total_value_usdt || 0) : 0;
+      const startVal = botValue - pnl;
+      return startVal > 0 ? (pnl / startVal * 100) : 0;
+    }).filter(r => r !== null);
+    overallReturn = periodReturns.length > 0
+      ? periodReturns.reduce((s, r) => s + r, 0) / periodReturns.length
+      : 0;
     // Count bots with positive period pnl
     positiveCount = Object.entries(periodStats).filter(([botId, ps]) => {
       const s = ps[key];
@@ -182,8 +193,11 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
     totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
     totalPnl    = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
     positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
-    const totalInitial = portfolios.reduce((s, p) => s + (p.total_value_usdt / (1 + (p.return_pct || 0) / 100)), 0);
-    overallReturn = totalInitial > 0 ? ((totalValue - totalInitial) / totalInitial * 100) : 0;
+    // Overall return = simple average of each bot's individual return_pct
+    const botsWithReturn = portfolios.filter(p => p.return_pct != null);
+    overallReturn = botsWithReturn.length > 0
+      ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
+      : 0;
   }
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
   const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -800,12 +814,12 @@ function fmtTime(d) {
 }
 
 async function loadTrades(name) {
+  const tbody = document.getElementById('trades-body');
   try {
     const trades = await get(`${API}/trades/${name}?limit=50`);
-    const tbody = document.getElementById('trades-body');
     tbody.innerHTML = '';
 
-    if (trades.length === 0) {
+    if (!Array.isArray(trades) || trades.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No trades yet</td></tr>';
       return;
     }
@@ -818,8 +832,8 @@ async function loadTrades(name) {
 
       // Action badge (OPEN_LONG, CLOSE_LONG, OPEN_SHORT, CLOSE_SHORT)
       const action = t.position_side || t.side;
-      const actionClass = action.replace('_', '-').toLowerCase();
-      const actionLabel = action.replace('_', ' ');
+      const actionClass = action.replace(/_/g, '-').toLowerCase();
+      const actionLabel = action.replace(/_/g, ' ');
 
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -827,12 +841,17 @@ async function loadTrades(name) {
         <td><span class="action-badge ${actionClass}">${actionLabel}</span></td>
         <td class="${t.side.toLowerCase()}">${t.side}</td>
         <td>$${fmt(t.price)}</td>
-        <td>${t.quantity.toFixed(6)}</td>
+        <td>${(t.quantity || 0).toFixed(6)}</td>
         <td>${pnlStr}</td>
         <td style="color:var(--muted)">${fmtMoscow(t.timestamp)} МСК</td>`;
       tbody.appendChild(tr);
     });
-  } catch (e) { console.warn('loadTrades', e); }
+  } catch (e) {
+    console.error('loadTrades error:', e);
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);text-align:center;padding:20px">Failed to load trades: ${e.message}</td></tr>`;
+    }
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -1586,6 +1605,142 @@ async function loadLLMLog() {
   }
 }
 
+// ── OB Live Collector badge ────────────────────────────────────
+async function updateObLiveBadge() {
+  const badge = document.getElementById('ob-live-badge');
+  if (!badge) return;
+  try {
+    const resp = await get(`${API}/portfolio/orderbook-status`);
+    const ob = (resp && resp.orderbook) ? resp.orderbook : {};
+    const syms = Object.values(ob);
+
+    if (syms.length === 0) {
+      badge.className = 'ob-live-badge ob-live-offline';
+      badge.textContent = '📖 OB: offline';
+      badge.title = 'No orderbook snapshots found — collector may not be running';
+      return;
+    }
+
+    // Find the most recent snapshot timestamp across all symbols
+    let latestMs = 0;
+    syms.forEach(s => {
+      if (s.last) {
+        const t = new Date(s.last).getTime();
+        if (t > latestMs) latestMs = t;
+      }
+    });
+
+    if (!latestMs) {
+      badge.className = 'ob-live-badge ob-live-offline';
+      badge.textContent = '📖 OB: no data';
+      badge.title = 'Collector has not stored any snapshots yet';
+      return;
+    }
+
+    const ageMin = (Date.now() - latestMs) / 60000;
+    // Consider "live" if last snapshot < 3 minutes ago, "stale" if < 30 min
+    if (ageMin < 3) {
+      badge.className = 'ob-live-badge ob-live-live';
+      badge.textContent = `📖 OB: live`;
+      badge.title = `Last snapshot: ${Math.round(ageMin * 60)}s ago`;
+    } else if (ageMin < 30) {
+      badge.className = 'ob-live-badge ob-live-stale';
+      badge.textContent = `📖 OB: stale ${Math.round(ageMin)}m`;
+      badge.title = `Last snapshot: ${Math.round(ageMin)} minutes ago`;
+    } else {
+      badge.className = 'ob-live-badge ob-live-offline';
+      badge.textContent = `📖 OB: offline`;
+      badge.title = `No snapshot for ${Math.round(ageMin)} minutes — collector may be stopped`;
+    }
+  } catch (e) {
+    const badge = document.getElementById('ob-live-badge');
+    if (badge) {
+      badge.className = 'ob-live-badge ob-live-unknown';
+      badge.textContent = '📖 OB: ?';
+      badge.title = 'Could not fetch OB status';
+    }
+  }
+}
+
+// ── Log viewer panel ───────────────────────────────────────────
+let _logPanelOpen = false;
+let _logErrorCount = 0;
+
+function toggleLogPanel() {
+  _logPanelOpen = !_logPanelOpen;
+  const body = document.getElementById('log-panel-body');
+  const chevron = document.getElementById('log-chevron');
+  const header = document.querySelector('.log-panel-header');
+  if (body) body.classList.toggle('open', _logPanelOpen);
+  if (chevron) chevron.classList.toggle('open', _logPanelOpen);
+  if (_logPanelOpen) loadLogs();
+}
+
+async function loadLogs() {
+  const level = document.getElementById('log-level-select')?.value || 'WARNING';
+  const container = document.getElementById('log-entries');
+  if (!container) return;
+  try {
+    const resp = await get(`${API}/logs?level=${level}&limit=200`);
+    const records = resp.records || [];
+
+    // Update badge count (always based on WARNING+)
+    const countBadge = document.getElementById('log-count-badge');
+    if (countBadge) {
+      if (records.length > 0) {
+        countBadge.textContent = records.length;
+        countBadge.style.display = 'inline';
+      } else {
+        countBadge.style.display = 'none';
+      }
+    }
+
+    if (!_logPanelOpen) return;  // don't render DOM if collapsed
+
+    if (records.length === 0) {
+      container.innerHTML = '<div style="color:var(--muted);padding:8px 0">No warnings or errors recorded</div>';
+      return;
+    }
+
+    // Show newest first
+    const sorted = [...records].reverse();
+    container.innerHTML = sorted.map(r => {
+      const lvlClass = r.level === 'ERROR' || r.level === 'CRITICAL' ? 'log-err' : 'log-warn';
+      const ts = r.ts ? r.ts.slice(11, 19) : '';  // HH:MM:SS
+      const fullTs = r.ts ? new Date(r.ts).toLocaleString('ru-RU', {timeZone: 'Europe/Moscow'}) : '';
+      // Strip the formatted prefix from message to avoid duplication, show raw part
+      const parts = r.message.split(' | ');
+      const msgPart = parts.length >= 4 ? parts.slice(3).join(' | ') : r.message;
+      const srcPart = r.logger || '';
+      return `<div class="log-entry" title="${fullTs}">
+        <span class="log-ts">${ts}</span>
+        <span class="${lvlClass}">${r.level}</span>
+        <span class="log-src">[${srcPart}]</span>
+        <span class="log-msg">${escapeHtml(msgPart)}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    if (container) container.innerHTML = `<div style="color:var(--red)">Failed to load logs: ${e.message}</div>`;
+  }
+}
+
+async function clearLogs() {
+  try {
+    await fetch(`${API}/logs`, { method: 'DELETE' });
+    await loadLogs();
+  } catch (e) {
+    console.warn('clearLogs', e);
+  }
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // ── Auto-refresh loop ──────────────────────────────────────────
 let _refreshInterval = null;
 let _refreshSeconds = 60;
@@ -1594,6 +1749,8 @@ async function refresh() {
   await loadBots();
   await loadLLMStatus();
   if (selectedBot) await loadBotDetail(selectedBot);
+  updateObLiveBadge();
+  loadLogs();  // refresh log badge count silently
 }
 
 function changeRefreshRate(seconds) {
@@ -1627,7 +1784,23 @@ async function resetBot(name) {
   }
 }
 
+// ── Moscow clock ───────────────────────────────────────────────
+function _tickMskClock() {
+  const el = document.getElementById('msk-clock');
+  if (!el) return;
+  const now = new Date();
+  const time = now.toLocaleTimeString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  el.textContent = `🕐 ${time} МСК`;
+}
+_tickMskClock();
+setInterval(_tickMskClock, 1000);
+
 // ── Bootstrap ──────────────────────────────────────────────────
 refresh();
 loadDataStatus();  // show data status in sidebar on load
+updateObLiveBadge();  // show OB collector status in header immediately
+loadLogs();  // populate log badge count on load
 _refreshInterval = setInterval(refresh, _refreshSeconds * 1000);

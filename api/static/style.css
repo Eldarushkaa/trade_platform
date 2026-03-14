@@ -381,6 +381,54 @@ td.pnl-neg { color: var(--red); }
 .bt-param-compare .hdr { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 .bt-param-compare .changed { color: var(--yellow); font-weight: 700; }
 
+/* --- OB Live Collector badge (header) --- */
+.ob-live-badge {
+  padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  letter-spacing: .5px; cursor: default; transition: background .3s, color .3s;
+}
+.ob-live-live    { background: rgba(0,200,150,0.18); color: var(--green); }
+.ob-live-stale   { background: rgba(245,166,35,0.18); color: var(--yellow); }
+.ob-live-offline { background: rgba(255,77,109,0.18); color: var(--red); }
+.ob-live-unknown { background: rgba(136,146,164,0.12); color: var(--muted); }
+
+/* --- Log viewer panel (sidebar) --- */
+.log-panel {
+  margin-top: 16px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+.log-panel-header {
+  padding: 11px 14px; border-bottom: 1px solid transparent;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  user-select: none; transition: background .15s;
+}
+.log-panel-header:hover { background: rgba(255,255,255,.02); }
+.log-panel-header .chevron { transition: transform .2s; font-size: 11px; color: var(--muted); }
+.log-panel-header .chevron.open { transform: rotate(90deg); }
+.log-panel-body {
+  padding: 0 12px; max-height: 0; overflow: hidden;
+  transition: max-height .3s ease, padding .3s ease;
+}
+.log-panel-body.open {
+  max-height: 500px; padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.log-count-badge {
+  display: inline-block; background: rgba(255,77,109,0.25); color: var(--red);
+  font-size: 10px; font-weight: 700; border-radius: 10px; padding: 1px 7px;
+  margin-left: 5px;
+}
+.log-entry {
+  padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.04);
+  line-height: 1.45; word-break: break-word;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-entry .log-ts   { color: var(--muted); margin-right: 5px; }
+.log-entry .log-warn { color: var(--yellow); font-weight: 700; margin-right: 4px; }
+.log-entry .log-err  { color: var(--red);    font-weight: 700; margin-right: 4px; }
+.log-entry .log-msg  { color: var(--text); opacity: .85; }
+.log-entry .log-src  { color: var(--muted); font-size: 9px; }
+
 @media (max-width: 768px) {
   .layout { grid-template-columns: 1fr; }
 }
