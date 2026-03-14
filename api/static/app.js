@@ -160,91 +160,102 @@ async function loadBots() {
 }
 
 // ── Global stats bar ───────────────────────────────────────────
+// Design contract:
+//   • "Matrix" cells always show return_pct (current bot state, same as sidebar — never period-filtered)
+//   • "Overall Return %" is period-specific:
+//       all-time → avg(return_pct)   [authoritative server value, includes unrealized & fees]
+//       24h / 3h → avg( (period_realized - period_fees + unrealized) / initial_balance × 100 )
+//   • "P&L" uses the SAME formula across all modes:
+//       period_realized - period_fees + unrealized
+//       (all-time: period = all trades = portfolio.realized_pnl, portfolio.total_fees_paid)
+//   • "Trades" and "Fees" are period sums
 function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
   const bar = document.getElementById('global-stats-bar');
   if (!bar || portfolios.length === 0) return;
 
-  const totalUSDT = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
-  const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
-  const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
-
-  // Trades, fees, PnL: period-aware if period stats available
-  // IMPORTANT: "Overall Return" always uses return_pct from portfolio API — it's the authoritative
-  // server-computed value (total_value - initial) / initial. Never re-derive it from period stats
-  // to avoid timezone / rounding mismatches.
-  const totalUnrealized = portfolios.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
-
-  let totalTrades, totalFees, totalPnl, overallReturn, positiveCount;
-
-  // Overall return % — always average of return_pct (includes unrealized, matches sidebar)
-  const botsWithReturn = portfolios.filter(p => p.return_pct != null);
-  overallReturn = botsWithReturn.length > 0
-    ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
-    : 0;
-
-  if (_statsMode !== 'all' && periodStats) {
-    const key = _statsMode === '3h' ? 'h3' : 'h24';
-    totalTrades = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].trade_count) || 0), 0);
-    totalFees   = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].total_fees_paid) || 0), 0);
-    const totalPeriodRealized = Object.values(periodStats).reduce((s, ps) => s + ((ps[key] && ps[key].realized_pnl) || 0), 0);
-    // Net PnL for period = period_realized - period_fees + current_unrealized
-    totalPnl = totalPeriodRealized - totalFees + totalUnrealized;
-    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
-  } else {
-    totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
-    totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
-    // All-time net P&L = return_pct * initial_balance
-    totalPnl = portfolios.reduce((s, p) => {
-      const rp = p.return_pct || 0;
-      const init = rp !== -100 ? (p.total_value_usdt || 0) / (1 + rp / 100) : (p.total_value_usdt || 0);
-      return s + rp / 100 * init;
-    }, 0);
-    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
+  // --- Helper: initial balance from current value and all-time return_pct ---
+  function initialBal(p) {
+    const rp = p.return_pct || 0;
+    return rp !== -100
+      ? (p.total_value_usdt || 0) / (1 + rp / 100)
+      : (p.total_value_usdt || 0);
   }
-  const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
-  const pnlColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
-  // Build 3×3 matrix: strategies × coins
-  const strategies = [...new Set(bots.map(b => {
-    const parts = b.name.split('_');
-    return parts.slice(0, -1).join('_');
-  }))].sort();
-  const symbols = [...new Set(bots.map(b => {
-    const parts = b.name.split('_');
-    return parts[parts.length - 1].toUpperCase();
-  }))].sort();
-
-  // Build portfolio lookup
+  // Portfolio lookup
   const portMap = {};
   portfolios.forEach(p => { portMap[p.bot_id] = p; });
 
-  // Matrix HTML — columns defined in CSS (.gs-matrix: auto repeat(3, 48px))
-  // In period mode, show period trades instead of all-time return
+  const totalUSDT  = portfolios.reduce((s, p) => s + (p.usdt_balance || 0), 0);
+  const totalValue = portfolios.reduce((s, p) => s + (p.total_value_usdt || 0), 0);
+  // Unrealized is always current (live from portfolio state)
+  const totalUnrealized = portfolios.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+  const periodLabel = _statsMode === '3h' ? 'Last 3h' : _statsMode === '24h' ? 'Last 24h' : 'All time';
+  const key = _statsMode === '3h' ? 'h3' : _statsMode === '24h' ? 'h24' : null;
+
+  // --- Period-specific totals ---
+  let totalTrades, totalFees, totalPeriodRealized;
+  if (key && periodStats) {
+    // Period mode: sums from period stats DB query
+    totalTrades         = portfolios.reduce((s, p) => s + (periodStats[p.bot_id]?.[key]?.trade_count || 0), 0);
+    totalFees           = portfolios.reduce((s, p) => s + (periodStats[p.bot_id]?.[key]?.total_fees_paid || 0), 0);
+    totalPeriodRealized = portfolios.reduce((s, p) => s + (periodStats[p.bot_id]?.[key]?.realized_pnl || 0), 0);
+  } else {
+    // All-time: use portfolio totals (these are the same formula, just the full history)
+    totalTrades         = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
+    totalFees           = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
+    totalPeriodRealized = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+  }
+
+  // Net P&L: same formula all modes — realized(period) - fees(period) + unrealized(current)
+  const totalPnl = totalPeriodRealized - totalFees + totalUnrealized;
+
+  // Overall Return %: period-specific average across bots
+  let overallReturn;
+  if (key && periodStats) {
+    // Period return per bot = (period_realized - period_fees + unrealized) / initial_balance × 100
+    const returns = portfolios.map(p => {
+      const ps = periodStats[p.bot_id]?.[key];
+      const realized = ps?.realized_pnl || 0;
+      const fees     = ps?.total_fees_paid || 0;
+      const unrealized = p.unrealized_pnl || 0;
+      const init = initialBal(p);
+      return init > 0 ? ((realized - fees + unrealized) / init * 100) : 0;
+    });
+    overallReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
+  } else {
+    // All-time: use authoritative server-computed return_pct (includes everything)
+    overallReturn = portfolios.reduce((s, p) => s + (p.return_pct || 0), 0) / portfolios.length;
+  }
+
+  // Profitable bots = return_pct > 0 (always current snapshot, matches sidebar)
+  const positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
+
+  const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlColor    = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+  // --- Matrix: strategy × coin grid ---
+  // Always shows current return_pct (snapshot of bot state, same as sidebar)
+  // Does NOT change with period toggle — it's a current-state overview
+  const strategies = [...new Set(bots.map(b => b.name.split('_').slice(0,-1).join('_')))].sort();
+  const symbols    = [...new Set(bots.map(b => b.name.split('_').at(-1).toUpperCase()))].sort();
+
   let matrixHTML = `<div class="gs-matrix">`;
   matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr"></div>`;
   symbols.forEach(sym => {
     matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr">${sym}</div>`;
   });
   strategies.forEach(strat => {
-    const stratLabel = strat.toUpperCase();
-    matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr" style="font-size:9px">${stratLabel}</div>`;
+    matrixHTML += `<div class="gs-matrix-cell gs-matrix-hdr" style="font-size:9px">${strat.toUpperCase()}</div>`;
     symbols.forEach(sym => {
-      const botId = `${strat}_${sym.toLowerCase()}`;
-      const p = portMap[botId];
+      const p = portMap[`${strat}_${sym.toLowerCase()}`];
       let cellClass = 'gs-matrix-cell gs-cell-neutral';
       let retStr = '—';
-
-      // Always show return % for consistency across modes
-      // For period modes, compute: period_realized_pnl / initial_balance * 100
-      // initial_balance derived from current total_value and all-time return_pct
-      // Matrix cells: ALWAYS use return_pct (same as sidebar) — it's the authoritative value.
-      // This ensures matrix ↔ sidebar are always consistent regardless of period selection.
       if (p) {
         const ret = p.return_pct || 0;
-        cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+        cellClass = `gs-matrix-cell ${ret >= 0 ? 'gs-cell-green' : 'gs-cell-red'}`;
         retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
       }
-      matrixHTML += `<div class="${cellClass}" title="${botId}">${retStr}</div>`;
+      matrixHTML += `<div class="${cellClass}" title="${strat}_${sym.toLowerCase()}">${retStr}</div>`;
     });
   });
   matrixHTML += `</div>`;
