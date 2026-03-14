@@ -343,16 +343,27 @@ class BotManager:
             pass
 
     async def _snapshot_loop(self, bot_id: str) -> None:
-        """Periodically save a portfolio snapshot to the DB."""
+        """Periodically save a portfolio snapshot to the DB.
+
+        A random initial jitter (0 – interval) is applied so that all 12 bots
+        do not fire their first commit at the exact same second and compete for
+        the SQLite write lock.  Subsequent writes are spaced by the full interval
+        from the bot's own staggered start time.
+        """
+        import random
         try:
+            # Stagger initial write across the full interval window.
+            jitter = random.uniform(0, settings.snapshot_interval_seconds)
+            logger.debug(f"Snapshot loop '{bot_id}': initial delay {jitter:.1f}s")
+            await asyncio.sleep(jitter)
             while True:
-                await asyncio.sleep(settings.snapshot_interval_seconds)
                 try:
                     if isinstance(self.engine, SimulationEngine):
                         await self.engine.save_snapshot(bot_id)
                         logger.debug(f"Portfolio snapshot saved for '{bot_id}'")
                 except Exception as exc:
                     logger.error(f"Snapshot error for '{bot_id}': {exc}", exc_info=True)
+                await asyncio.sleep(settings.snapshot_interval_seconds)
         except asyncio.CancelledError:
             pass
 
