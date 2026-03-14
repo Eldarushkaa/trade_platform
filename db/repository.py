@@ -219,9 +219,12 @@ async def get_bot_trade_stats(bot_id: str) -> dict:
 async def get_bot_trade_stats_since(bot_id: str, since: "datetime") -> dict:
     """Return aggregated trade stats for a bot since a given datetime.
     Includes: trade_count, total_fees_paid, realized_pnl, win_count, loss_count."""
-    from datetime import datetime as _dt
+    from datetime import timezone as _tz
     db = get_db()
-    since_str = since.isoformat()
+    # DB stores naive UTC strings (no tz suffix). Strip timezone from since so
+    # SQLite lexicographic comparison works correctly.
+    since_naive = since.astimezone(_tz.utc).replace(tzinfo=None)
+    since_str = since_naive.isoformat()
     async with db.execute(
         """
         SELECT

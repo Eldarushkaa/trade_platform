@@ -199,11 +199,18 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
     totalTrades = portfolios.reduce((s, p) => s + (p.trade_count || 0), 0);
     totalFees   = portfolios.reduce((s, p) => s + (p.total_fees_paid || 0), 0);
     totalPnl    = portfolios.reduce((s, p) => s + (p.realized_pnl || 0), 0);
-    positiveCount = portfolios.filter(p => (p.return_pct || 0) > 0).length;
-    // Overall return = simple average of each bot's individual return_pct
-    const botsWithReturn = portfolios.filter(p => p.return_pct != null);
-    overallReturn = botsWithReturn.length > 0
-      ? botsWithReturn.reduce((s, p) => s + (p.return_pct || 0), 0) / botsWithReturn.length
+    positiveCount = portfolios.filter(p => (p.realized_pnl || 0) > 0).length;
+    // Overall return = average of realized_pnl / initial_balance across all bots
+    // (consistent with matrix cells and with period mode)
+    const allTimeReturns = portfolios.map(p => {
+      const returnPct = p.return_pct || 0;
+      const initialBal = returnPct !== -100
+        ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
+        : (p.total_value_usdt || 0);
+      return initialBal > 0 ? ((p.realized_pnl || 0) / initialBal * 100) : 0;
+    });
+    overallReturn = allTimeReturns.length > 0
+      ? allTimeReturns.reduce((s, r) => s + r, 0) / allTimeReturns.length
       : 0;
   }
   const returnColor = overallReturn >= 0 ? 'var(--green)' : 'var(--red)';
@@ -238,18 +245,33 @@ function renderGlobalStats(portfolios, bots, coinData, obStatus, periodStats) {
       const p = portMap[botId];
       let cellClass = 'gs-matrix-cell gs-cell-neutral';
       let retStr = '—';
-      if (_statsMode !== 'all' && periodStats && periodStats[botId]) {
+
+      // Always show return % for consistency across modes
+      // For period modes, compute: period_realized_pnl / initial_balance * 100
+      // initial_balance derived from current total_value and all-time return_pct
+      if (_statsMode !== 'all' && periodStats && periodStats[botId] && p) {
         const key = _statsMode === '3h' ? 'h3' : 'h24';
         const ps = periodStats[botId][key];
         if (ps) {
           const pnl = ps.realized_pnl || 0;
-          cellClass = pnl >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
-          retStr = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(1);
+          // Derive initial balance: total_value / (1 + return_pct/100)
+          const returnPct = p.return_pct || 0;
+          const initialBal = returnPct !== -100
+            ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
+            : (p.total_value_usdt || 0);
+          const retPct = initialBal > 0 ? (pnl / initialBal * 100) : 0;
+          cellClass = retPct >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+          retStr = (retPct >= 0 ? '+' : '') + retPct.toFixed(1) + '%';
         }
       } else if (p) {
-        const ret = p.return_pct || 0;
-        cellClass = ret >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
-        retStr = (ret >= 0 ? '+' : '') + ret.toFixed(1) + '%';
+        // All-time: use realized_pnl / initial_balance for consistency (not return_pct which includes unrealized)
+        const returnPct = p.return_pct || 0;
+        const initialBal = returnPct !== -100
+          ? (p.total_value_usdt || 0) / (1 + returnPct / 100)
+          : (p.total_value_usdt || 0);
+        const realizedRetPct = initialBal > 0 ? ((p.realized_pnl || 0) / initialBal * 100) : 0;
+        cellClass = realizedRetPct >= 0 ? 'gs-matrix-cell gs-cell-green' : 'gs-matrix-cell gs-cell-red';
+        retStr = (realizedRetPct >= 0 ? '+' : '') + realizedRetPct.toFixed(1) + '%';
       }
       matrixHTML += `<div class="${cellClass}" title="${botId}">${retStr}</div>`;
     });
