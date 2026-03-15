@@ -1167,8 +1167,7 @@ async function runBacktest() {
       return;
     }
     const r = resp.data;
-    const feeEcho = r._debug_fee_rate != null ? ` | fee=${(r._debug_fee_rate * 100).toFixed(4)}%` : '';
-    status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s${feeEcho}`;
+    status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s`;
 
     renderBacktestResults(r);
   } catch (e) {

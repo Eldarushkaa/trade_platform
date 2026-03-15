@@ -58,9 +58,9 @@ from strategies.orderbook_wall_bot import OrderbookWallBot
 # ------------------------------------------------------------------
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-STRATEGY_CLASSES = [RSIBot, MACrossoverBot, BollingerBot, OrderbookWallBot]
+STRATEGY_CLASSES = [RSIBot, MACrossoverBot]
 
-# Build 9 bot classes: one per strategy × symbol combination
+# Build 6 bot classes: one per strategy × symbol combination
 REGISTERED_BOTS = []
 for strategy_cls in STRATEGY_CLASSES:
     for sym in SYMBOLS:
