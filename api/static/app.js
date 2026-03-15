@@ -1179,25 +1179,35 @@ async function runBacktest() {
 function renderBacktestResults(r) {
   document.getElementById('bt-results').style.display = 'block';
 
+  // Safe number formatter: handles null, "Infinity", "-Infinity" strings from Python safe_round()
+  const _n = (v, dec = 2, fallback = '—') => {
+    const n = parseFloat(v);
+    if (isNaN(n)) return fallback;
+    if (!isFinite(n)) return n > 0 ? '∞' : '-∞';
+    return n.toFixed(dec);
+  };
+  // Numeric value for comparisons (never NaN/Inf → use 0 as neutral)
+  const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+
   // Metrics grid
-  const sign = v => v >= 0 ? 'positive' : 'negative';
+  const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
   const metricsEl = document.getElementById('bt-metrics');
   metricsEl.innerHTML = `
     <div class="bt-metric">
       <div class="label">Return</div>
-      <div class="value ${sign(r.return_pct)}">${r.return_pct >= 0 ? '+' : ''}${r.return_pct.toFixed(2)}%</div>
+      <div class="value ${sign(r.return_pct)}">${_v(r.return_pct) >= 0 ? '+' : ''}${_n(r.return_pct)}%</div>
     </div>
     <div class="bt-metric">
       <div class="label">Net P&L</div>
-      <div class="value ${sign(r.net_pnl)}">${r.net_pnl >= 0 ? '+' : ''}$${fmt(r.net_pnl)}</div>
+      <div class="value ${sign(r.net_pnl)}">${_v(r.net_pnl) >= 0 ? '+' : ''}$${fmt(r.net_pnl)}</div>
     </div>
     <div class="bt-metric">
       <div class="label">Sharpe Ratio</div>
-      <div class="value ${r.sharpe_ratio >= 1 ? 'positive' : r.sharpe_ratio >= 0 ? 'neutral' : 'negative'}">${r.sharpe_ratio.toFixed(2)}</div>
+      <div class="value ${_v(r.sharpe_ratio) >= 1 ? 'positive' : _v(r.sharpe_ratio) >= 0 ? 'neutral' : 'negative'}">${_n(r.sharpe_ratio)}</div>
     </div>
     <div class="bt-metric">
       <div class="label">Max Drawdown</div>
-      <div class="value negative">-${r.max_drawdown_pct.toFixed(2)}%</div>
+      <div class="value negative">-${_n(r.max_drawdown_pct)}%</div>
     </div>
     <div class="bt-metric">
       <div class="label">Trades (total/closed)</div>
@@ -1205,11 +1215,11 @@ function renderBacktestResults(r) {
     </div>
     <div class="bt-metric">
       <div class="label">Win Rate</div>
-      <div class="value ${r.win_rate >= 50 ? 'positive' : 'negative'}">${r.win_rate.toFixed(1)}%</div>
+      <div class="value ${_v(r.win_rate) >= 50 ? 'positive' : 'negative'}">${_n(r.win_rate, 1)}%</div>
     </div>
     <div class="bt-metric">
       <div class="label">Profit Factor</div>
-      <div class="value ${r.profit_factor >= 1 ? 'positive' : 'negative'}">${r.profit_factor === Infinity ? '∞' : r.profit_factor.toFixed(2)}</div>
+      <div class="value ${_v(r.profit_factor) >= 1 ? 'positive' : 'negative'}">${_n(r.profit_factor)}</div>
     </div>
     <div class="bt-metric">
       <div class="label">Fees Paid</div>
