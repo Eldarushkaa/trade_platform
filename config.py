@@ -41,19 +41,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     # --- Trading fees ---
-    # Binance Futures fees:
-    #   Taker (market orders, IOC, FOK): 0.05% → 0.0005
-    # The simulation always places market orders → taker fee applies.
-    taker_fee_rate: float = Field(default=0.0005, description="Taker fee rate (0.0005 = 0.05%)")
-    # Alias for readability — the simulation uses taker (market orders always eat the book)
-    simulation_fee_rate: float = Field(default=0.0005, description="Active fee rate for simulated market orders (taker)")
+    # Binance Futures taker fee: 0.07% is a realistic estimate including
+    # exchange fee (0.05%) + funding cost approximation + spread overhead.
+    # All simulated orders are market orders (taker), so one rate applies.
+    simulation_fee_rate: float = Field(default=0.0007, description="Fee rate for simulated market orders (0.0007 = 0.07%)")
 
     # --- Slippage simulation ---
     # When an orderbook snapshot is available, we walk the OB levels to compute
     # a realistic VWAP fill price (market order eats through levels).
-    # base_slippage_pct: fallback when no OB data (simple fixed spread, 2 bps).
-    # max_slippage_pct: reject order if OB fill would exceed this % vs desired price.
-    base_slippage_pct: float = Field(default=0.02, description="Fallback slippage % when no OB available (0.02 = 2 bps)")
+    # In backtest mode (no OB data), the fill price equals the candle close price —
+    # the fee already accounts for spread overhead (0.07% = exchange fee + spread).
+    # max_slippage_pct: reject order if OB VWAP fill would exceed this % vs desired price.
     max_slippage_pct: float = Field(default=0.10, description="Max allowed slippage % (0.10 = 10 bps) — reject if exceeded")
 
     # --- Portfolio snapshot interval (seconds) ---

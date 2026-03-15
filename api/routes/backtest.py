@@ -67,11 +67,13 @@ class DownloadRequest(BaseModel):
 class BacktestRequest(BaseModel):
     bot_id: str
     params: dict | None = None         # optional param overrides (uses current if None)
+    fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
 
 
 class OptimizeRequest(BaseModel):
     bot_id: str
     iterations: int = 500              # max optimization iterations (200/500/1000/2000/5000)
+    fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
 
 
 # ------------------------------------------------------------------
@@ -151,8 +153,10 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     """
     Run a backtest for one bot using current (or overridden) parameters.
     Returns full results including equity curve and metrics.
-    For bots with _inject_orderbook (e.g. OrderbookWallBot), loads historical
-    orderbook snapshots and passes them to run_backtest for sequential injection.
+
+    Backtests use candle data only — fills execute at candle close price.
+    Fee is applied on every order; use ``fee_rate`` to override the default
+    (e.g. 0.0007 = 0.07%). Omit to use the platform default.
     """
     strategy_class, symbol, current_params = _get_bot_info(request, req.bot_id)
 
@@ -165,24 +169,15 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     if task_id in _running_tasks and not _running_tasks[task_id].get("done", True):
         raise HTTPException(status_code=409, detail="A backtest is already running for this bot")
 
-    # Always load orderbook data when available — used for two purposes:
-    #   1. Realistic VWAP fill prices in the engine (all strategies benefit)
-    #   2. Signal generation via _inject_orderbook() for OB-aware bots (ob_wall only)
-    orderbook_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
-    if orderbook_data:
-        logger.info(f"Loaded {len(orderbook_data)} orderbook snapshots for backtest of '{req.bot_id}'")
-    else:
-        orderbook_data = None
-        logger.info(f"No orderbook snapshots found for '{symbol}' — backtest will use fixed slippage fallback")
-
     # Run backtest (blocking for the request — typically < 5 seconds)
+    # Fill model: candle close price. Cost model: fee_rate only (no slippage).
     try:
         result = await run_backtest(
             bot_id=f"bt_{req.bot_id}",
             symbol=symbol,
             strategy_class=strategy_class,
             params=params,
-            orderbook_data=orderbook_data,
+            fee_rate=req.fee_rate,
         )
         return result.to_dict()
     except ValueError as e:
@@ -231,6 +226,7 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
                 strategy_class=strategy_class,
                 current_params=current_params,
                 max_iterations=iterations,
+                fee_rate=req.fee_rate,
                 progress_callback=on_progress,
                 concurrency=concurrency,
             )

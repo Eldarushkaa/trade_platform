@@ -43,8 +43,6 @@ class BotManager:
         self._tasks: dict[str, asyncio.Task] = {}
         # bot_id → asyncio.Task (periodic snapshot saver)
         self._snapshot_tasks: dict[str, asyncio.Task] = {}
-        # background task that refreshes OB snapshots for the engine (live mode)
-        self._ob_refresh_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Registration
@@ -187,27 +185,10 @@ class BotManager:
             await self.load_saved_params(bot_id)
             await self.start_bot(bot_id)
 
-        # Start OB refresh background task (engine keeps orderbooks fresh for
-        # realistic VWAP fill prices on ALL bots, not just ob_wall)
-        if isinstance(self.engine, SimulationEngine) and self._bots:
-            symbols = list({bot.symbol for bot in self._bots.values()})
-            self._ob_refresh_task = asyncio.create_task(
-                self._orderbook_refresh_loop(symbols),
-                name="ob-refresh",
-            )
-            logger.info(f"OB refresh task started for symbols: {symbols}")
-
     async def stop_all(self) -> None:
         """Stop all running bots gracefully."""
         for bot_id in list(self._tasks.keys()):
             await self.stop_bot(bot_id)
-        if self._ob_refresh_task and not self._ob_refresh_task.done():
-            self._ob_refresh_task.cancel()
-            try:
-                await self._ob_refresh_task
-            except asyncio.CancelledError:
-                pass
-            self._ob_refresh_task = None
 
     # ------------------------------------------------------------------
     # Price / Candle dispatch
@@ -319,28 +300,6 @@ class BotManager:
         except asyncio.CancelledError:
             logger.debug(f"Bot '{bot.name}' candle loop cancelled")
             raise
-
-    async def _orderbook_refresh_loop(self, symbols: list[str]) -> None:
-        """
-        Background task: refresh the engine's orderbook cache every 60s from DB.
-        This enables OB-aware VWAP fill prices for ALL bots in live trading mode,
-        not just ob_wall which fetches OB itself.
-        """
-        try:
-            while True:
-                await asyncio.sleep(60)
-                if not isinstance(self.engine, SimulationEngine):
-                    return
-                for symbol in symbols:
-                    try:
-                        snap = await repo.get_orderbook_full(symbol)
-                        if snap is not None:
-                            self.engine.update_orderbook(symbol, snap)
-                            logger.debug(f"OB refresh: updated engine orderbook for {symbol}")
-                    except Exception as exc:
-                        logger.warning(f"OB refresh error for {symbol}: {exc}")
-        except asyncio.CancelledError:
-            pass
 
     async def _snapshot_loop(self, bot_id: str) -> None:
         """Periodically save a portfolio snapshot to the DB.

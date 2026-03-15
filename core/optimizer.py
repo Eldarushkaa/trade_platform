@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 
 from core.backtest_engine import run_backtest
-from core.utils import safe_float as _safe
+from core.utils import safe_float as _safe, safe_round as _sr
 from db import repository as repo
 
 logger = logging.getLogger(__name__)
@@ -75,11 +75,16 @@ class OptimizationResult:
         return {k: _safe(v) if isinstance(v, float) else v for k, v in t.items()}
 
     def to_dict(self) -> dict:
-        s = _safe
-        best_sharpe = s(self.best_sharpe)
-        current_sharpe = s(self.current_sharpe)
-        best_return = s(self.best_return_pct)
-        current_return = s(self.current_return_pct)
+        best_sharpe = _safe(self.best_sharpe)
+        current_sharpe = _safe(self.current_sharpe)
+        best_return = _safe(self.best_return_pct)
+        current_return = _safe(self.current_return_pct)
+
+        # Compute deltas safely — both sides may be None/"Infinity" strings
+        def _delta(a, b):
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                return _sr(a - b, 2)
+            return None
 
         return {
             "bot_id": self.bot_id,
@@ -90,18 +95,18 @@ class OptimizationResult:
             "duration_seconds": round(self.duration_seconds, 1),
             "objective": self.objective,
             "best_params": self.best_params,
-            "best_sharpe": round(best_sharpe, 2),
-            "best_return_pct": round(best_return, 2),
-            "best_max_drawdown": round(s(self.best_max_drawdown), 2),
-            "best_win_rate": round(s(self.best_win_rate), 1),
-            "best_profit_factor": round(s(self.best_profit_factor), 2),
+            "best_sharpe": _sr(self.best_sharpe, 2),
+            "best_return_pct": _sr(self.best_return_pct, 2),
+            "best_max_drawdown": _sr(self.best_max_drawdown, 2),
+            "best_win_rate": _sr(self.best_win_rate, 1),
+            "best_profit_factor": _sr(self.best_profit_factor, 2),
             "best_trade_count": self.best_trade_count,
             "current_params": self.current_params,
-            "current_sharpe": round(current_sharpe, 2),
-            "current_return_pct": round(current_return, 2),
+            "current_sharpe": _sr(self.current_sharpe, 2),
+            "current_return_pct": _sr(self.current_return_pct, 2),
             "improvement": {
-                "sharpe_delta": round(s(best_sharpe - current_sharpe), 2),
-                "return_delta": round(s(best_return - current_return), 2),
+                "sharpe_delta": _delta(best_sharpe, current_sharpe),
+                "return_delta": _delta(best_return, current_return),
             },
             "ga_stats": {
                 "generations": self.generations_run,
@@ -297,6 +302,7 @@ async def optimize_params(
     current_params: dict | None = None,
     max_iterations: int = 500,
     initial_balance: float | None = None,
+    fee_rate: float | None = None,
     progress_callback=None,
     concurrency: int = 4,
 ) -> OptimizationResult:
@@ -323,6 +329,9 @@ async def optimize_params(
         current_params: Current parameter values (evaluated as baseline)
         max_iterations: Total backtest evaluations budget
         initial_balance: Starting USDT for each backtest
+        fee_rate: Fee rate override for every backtest evaluation
+                  (e.g. 0.0007 = 0.07%). Defaults to settings.simulation_fee_rate.
+                  Set from UI when starting an optimization run.
         progress_callback: Optional async callable(pct, msg)
         concurrency: Max parallel backtests (match to CPU cores)
 
@@ -339,25 +348,10 @@ async def optimize_params(
     _cached_candles = await repo.get_historical_candles(symbol)
     if not _cached_candles:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
-    logger.info(f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol}")
-
-    # --- Pre-load orderbook data for ALL strategies ---
-    # Bids/asks are pre-parsed once here (into (price,qty) tuples) so that
-    # engine.update_orderbook() uses the fast path (no json.loads per candle).
-    # This gives realistic VWAP fills for all strategies AND keeps optimizer fast.
-    _cached_orderbook: list | None = None
-    _ob_data = await repo.get_orderbook_snapshots_for_backtest(symbol)
-    if _ob_data:
-        _cached_orderbook = _ob_data
-        ob_aware = hasattr(strategy_class, "_inject_orderbook")
-        logger.info(
-            f"Optimizer: pre-loaded {len(_cached_orderbook)} OB snapshots for {symbol} "
-            f"(pre-parsed bids/asks, fill=OB-VWAP, signal_inject={ob_aware})"
-        )
-    else:
-        logger.info(
-            f"Optimizer: no OB snapshots for {symbol} — using fixed slippage fallback."
-        )
+    logger.info(
+        f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol} "
+        f"(fill=candle close, fee={fee_rate if fee_rate is not None else 'default'})"
+    )
 
     # Count optimizable dimensions
     n_dims = sum(1 for v in schema.values() if v.get("optimize", True))
@@ -393,15 +387,15 @@ async def optimize_params(
         async with _eval_semaphore:
             try:
                 bt = await run_backtest(
-                    bot_id=f"opt_{bot_id}_{evaluations_done}",
-                    symbol=symbol,
-                    strategy_class=strategy_class,
-                    params=ind.params,
-                    initial_balance=initial_balance,
-                    equity_interval=20,
-                    candle_data=_cached_candles,
-                    orderbook_data=_cached_orderbook,
-                )
+                        bot_id=f"opt_{bot_id}_{evaluations_done}",
+                        symbol=symbol,
+                        strategy_class=strategy_class,
+                        params=ind.params,
+                        initial_balance=initial_balance,
+                        fee_rate=fee_rate,
+                        equity_interval=20,
+                        candle_data=_cached_candles,
+                    )
                 ind.sharpe = bt.sharpe_ratio
                 ind.return_pct = bt.return_pct
                 ind.max_dd = bt.max_drawdown_pct

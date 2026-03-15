@@ -1139,6 +1139,16 @@ async function downloadHistory(days) {
   await loadDataStatus();
 }
 
+function _btFeeRate() {
+  // Read the fee % input and return it as a decimal (e.g. 0.07% → 0.0007).
+  // Falls back to null (backend uses its default) if invalid.
+  const el = document.getElementById('bt-fee-pct');
+  if (!el) return null;
+  const v = parseFloat(el.value);
+  if (isNaN(v) || v <= 0) return null;
+  return v / 100;
+}
+
 async function runBacktest() {
   if (!selectedBot) return;
   const btn = document.getElementById('bt-run-btn');
@@ -1148,8 +1158,9 @@ async function runBacktest() {
   document.getElementById('bt-results').style.display = 'none';
   document.getElementById('bt-opt-results').style.display = 'none';
 
+  const feeRate = _btFeeRate();
   try {
-    const resp = await postJson(`${API}/backtest/run`, { bot_id: selectedBot });
+    const resp = await postJson(`${API}/backtest/run`, { bot_id: selectedBot, fee_rate: feeRate });
     if (!resp.ok) {
       status.textContent = `✗ ${resp.data.detail || 'Error'}`;
       btn.disabled = false;
@@ -1330,6 +1341,7 @@ async function runOptimize() {
   const btn = document.getElementById('bt-opt-btn');
   const status = document.getElementById('bt-status');
   const iters = parseInt(document.getElementById('bt-opt-iters').value) || 200;
+  const feeRate = _btFeeRate();
   btn.disabled = true;
   btn.textContent = '⏳ Optimizing...';
   status.textContent = `Optimization running (${iters} iterations)...`;
@@ -1337,7 +1349,7 @@ async function runOptimize() {
 
   try {
     // Start optimization (returns task_id)
-    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: iters });
+    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: iters, fee_rate: feeRate });
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
@@ -1484,9 +1496,11 @@ async function runBacktestWithOpt() {
   status.textContent = '⏳ Running backtest with optimized params...';
 
   try {
+    const feeRate = _btFeeRate();
     const resp = await postJson(`${API}/backtest/run`, {
       bot_id: selectedBot,
       params: _lastOptResult.best_params,
+      fee_rate: feeRate,
     });
     if (resp.ok) {
       status.textContent = `✓ ${resp.data.candles_processed} candles in ${resp.data.duration_seconds}s (optimized params)`;

@@ -37,12 +37,13 @@ from fastapi.responses import FileResponse
 
 from config import settings
 from db.database import init_db, close_db
-from core.simulation_engine import simulation_engine
+from core.simulation_engine import SimulationEngine
 from core.bot_manager import BotManager
 from core import llm_agent
 from data.binance_feed import BinanceFeed
 from data.price_cache import price_cache
 from data.candle_aggregator import CandleAggregator
+from data.orderbook_feed import fetch_depth
 
 # ------------------------------------------------------------------
 # Import strategy classes
@@ -82,6 +83,9 @@ _install_log_handler()
 # ------------------------------------------------------------------
 # Global singletons
 # ------------------------------------------------------------------
+# ob_fetcher=fetch_depth: every place_order() call fetches a fresh Binance
+# depth snapshot and walks the OB levels for a realistic VWAP fill price.
+simulation_engine = SimulationEngine(ob_fetcher=fetch_depth)
 bot_manager = BotManager(engine=simulation_engine)
 candle_aggregator = CandleAggregator(interval_seconds=60)  # 1-minute candles
 

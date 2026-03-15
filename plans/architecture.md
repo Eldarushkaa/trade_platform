@@ -1,77 +1,73 @@
-# Crypto Trading Platform — Architecture Plan
+# Trade Platform — Architecture Overview
 
-## Overview
-
-A Python-based crypto trading platform that:
-- Connects to Binance API for live price data
-- Runs multiple trading bots (strategies) simultaneously
-- Simulates trading with virtual portfolio (no real money)
-- Provides a FastAPI web dashboard to monitor bots and trades
-- Is designed to be extended to live trading in the future
+> **Purpose:** High-level reference for the project structure, components, and their connections.
+> Detailed docs for each subsystem live in separate files in this directory.
 
 ---
 
-## System Architecture
+## What This Project Is
 
-```mermaid
-graph TD
-    BinanceFeed[Binance Data Feed\nREST + WebSocket] --> BotManager
-    BotManager --> Bot1[Bot: Strategy A]
-    BotManager --> Bot2[Bot: Strategy B]
-    BotManager --> BotN[Bot: Strategy N...]
-    Bot1 --> SimEngine[Simulation Engine]
-    Bot2 --> SimEngine
-    BotN --> SimEngine
-    SimEngine --> VirtualPortfolio[Virtual Portfolio]
-    SimEngine --> DB[(SQLite / aiosqlite)]
-    VirtualPortfolio --> DB
-    DB --> FastAPI[FastAPI Backend]
-    FastAPI --> Dashboard[Web Dashboard\nHTML/JS]
-```
+A Python async crypto futures trading simulation platform that:
+- Connects to **Binance Futures WebSocket** for live price data
+- Runs **12 trading bots** (4 strategies × 3 coins) simultaneously in simulation
+- Simulates **USDT-M perpetual futures** with 3× leverage, margin, and liquidation
+- Provides a **FastAPI web dashboard** to monitor bots, trades, and portfolio in real-time
+- Supports **backtesting** and **genetic parameter optimization** for each strategy
+- Has an optional **LLM agent** (OpenAI) that periodically adjusts bot parameters
 
 ---
 
-## Project Directory Structure
+## Project Structure
 
 ```
 trade_platform/
-├── main.py                        # App entrypoint, starts all services
-├── config.py                      # Global config (API keys, symbols, settings)
+├── main.py                        # App entrypoint — wires all components
+├── config.py                      # Settings via pydantic-settings / .env
 ├── requirements.txt
 │
-├── core/
-│   ├── __init__.py
-│   ├── base_strategy.py           # Abstract BaseStrategy class
-│   ├── bot_manager.py             # Runs/stops bots, manages lifecycle
-│   ├── simulation_engine.py       # Routes orders through virtual portfolio
-│   └── virtual_portfolio.py       # Tracks balances, open positions, P&L
+├── core/                          # Engine layer — no HTTP, no DB imports in strategies
+│   ├── base_strategy.py           # Abstract BaseStrategy + shared order helpers
+│   ├── bot_manager.py             # Bot lifecycle, candle dispatch, snapshot loop
+│   ├── simulation_engine.py       # BaseOrderEngine + SimulationEngine (fake exchange)
+│   ├── virtual_portfolio.py       # FuturesPosition, margin, liquidation, P&L
+│   ├── backtest_engine.py         # Historical candle replay + metrics
+│   ├── optimizer.py               # Genetic algorithm param optimizer
+│   ├── llm_agent.py               # OpenAI periodic decision agent
+│   └── utils.py                   # safe_float / safe_round helpers
 │
-├── data/
-│   ├── __init__.py
-│   ├── binance_feed.py            # Binance WebSocket + REST price feed
-│   └── price_cache.py             # In-memory latest price cache
+├── data/                          # Market data ingestion
+│   ├── binance_feed.py            # Binance Futures WebSocket aggTrade stream
+│   ├── price_cache.py             # In-memory latest price + pub/sub
+│   ├── candle_aggregator.py       # Builds 1-min OHLCV candles from ticks
+│   └── historical.py             # REST download of historical klines
 │
-├── strategies/
-│   ├── __init__.py
-│   ├── example_rsi_bot.py         # Example: RSI-based strategy
-│   └── example_ma_crossover.py    # Example: Moving average crossover
+├── strategies/                    # Signal logic only — no DB, no HTTP
+│   ├── __init__.py                # Exports all strategy classes
+│   ├── example_rsi_bot.py         # Wilder RSI + EMA trend filter
+│   ├── example_ma_crossover.py    # MACD crossover + histogram filter
+│   ├── bollinger_bot.py           # Bollinger Band mean reversion
+│   └── orderbook_wall_bot.py      # Order-book gap + wall detection
 │
-├── db/
-│   ├── __init__.py
-│   ├── database.py                # aiosqlite connection + init
-│   ├── models.py                  # Table schemas as dataclasses/TypedDicts
-│   └── repository.py              # DB queries (insert trade, get history, etc.)
+├── db/                            # Persistence layer
+│   ├── database.py                # aiosqlite connection, WAL mode, migrations
+│   ├── models.py                  # Dataclasses: BotRecord, TradeRecord, PortfolioSnapshot
+│   └── repository.py              # All SQL queries (no raw SQL outside this file)
 │
-├── api/
-│   ├── __init__.py
-│   ├── server.py                  # FastAPI app
+├── api/                           # HTTP layer
 │   ├── routes/
-│   │   ├── bots.py                # GET/POST /bots — list, start, stop bots
-│   │   ├── trades.py              # GET /trades — trade history per bot
-│   │   └── portfolio.py           # GET /portfolio — current balances, P&L
+│   │   ├── bots.py                # GET/POST /api/bots — list, start, stop, params
+│   │   ├── portfolio.py           # GET /api/portfolio — balances, positions
+│   │   ├── trades.py              # GET /api/trades — trade history
+│   │   ├── backtest.py            # POST /api/backtest/run, /optimize
+│   │   ├── llm.py                 # GET /api/llm — agent status, log
+│   │   └── logs.py                # GET /api/logs — in-memory WARNING+ buffer
 │   └── static/
-│       ├── index.html             # Dashboard HTML
-│       └── app.js                 # Minimal JS for fetching data
+│       ├── index.html             # Dashboard SPA
+│       ├── app.js                 # Fetch + render logic
+│       └── style.css
+│
+├── scripts/
+│   └── collect_orderbook.py       # Standalone OB snapshot collector (runs separately)
 │
 └── plans/
     └── architecture.md            # This file
@@ -79,197 +75,261 @@ trade_platform/
 
 ---
 
-## Core Components
+## Live Data Flow
 
-### 1. `BaseStrategy` (Abstract Class)
-
-Every trading bot inherits from this. It enforces a consistent interface so new bots can be added without touching the rest of the system.
-
-```python
-# core/base_strategy.py
-class BaseStrategy(ABC):
-    name: str                        # Unique identifier for the bot
-    symbol: str                      # e.g. "BTCUSDT"
-    is_running: bool
-
-    async def on_price_update(self, price: float) -> None: ...
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def get_stats(self) -> dict: ...
+```mermaid
+graph TD
+    WS[Binance Futures WebSocket\nfstream.binance.com] --> Feed[BinanceFeed]
+    Feed --> PC[PriceCache\nlatest price + pub/sub]
+    PC -->|on_tick| CA[CandleAggregator\n1-min OHLCV builder]
+    PC -->|dispatch_price| BM[BotManager\nupdate_price + liquidation check]
+    CA -->|on_candle| BM
+    BM -->|candle per symbol| Bot1[rsi_btc / rsi_eth / rsi_sol]
+    BM -->|candle per symbol| Bot2[ma_btc / ma_eth / ma_sol]
+    BM -->|candle per symbol| Bot3[bb_btc / bb_eth / bb_sol]
+    BM -->|candle per symbol| Bot4[ob_btc / ob_eth / ob_sol]
+    Bot1 & Bot2 & Bot3 & Bot4 -->|place_order| SE[SimulationEngine]
+    SE --> VP[VirtualPortfolio\nmargin / PnL / liquidation]
+    SE -->|insert_trade| DB[(SQLite — aiosqlite\nWAL mode)]
+    BM -->|snapshot every 60s| DB
+    DB --> API[FastAPI routes]
+    API --> Dashboard[Browser Dashboard]
 ```
 
-To **add a new bot**: create a file in `strategies/`, subclass `BaseStrategy`, implement `on_price_update()`, and register it in `config.py`. Nothing else changes.
-
 ---
 
-### 2. `BotManager`
+## Bots (4 strategies × 3 coins = 12 instances)
 
-- Holds a registry of all active bots
-- Starts/stops them as async tasks (`asyncio.Task`)
-- Exposes an API for the dashboard to list, start, and stop bots at runtime
-
----
-
-### 3. `SimulationEngine`
-
-Acts as a **fake exchange**. When a bot calls `engine.place_order(side, quantity, price)`, the engine:
-1. Validates the order against the virtual portfolio balance
-2. Records the trade in the DB
-3. Updates the virtual portfolio
-
-This layer is the **key abstraction** for future live trading: replace `SimulationEngine` with `LiveBinanceEngine` that calls real Binance order endpoints, and the bots themselves don't need to change at all.
-
----
-
-### 4. `VirtualPortfolio`
-
-Tracks:
-- Base currency balance (e.g. USDT)
-- Asset holdings per symbol
-- Open positions
-- Realized and unrealized P&L
-- Snapshots saved to DB periodically for historical charting
-
----
-
-### 5. Binance Data Feed
-
-- **WebSocket** stream for real-time tick prices (low latency)
-- **REST API** for historical candles (for bots that need indicators like RSI/MA)
-- `PriceCache` stores the latest price per symbol in memory, broadcast to all subscribed bots
-
-Library: `python-binance` or raw `websockets` + `httpx`
-
----
-
-### 6. Database Schema (SQLite via `aiosqlite`)
-
-**Table: `bots`**
-| Column | Type | Notes |
+| Bot name pattern | Strategy file | Signal type |
 |---|---|---|
-| id | TEXT | strategy name as PK |
-| symbol | TEXT | e.g. BTCUSDT |
-| status | TEXT | running / stopped |
-| created_at | DATETIME | |
+| `rsi_btc/eth/sol` | `example_rsi_bot.py` | Wilder RSI + EMA(50) trend filter |
+| `ma_btc/eth/sol` | `example_ma_crossover.py` | MACD crossover + histogram momentum |
+| `bb_btc/eth/sol` | `bollinger_bot.py` | Bollinger Band mean reversion |
+| `ob_btc/eth/sol` | `orderbook_wall_bot.py` | Order-book gap + wall detection |
 
-**Table: `trades`**
-| Column | Type | Notes |
-|---|---|---|
-| id | INTEGER PK | |
-| bot_id | TEXT FK | |
-| side | TEXT | BUY / SELL |
-| symbol | TEXT | |
-| quantity | REAL | |
-| price | REAL | |
-| timestamp | DATETIME | |
-| pnl | REAL | realized P&L on SELL |
-
-**Table: `portfolio_snapshots`**
-| Column | Type | Notes |
-|---|---|---|
-| id | INTEGER PK | |
-| bot_id | TEXT FK | |
-| usdt_balance | REAL | |
-| asset_balance | REAL | |
-| total_value_usdt | REAL | |
-| timestamp | DATETIME | |
+Each bot is a dynamically-created subclass via `BaseStrategy.for_symbol(symbol)`:
+```python
+RSIBot.for_symbol("BTCUSDT")  # → class RSIBot_BTC with name="rsi_btc", symbol="BTCUSDT"
+```
 
 ---
 
-### 7. FastAPI Dashboard
+## Core Components
 
-**Endpoints:**
-- `GET /api/bots` — list all bots and their status
-- `POST /api/bots/{name}/start` — start a bot
-- `POST /api/bots/{name}/stop` — stop a bot
-- `GET /api/bots/{name}/trades` — trade history for a bot
-- `GET /api/bots/{name}/portfolio` — portfolio snapshots
-- `GET /` — serves the HTML dashboard
+### `BaseStrategy` — `core/base_strategy.py`
 
-**Dashboard shows:**
-- List of bots with start/stop controls
-- Current virtual balance per bot
-- Trade history table
-- Simple P&L over time (using portfolio snapshots)
+Abstract base for all bots. Provides:
+- `PARAM_SCHEMA` — declares tunable parameters with type, default, min, max
+- `get_params()` / `set_params()` — runtime parameter editing (persisted to DB)
+- `for_symbol(symbol)` — factory classmethod, creates a named subclass per coin
+- `_open_position(price, side)` / `_close_position(price, side, reason)` — shared order helpers
+- `_candle_count` / `_last_trade_candle` — shared candle counter and cooldown state
+- `on_candle(candle)` — abstract; each strategy implements its signal logic here
+
+**Layer rule:** Strategies must NOT import from `db` or `api`. They only know about `self.engine`.
+
+---
+
+### `SimulationEngine` — `core/simulation_engine.py`
+
+Implements `BaseOrderEngine` (the fake exchange). Responsibilities:
+- `place_order(bot_id, symbol, side, quantity, price)` — routes BUY/SELL to open/close long/short
+- `update_price(symbol, price)` — updates tick price, triggers liquidation checks
+- `update_orderbook(symbol, snapshot)` — stores OB snapshot for VWAP fill price simulation
+- `get_orderbook_snapshot(symbol)` — returns latest OB data (used by strategies via engine)
+- `get_portfolio(bot_id)` / `reset_portfolio(bot_id)` — public portfolio access
+- `save_snapshot(bot_id)` — persists portfolio state to DB
+- `skip_db: bool = False` constructor flag — set `True` in backtest to avoid DB writes
+
+**Future:** Swap `SimulationEngine` → `LiveBinanceEngine` (same interface) to go live. Strategies never change.
+
+---
+
+### `VirtualPortfolio` — `core/virtual_portfolio.py`
+
+Tracks per-bot futures state:
+- `FuturesPosition` dataclass: side (LONG/SHORT/NONE), qty, entry price, leverage, margin, liquidation price
+- `open_long / open_short / close_long / close_short` — position transitions
+- `check_liquidation(price)` — called on every price tick; forced close + margin loss on trigger
+- `deduct_fee(fee_usdt)` — guarded to prevent negative balance
+- `get_state(current_price)` — full snapshot dict for API/DB
+
+**Note:** Liquidation uses tick prices (not mark price). This is more aggressive than a real exchange but simpler to implement — documented in code.
+
+---
+
+### `BotManager` — `core/bot_manager.py`
+
+Orchestrates all bots:
+- `register(bot_class)` — instantiates bot, loads saved params, creates portfolio
+- `start_bot / stop_bot / start_all / stop_all` — asyncio.Task lifecycle
+- `dispatch_price(symbol, price)` — calls `engine.update_price` + per-bot `on_price_update`
+- `dispatch_candle(candle)` — puts candle into each matching bot's queue
+- `_candle_loop(bot)` — reads from bot's candle queue, calls `bot.on_candle()`
+- `_snapshot_loop(bot_id)` — saves portfolio snapshots every N seconds with random jitter (prevents DB lock bursts)
+- `_orderbook_refresh_loop` — periodically loads OB data from DB into engine
+- `_restore_balance_from_snapshot` — on startup, restores bot state from last DB snapshot
+
+---
+
+### `CandleAggregator` — `data/candle_aggregator.py`
+
+Converts raw price ticks → 1-minute OHLCV candles:
+- `on_tick(symbol, price)` — updates in-progress candle; emits completed candle at minute boundary
+- `flush()` — emits any partial in-progress candle (called on shutdown)
+- `subscribe / unsubscribe` — pub/sub for candle callbacks
+
+---
+
+### Backtest & Optimizer — `core/backtest_engine.py`, `core/optimizer.py`
+
+- `run_backtest(bot_id, symbol, strategy_class, params)` — replays DB historical candles through a fresh `SimulationEngine(skip_db=True)` instance; returns metrics + equity curve
+- `optimize_params(...)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; returns best params found
+
+---
+
+### LLM Agent — `core/llm_agent.py`
+
+Optional periodic OpenAI agent (off by default, enable via `LLM_ENABLED=true`):
+- Reads `app.state.bot_manager` and `app.state.engine` (no module-level globals)
+- Collects all bot states, recent trades, current params → builds prompt
+- Calls OpenAI → parses JSON response with `actions` list
+- Applies `set_params / start_bot / stop_bot` via BotManager
+- Logs decisions to `llm_decisions` DB table
+
+---
+
+## Dependency Injection Pattern
+
+All API routes and the LLM agent access shared singletons via `app.state`:
+
+```python
+# main.py (lifespan startup)
+app.state.bot_manager = bot_manager
+app.state.engine = simulation_engine
+app.state.symbols = SYMBOLS
+
+# api/routes/bots.py
+def _get_manager(request: Request):
+    return getattr(request.app.state, "bot_manager", None)
+```
+
+No module-level globals with `set_xxx()` injection.
+
+---
+
+## Database Schema
+
+**SQLite** via `aiosqlite`, WAL mode. All timestamps stored as `ISO 8601 UTC` with `+00:00` suffix.
+
+| Table | Key columns | Purpose |
+|---|---|---|
+| `bots` | `id TEXT PK, symbol, status, initial_balance` | Bot registry |
+| `trades` | `bot_id FK, side, symbol, quantity, price, realized_pnl, fee_usdt, position_side, timestamp` | Trade history |
+| `portfolio_snapshots` | `bot_id FK, usdt_balance, asset_balance, total_value_usdt, asset_price, timestamp` | Historical equity curve |
+| `bot_params` | `bot_id PK, params_json, updated_at` | Persisted parameter overrides |
+| `llm_decisions` | `timestamp, prompt_summary, response_json, actions_taken, success` | LLM agent log |
+| `historical_candles` | `symbol, open_time PK, open/high/low/close/volume, close_time` | Klines for backtest |
+| `orderbook_snapshots` | `symbol, timestamp, bids_json, asks_json, metrics…` | OB data for backtest + OB bots |
+
+---
+
+## API Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/bots` | List all bots with status and stats |
+| `GET` | `/api/bots/{name}` | Single bot detail |
+| `POST` | `/api/bots/{name}/start` | Start a bot |
+| `POST` | `/api/bots/{name}/stop` | Stop a bot |
+| `POST` | `/api/bots/{name}/reset` | Reset portfolio to initial balance |
+| `POST` | `/api/bots/reset-all` | Reset all bots |
+| `GET` | `/api/bots/{name}/params` | Get param schema + current values |
+| `PUT` | `/api/bots/{name}/params` | Update params (validated, persisted) |
+| `GET` | `/api/portfolio/all` | All bot portfolio states |
+| `GET` | `/api/portfolio/{name}` | Single bot futures portfolio state |
+| `GET` | `/api/portfolio/{name}/history` | Portfolio snapshot history (for charting) |
+| `GET` | `/api/portfolio/coin-positions` | Aggregate position view per symbol |
+| `GET` | `/api/portfolio/orderbook/{symbol}` | Latest OB snapshot |
+| `GET` | `/api/trades/{bot_name}` | Paginated trade history for a bot |
+| `GET` | `/api/trades/{bot_name}/stats` | Aggregated trade stats for a time window |
+| `POST` | `/api/backtest/download` | Download historical klines from Binance |
+| `GET` | `/api/backtest/data-status` | Available historical data |
+| `POST` | `/api/backtest/run` | Run a backtest |
+| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background) |
+| `GET` | `/api/backtest/status` | Poll backtest/optimization task status |
+| `GET` | `/api/llm/status` | LLM agent status + last decision |
+| `GET` | `/api/llm/log` | Recent LLM decisions (newest first) |
+| `POST` | `/api/llm/trigger` | Manually trigger one LLM decision cycle |
+| `POST` | `/api/llm/enable` | Enable the agent at runtime |
+| `POST` | `/api/llm/disable` | Disable the agent at runtime |
+| `GET` | `/api/logs` | Recent WARNING+ log lines |
+| `GET` | `/health` | Liveness check |
+| `GET` | `/` | Dashboard HTML |
+
+---
+
+## Configuration — `config.py`
+
+Key settings (all from `.env` or environment variables):
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `trading_mode` | `simulation` | `simulation` only (live = future) |
+| `leverage` | `3` | Futures leverage multiplier |
+| `simulation_fee_rate` | `0.0005` | 0.05% taker fee per order |
+| `initial_usdt_balance` | `10000` | Starting USDT per bot |
+| `snapshot_interval_seconds` | `60` | Portfolio snapshot frequency |
+| `base_slippage_pct` | `0.02` | Fallback slippage when no OB data |
+| `max_slippage_pct` | `0.10` | Order rejection threshold |
+| `llm_enabled` | `false` | Enable OpenAI agent |
+| `llm_api_key` | `""` | OpenAI API key |
+| `llm_interval_minutes` | `10` | Minutes between LLM calls |
+| `db_path` | `trade_platform.db` | SQLite file path |
+
+---
+
+## External Scripts
+
+**`scripts/collect_orderbook.py`** — runs as a **separate process** (systemd service), connects to Binance and writes order-book snapshots to the same SQLite DB every 60 seconds. Both it and the main app use WAL mode + `busy_timeout`. The main app's snapshot loops use random jitter to avoid write collisions.
 
 ---
 
 ## Async Architecture
 
-Everything runs in a single `asyncio` event loop:
+Everything runs in a single `asyncio` event loop managed by `uvicorn`:
 
-```mermaid
-graph LR
-    EventLoop --> BinanceWS[Binance WebSocket Task]
-    EventLoop --> Bot1Task[Bot A async task]
-    EventLoop --> Bot2Task[Bot B async task]
-    EventLoop --> FastAPITask[FastAPI/Uvicorn]
-    EventLoop --> DBTask[aiosqlite writes]
+```
+asyncio event loop
+  ├── uvicorn (FastAPI HTTP)
+  ├── binance-feed task (WebSocket)
+  ├── llm-agent task (optional)
+  └── per-bot tasks (12×):
+        ├── candle_loop
+        ├── snapshot_loop (jittered start)
+        └── orderbook_refresh_loop (shared, one per symbol group)
 ```
 
-`main.py` starts `uvicorn` with `asyncio.run()`, and the `BotManager` and `BinanceFeed` are started as background tasks on app startup via FastAPI `lifespan` events.
+App startup/shutdown is managed by FastAPI `lifespan` context manager in `main.py`.
 
 ---
 
-## Migration Path: Simulation → Live Trading
-
-The simulation engine and live engine share the same interface:
+## Migration Path: Simulation → Live
 
 ```python
 class BaseOrderEngine(ABC):
-    async def place_order(self, bot_id, symbol, side, quantity, price) -> Trade: ...
-    async def get_balance(self, asset: str) -> float: ...
+    async def place_order(self, bot_id, symbol, side, quantity, price) -> dict: ...
+    async def get_balance(self, bot_id, asset) -> float: ...
+    async def get_portfolio_state(self, bot_id) -> dict: ...
+    async def get_orderbook_snapshot(self, symbol) -> dict | None: ...
 ```
 
-| Component | Simulation Mode | Live Mode |
+| Component | Simulation | Live (future) |
 |---|---|---|
-| Order execution | `SimulationEngine` (math only) | `LiveBinanceEngine` (calls Binance API) |
-| Balance | `VirtualPortfolio` | Real Binance account via API |
-| Strategy bots | Unchanged | Unchanged |
+| Order execution | `SimulationEngine` | `LiveBinanceEngine` |
+| Balance | `VirtualPortfolio` | Binance account via REST |
+| Strategies | Unchanged | Unchanged |
 | Data feed | Unchanged | Unchanged |
+| DB | Unchanged | Unchanged |
 
-To go live: swap `SimulationEngine` → `LiveBinanceEngine` in `config.py`. Bots never know the difference.
-
----
-
-## Key Libraries
-
-| Library | Purpose |
-|---|---|
-| `fastapi` | Web API + dashboard serving |
-| `uvicorn` | ASGI server |
-| `aiosqlite` | Async SQLite |
-| `websockets` | Binance WebSocket feed |
-| `httpx` | Async REST calls to Binance |
-| `python-binance` | Optional: full Binance SDK |
-| `pandas` / `numpy` | Indicator calculations in strategies |
-| `pydantic` | Data validation in API layer |
-
----
-
-## Implementation Phases
-
-### Phase 1 — Core Foundation
-- Project scaffold + `config.py`
-- `BaseStrategy` abstract class
-- `VirtualPortfolio` + `SimulationEngine`
-- `aiosqlite` DB setup with schema migrations
-- `BotManager` with asyncio task management
-
-### Phase 2 — Binance Integration
-- Binance WebSocket price feed
-- `PriceCache` and subscription model
-- REST candle fetching for indicator-based strategies
-
-### Phase 3 — Example Bots
-- `ExampleRSIBot` (RSI overbought/oversold)
-- `ExampleMACrossoverBot` (fast/slow MA crossover)
-
-### Phase 4 — FastAPI Dashboard
-- API routes for bots, trades, portfolio
-- Basic HTML dashboard with auto-refresh
-
-### Phase 5 — Future: Live Trading
-- `LiveBinanceEngine` implementing `BaseOrderEngine`
-- Config flag to switch simulation/live mode
-- Risk management layer (max position size, stop-loss)
+To go live: implement `LiveBinanceEngine(BaseOrderEngine)` and swap it in `main.py`. Strategies, BotManager, and all API routes never change.
