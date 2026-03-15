@@ -171,6 +171,8 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
 
     # Run backtest (blocking for the request — typically < 5 seconds)
     # Fill model: candle close price. Cost model: fee_rate only (no slippage).
+    effective_fee = req.fee_rate if req.fee_rate is not None else 0.0007
+    logger.info(f"Backtest run: bot={req.bot_id} fee_rate_received={req.fee_rate} effective={effective_fee}")
     try:
         result = await run_backtest(
             bot_id=f"bt_{req.bot_id}",
@@ -179,7 +181,9 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
             params=params,
             fee_rate=req.fee_rate,
         )
-        return result.to_dict()
+        d = result.to_dict()
+        d["_debug_fee_rate"] = effective_fee   # echo back so UI can confirm
+        return d
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
