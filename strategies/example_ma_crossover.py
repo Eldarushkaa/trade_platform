@@ -74,6 +74,47 @@ class MACrossoverBot(BaseStrategy):
         self._warmup_closes: list[float] = []
         self._signal_warmup: list[float] = []
 
+    def set_params(self, updates: dict) -> dict:
+        """
+        Override to enforce FAST_PERIOD < SLOW_PERIOD and reset EMA state.
+
+        The optimizer mutates each parameter independently and can produce
+        FAST >= SLOW (inverted MACD = swapped/broken signals). We swap silently
+        before applying so the constraint is always satisfied.
+        """
+        if "FAST_PERIOD" in updates or "SLOW_PERIOD" in updates:
+            fast = int(updates.get("FAST_PERIOD", self.FAST_PERIOD))
+            slow = int(updates.get("SLOW_PERIOD", self.SLOW_PERIOD))
+            if fast >= slow:
+                updates = dict(updates)
+                lo, hi = min(fast, slow), max(fast, slow)
+                schema = self.PARAM_SCHEMA
+                updates["FAST_PERIOD"] = max(schema["FAST_PERIOD"]["min"],
+                                             min(schema["FAST_PERIOD"]["max"], lo))
+                updates["SLOW_PERIOD"] = max(schema["SLOW_PERIOD"]["min"],
+                                             min(schema["SLOW_PERIOD"]["max"], hi + 1))
+
+        applied = super().set_params(updates)
+
+        # Reset all EMA state whenever any period changes
+        if any(k in applied for k in ("FAST_PERIOD", "SLOW_PERIOD", "SIGNAL_PERIOD")):
+            self._fast_ema = None
+            self._slow_ema = None
+            self._macd = None
+            self._signal = None
+            self._histogram = None
+            self._prev_macd = None
+            self._prev_signal = None
+            self._warmup_closes = []
+            self._signal_warmup = []
+            self._candle_count = 0
+            self.logger.info(
+                f"MA periods changed (FAST={self.FAST_PERIOD} SLOW={self.SLOW_PERIOD} "
+                f"SIGNAL={self.SIGNAL_PERIOD}): EMA state reset"
+            )
+
+        return applied
+
     # ------------------------------------------------------------------
     # Candle logic
     # ------------------------------------------------------------------
