@@ -1401,9 +1401,19 @@ function renderOptResults(r) {
   const wrap = document.getElementById('bt-opt-results');
   wrap.style.display = 'block';
 
-  const sign = v => v >= 0 ? 'positive' : 'negative';
+  // Safe number helpers (same as renderBacktestResults)
+  const _n = (v, dec = 2, fallback = '—') => {
+    const n = parseFloat(v);
+    if (isNaN(n)) return fallback;
+    if (!isFinite(n)) return n > 0 ? '∞' : '-∞';
+    return n.toFixed(dec);
+  };
+  const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
+
   const imp = r.improvement || {};
   const ga = r.ga_stats || {};
+  const sharpeDelta = _v(imp.sharpe_delta);
 
   // Build param comparison table
   let paramRows = '';
@@ -1425,31 +1435,31 @@ function renderOptResults(r) {
       <div class="bt-metrics" style="margin-bottom:14px">
         <div class="bt-metric">
           <div class="label">Best Sharpe</div>
-          <div class="value ${sign(r.best_sharpe)}">${r.best_sharpe.toFixed(2)}</div>
+          <div class="value ${sign(r.best_sharpe)}">${_n(r.best_sharpe)}</div>
         </div>
         <div class="bt-metric">
           <div class="label">Current Sharpe</div>
-          <div class="value ${sign(r.current_sharpe)}">${r.current_sharpe.toFixed(2)}</div>
+          <div class="value ${sign(r.current_sharpe)}">${_n(r.current_sharpe)}</div>
         </div>
         <div class="bt-metric">
           <div class="label">Sharpe Δ</div>
-          <div class="value ${sign(imp.sharpe_delta || 0)}">${(imp.sharpe_delta||0) >= 0 ? '+' : ''}${(imp.sharpe_delta||0).toFixed(2)}</div>
+          <div class="value ${sign(sharpeDelta)}">${sharpeDelta >= 0 ? '+' : ''}${_n(sharpeDelta)}</div>
         </div>
         <div class="bt-metric">
           <div class="label">Best Return</div>
-          <div class="value ${sign(r.best_return_pct)}">${r.best_return_pct >= 0 ? '+' : ''}${r.best_return_pct.toFixed(2)}%</div>
+          <div class="value ${sign(r.best_return_pct)}">${_v(r.best_return_pct) >= 0 ? '+' : ''}${_n(r.best_return_pct)}%</div>
         </div>
         <div class="bt-metric">
           <div class="label">Max Drawdown</div>
-          <div class="value negative">-${r.best_max_drawdown.toFixed(2)}%</div>
+          <div class="value negative">-${_n(r.best_max_drawdown)}%</div>
         </div>
         <div class="bt-metric">
           <div class="label">Win Rate</div>
-          <div class="value ${r.best_win_rate >= 50 ? 'positive' : 'negative'}">${r.best_win_rate.toFixed(1)}%</div>
+          <div class="value ${_v(r.best_win_rate) >= 50 ? 'positive' : 'negative'}">${_n(r.best_win_rate, 1)}%</div>
         </div>
         <div class="bt-metric">
           <div class="label">Profit Factor</div>
-          <div class="value ${(r.best_profit_factor||0) >= 1 ? 'positive' : 'negative'}">${(r.best_profit_factor||0).toFixed(2)}</div>
+          <div class="value ${_v(r.best_profit_factor) >= 1 ? 'positive' : 'negative'}">${_n(r.best_profit_factor)}</div>
         </div>
         <div class="bt-metric">
           <div class="label">Trades</div>
