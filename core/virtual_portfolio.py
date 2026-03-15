@@ -379,9 +379,23 @@ class VirtualPortfolio:
         """
         Deduct a trading fee from the USDT balance.
         Called by SimulationEngine after executing each order.
+
+        The engine performs a combined (margin + fee) sufficiency check before
+        calling open_long/open_short, so under normal operation this will not
+        push the balance below zero. The clamp is a safety net for rounding
+        edge cases (e.g. float arithmetic on very small balances).
         """
-        self.usdt_balance -= fee_usdt
-        self.total_fees_paid += fee_usdt
+        if fee_usdt > self.usdt_balance:
+            self.logger.warning(
+                f"Fee {fee_usdt:.6f} USDT exceeds remaining balance "
+                f"{self.usdt_balance:.6f} USDT — clamping to zero "
+                f"(total underrun: {fee_usdt - self.usdt_balance:.8f} USDT)"
+            )
+            self.total_fees_paid += self.usdt_balance
+            self.usdt_balance = 0.0
+        else:
+            self.usdt_balance -= fee_usdt
+            self.total_fees_paid += fee_usdt
         self.logger.debug(f"Fee deducted: {fee_usdt:.4f} USDT | Total fees: {self.total_fees_paid:.4f}")
 
     # ------------------------------------------------------------------

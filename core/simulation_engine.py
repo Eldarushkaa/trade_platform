@@ -6,7 +6,7 @@ USDT-Margined Futures simulation:
   - Routes BUY/SELL to open/close positions based on current state
   - Checks liquidation on every price tick
   - Applies configurable trading fees
-  - OB-aware VWAP fill price (walks order book levels for realistic slippage)
+  - OB-aware VWAP fill price (walks order book levels for realistic fill cost)
 
 Order routing logic:
     BUY + no position  → open LONG
@@ -14,16 +14,17 @@ Order routing logic:
     SELL + no position  → open SHORT
     SELL + LONG open    → close LONG
 
-Slippage model:
-    When an orderbook snapshot is loaded via update_orderbook(), place_order()
-    walks the relevant side (asks for BUY, bids for SELL) to compute a VWAP
-    fill price that reflects real market impact.
+Slippage / fill price model:
+    When ``ob_fetcher`` is provided (live mode), ``place_order()`` calls it
+    to get a fresh Binance depth snapshot for the symbol, then walks the
+    relevant OB side (asks for BUY, bids for SELL) to compute a true VWAP
+    fill price reflecting market impact.
 
-    If no OB data is available, a small fixed slippage (settings.base_slippage_pct)
-    is applied as a fallback.
+    If no OB data is available (fetcher is None, or fetch fails), a small
+    fixed slippage (``settings.base_slippage_pct``) is applied as a fallback.
 
-    If VWAP fill price deviates more than settings.max_slippage_pct from the
-    strategy's desired price, the order is rejected (simulating reject-on-slippage).
+    If the VWAP fill price deviates more than ``settings.max_slippage_pct``
+    from the strategy's desired price, the order is rejected.
 
 Key design: SimulationEngine and (future) LiveBinanceEngine both inherit
 from BaseOrderEngine. Strategies only ever call BaseOrderEngine methods,
@@ -33,7 +34,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
 from core.virtual_portfolio import VirtualPortfolio
 from db import repository as repo
@@ -77,10 +78,24 @@ class BaseOrderEngine(ABC):
         """Return the full portfolio state for a bot."""
         ...
 
+    async def get_orderbook_snapshot(self, symbol: str) -> Optional[dict]:
+        """Return the latest orderbook snapshot for *symbol*, or None.
+
+        Base implementation returns None. Engines that have access to a DB or
+        live OB feed should override this to supply real data.
+        """
+        return None
+
 
 # ------------------------------------------------------------------
 # Simulation Engine — Futures Mode
 # ------------------------------------------------------------------
+
+# Type alias for the on-demand OB fetcher callable passed in by main.py.
+# Signature: async def fetch(symbol: str) -> dict | None
+#   Returns {"bids": [(price, qty), ...], "asks": [...]} or None on error.
+OBFetcher = Callable[[str], Awaitable[Optional[dict]]]
+
 
 class SimulationEngine(BaseOrderEngine):
     """
@@ -89,21 +104,42 @@ class SimulationEngine(BaseOrderEngine):
     tracking and persists to SQLite.
 
     Fee handling:
-        A configurable fee (settings.simulation_fee_rate, default 0.05%)
+        A configurable fee (settings.simulation_fee_rate, default 0.07%)
         is deducted from USDT on every order. Strategies are unaware.
 
     Liquidation:
         Checked on every price tick via update_price(). If the current
         price crosses the liquidation price, the position is force-closed
         and all margin is lost.
+
+    OB-aware fill price (live mode):
+        When ``ob_fetcher`` is provided, ``place_order()`` calls it to get
+        a fresh Binance depth snapshot just before executing each order,
+        then walks the relevant OB side to compute a VWAP fill price.
+        In backtest mode (``ob_fetcher=None``), a fixed slippage fallback
+        is used instead — keeping backtests honest and fast.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        skip_db: bool = False,
+        ob_fetcher: Optional[OBFetcher] = None,
+    ) -> None:
+        """
+        Args:
+            skip_db:    When True, all DB writes (trade inserts, snapshots) are
+                        suppressed. Pass True for backtesting/optimization.
+            ob_fetcher: Async callable ``(symbol) -> {"bids": ..., "asks": ...} | None``.
+                        Called on every ``place_order()`` in live mode to fetch a
+                        fresh Binance depth snapshot for realistic VWAP fills.
+                        Pass None (default) for backtesting — fixed slippage is used.
+        """
         self._portfolios: dict[str, VirtualPortfolio] = {}
         self._prices: dict[str, float] = {}
         self._fee_rates: dict[str, float] = {}
-        self._skip_db: bool = False  # Set True during backtest to avoid DB writes
-        # Latest orderbook snapshots per symbol for realistic fill simulation
+        self._skip_db: bool = skip_db
+        self._ob_fetcher: Optional[OBFetcher] = ob_fetcher
+        # Latest orderbook snapshots per symbol (populated by ob_fetcher or update_orderbook)
         # { "BTCUSDT": {"bids": [(price, qty), ...], "asks": [(price, qty), ...]} }
         self._orderbooks: dict[str, dict] = {}
 
@@ -112,13 +148,19 @@ class SimulationEngine(BaseOrderEngine):
         bot_id: str,
         symbol: str,
         initial_usdt: Optional[float] = None,
+        fee_rate: Optional[float] = None,
     ) -> VirtualPortfolio:
         """
         Register a bot with the engine and create its virtual portfolio.
         Called by BotManager when a bot is added.
+
+        Args:
+            fee_rate: Override the global simulation_fee_rate for this bot.
+                      Used by backtest/optimizer to let the UI choose the fee.
+                      Defaults to settings.simulation_fee_rate when None.
         """
         balance = initial_usdt if initial_usdt is not None else settings.initial_usdt_balance
-        self._fee_rates[bot_id] = settings.simulation_fee_rate
+        self._fee_rates[bot_id] = fee_rate if fee_rate is not None else settings.simulation_fee_rate
         portfolio = VirtualPortfolio(
             bot_id=bot_id,
             symbol=symbol,
@@ -136,9 +178,26 @@ class SimulationEngine(BaseOrderEngine):
         """
         Update the latest price for a symbol. Called by BinanceFeed.
         Also checks liquidation for all portfolios trading this symbol.
+
+        Simulation assumption — tick-based liquidation vs real exchange behaviour:
+            Real Binance uses "mark price" (index + basis smoothing) for liquidation,
+            not last-trade price. Mark price filters out individual-candle wicks.
+            Here we check every raw aggTrade tick, which means a momentary wick that
+            touches the liquidation price will trigger a force-close even if the
+            candle closes safely on the other side.
+
+            Impact: this produces slightly more liquidations than would occur on a
+            real exchange in volatile sessions. Entry prices are candle-close prices,
+            so the asymmetry is: entries are coarse (1-min) but liquidations are fine
+            (tick resolution). For a simulation platform this is an acceptable and
+            conservative approximation (errs toward safety, not over-confidence).
+
+            Future improvement: move liquidation checks to candle boundaries only
+            (call check_liquidation from dispatch_candle instead of update_price),
+            which would better match real exchange mark-price behaviour.
         """
         self._prices[symbol] = price
-        # Check liquidation on every tick
+        # Check liquidation on every tick (see note above on simulation assumption)
         for portfolio in self._portfolios.values():
             if portfolio.symbol == symbol:
                 portfolio.check_liquidation(price)
@@ -187,30 +246,77 @@ class SimulationEngine(BaseOrderEngine):
         desired_price: float,
     ) -> tuple[float, str]:
         """
-        Compute fill price.
+        Compute a realistic fill price for a market order.
 
-        Uses desired_price (candle close) as the fill price always.
-        When no OB data, applies base_slippage_pct as a small spread penalty.
-        When OB data is present, no extra slippage (fee already covers cost).
+        Live mode (OB data available in self._orderbooks):
+            Walks the relevant OB side to compute a quantity-weighted average
+            fill price (VWAP) reflecting real market impact:
+              - BUY  → walks ask levels ascending (cheapest ask first)
+              - SELL → walks bid levels descending (highest bid first)
 
-        This keeps fill price consistent with how strategies size their positions
-        (quantity = spend / candle_close), avoiding PnL distortions.
+            If the order size exceeds available OB depth, the last level's
+            price is used for the remainder (worst-case fill).
+
+            If the resulting VWAP deviates more than max_slippage_pct from
+            desired_price, raises ValueError (order rejected — too much slippage).
+
+        Backtest / no OB data:
+            Falls back to a small fixed spread penalty (base_slippage_pct).
+
+        Returns (fill_price, method_label).
         """
         ob = self._orderbooks.get(symbol)
-        base_slip = settings.base_slippage_pct / 100.0
+        max_slip = settings.max_slippage_pct / 100.0
 
-        if ob is None:
-            # No OB data: apply small fixed slippage spread
-            if side == "BUY":
-                fill = desired_price * (1.0 + base_slip)
-            else:
-                fill = desired_price * (1.0 - base_slip)
-            return fill, "fallback"
+        if ob is None or quantity <= 0:
+            # No OB data (backtest mode) — fill at the candle close price.
+            # The fee rate already covers exchange spread + funding overhead.
+            return desired_price, "no_ob"
 
-        # OB data present: use desired_price (candle close) — no extra slippage
-        # The fee (0.05%) already accounts for trading cost; OB data confirms
-        # the market is liquid enough to fill at the candle's closing price.
-        return desired_price, "ob_confirmed"
+        # Pick the correct side:
+        #   BUY  fills against ask levels (ascending price — cheapest first)
+        #   SELL fills against bid levels (descending price — highest first)
+        levels = ob["asks"] if side == "BUY" else ob["bids"]
+
+        if not levels:
+            # OB side empty — fall back to desired price (fee covers spread)
+            return desired_price, "empty_ob"
+
+        # Walk levels and compute VWAP
+        remaining = quantity
+        total_cost = 0.0
+
+        for level_price, level_qty in levels:
+            fill_qty = min(remaining, level_qty)
+            total_cost += fill_qty * level_price
+            remaining -= fill_qty
+            if remaining <= 0:
+                break
+
+        if remaining > 0:
+            # Order is larger than the entire OB depth captured.
+            # Fill the remainder at the last available level price.
+            last_price = levels[-1][0]
+            total_cost += remaining * last_price
+            remaining = 0
+
+        fill_price = total_cost / quantity
+
+        # Slippage guard: reject if fill deviates too far from desired price
+        slippage = abs(fill_price - desired_price) / desired_price
+        if slippage > max_slip:
+            raise ValueError(
+                f"[{symbol}] {side} order rejected: fill {fill_price:.4f} "
+                f"deviates {slippage * 100:.3f}% from desired {desired_price:.4f} "
+                f"(max {max_slip * 100:.3f}%)"
+            )
+
+        logger.debug(
+            f"VWAP fill {symbol} {side}: qty={quantity:.6f} "
+            f"desired={desired_price:.4f} fill={fill_price:.4f} "
+            f"slippage={slippage * 100:.4f}%"
+        )
+        return fill_price, "vwap"
 
     # ------------------------------------------------------------------
     # Per-symbol position aggregation (used by stats bar)
@@ -277,10 +383,13 @@ class SimulationEngine(BaseOrderEngine):
             SELL + no position  → open SHORT
             SELL + LONG open    → close LONG
 
-        Fill price:
-            Uses OB-aware VWAP fill if orderbook snapshot is available,
-            otherwise applies base_slippage_pct as a fixed spread.
-            Rejects if fill deviates > max_slippage_pct from desired price.
+        Fill price (live mode):
+            If ``ob_fetcher`` was provided at construction, fetches a fresh
+            Binance depth snapshot right now and walks the OB levels for a
+            VWAP fill price. Falls back to fixed slippage on fetch failure.
+
+        Fill price (backtest mode — ob_fetcher=None):
+            Uses fixed base_slippage_pct spread as fallback.
 
         Fee is applied after the trade executes.
         """
@@ -288,6 +397,15 @@ class SimulationEngine(BaseOrderEngine):
         side = side.upper()
         position = portfolio.position
         fee_rate = self._fee_rates.get(bot_id, settings.simulation_fee_rate)
+
+        # --- Fetch fresh OB snapshot if fetcher is available (live mode) ---
+        if self._ob_fetcher is not None:
+            try:
+                fresh_ob = await self._ob_fetcher(symbol)
+                if fresh_ob is not None:
+                    self.update_orderbook(symbol, fresh_ob)
+            except Exception as exc:
+                logger.warning(f"[{bot_id}] OB fetch failed for {symbol}: {exc} — using cached/fallback")
 
         # --- Compute fill price from OB or fallback ---
         fill_price, fill_method = self._compute_fill_price(symbol, side, quantity, price)
@@ -432,6 +550,44 @@ class SimulationEngine(BaseOrderEngine):
             timestamp=datetime.now(timezone.utc),
         )
         await repo.insert_snapshot(snap)
+
+    async def get_orderbook_snapshot(self, symbol: str) -> Optional[dict]:
+        """Return the latest orderbook snapshot for *symbol*.
+
+        Returns the in-memory cached snapshot first (populated by ob_fetcher
+        on every place_order call, or by update_orderbook() from external code).
+        Falls back to DB only if the cache is empty — this avoids a DB round-trip
+        on every candle for strategies that use OB for signal generation (ob_wall).
+        """
+        cached = self._orderbooks.get(symbol)
+        if cached is not None:
+            return cached
+        # Cache miss: try DB (live mode with old snapshots, or first call after restart)
+        return await repo.get_orderbook_full(symbol)
+
+    # ------------------------------------------------------------------
+    # Public portfolio helpers (preferred over direct _portfolios access)
+    # ------------------------------------------------------------------
+
+    def get_portfolio(self, bot_id: str) -> Optional["VirtualPortfolio"]:
+        """Return the VirtualPortfolio for *bot_id*, or None if not registered."""
+        return self._portfolios.get(bot_id)
+
+    def reset_portfolio(self, bot_id: str, initial_balance: float) -> None:
+        """Reset *bot_id*'s portfolio to a clean state with *initial_balance* USDT.
+
+        Resets position, all counters, and USDT balance in a single atomic call so
+        callers don't need to know the internal structure of VirtualPortfolio.
+        """
+        portfolio = self._portfolios.get(bot_id)
+        if portfolio is None:
+            return
+        portfolio.usdt_balance = initial_balance
+        portfolio.position.reset()
+        portfolio.realized_pnl = 0.0
+        portfolio.total_fees_paid = 0.0
+        portfolio.trade_count = 0
+        portfolio.liquidation_count = 0
 
     # ------------------------------------------------------------------
     # Internal helpers

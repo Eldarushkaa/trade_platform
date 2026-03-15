@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 class BollingerBot(BaseStrategy):
     # --- Required class attributes ---
     name = "bb_bot"
+    name_prefix = "bb"
     symbol = "BTCUSDT"
 
     # --- Bollinger Band parameters ---
@@ -74,15 +75,6 @@ class BollingerBot(BaseStrategy):
     # Factory
     # ------------------------------------------------------------------
 
-    @classmethod
-    def for_symbol(cls, symbol: str) -> type:
-        asset = symbol.replace("USDT", "").lower()
-        return type(
-            f"{cls.__name__}_{asset.upper()}",
-            (cls,),
-            {"name": f"bb_{asset}", "symbol": symbol},
-        )
-
     # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
@@ -94,9 +86,32 @@ class BollingerBot(BaseStrategy):
         self._upper: Optional[float] = None
         self._lower: Optional[float] = None
         self._bandwidth: Optional[float] = None
-        self._candle_count: int = 0
-        self._last_trade_candle: int = -999
         self._entry_price: Optional[float] = None
+
+    def set_params(self, updates: dict) -> dict:
+        """
+        Override to rebuild the closes deque when BB_PERIOD changes.
+
+        The deque's maxlen is fixed at construction time, so a live parameter
+        update to BB_PERIOD must recreate it with the new capacity.
+        Existing candle history is preserved (trimmed to new period if smaller).
+        """
+        applied = super().set_params(updates)
+        if "BB_PERIOD" in applied:
+            new_period = self.BB_PERIOD
+            # Carry forward as many recent closes as fit in the new window
+            existing = list(self._closes)[-new_period:]
+            self._closes = deque(existing, maxlen=new_period)
+            # Invalidate computed bands — they'll be recomputed on next candle
+            self._sma = None
+            self._upper = None
+            self._lower = None
+            self._bandwidth = None
+            self.logger.info(
+                f"BB_PERIOD changed to {new_period}: "
+                f"deque rebuilt with {len(self._closes)} retained closes"
+            )
+        return applied
 
     # ------------------------------------------------------------------
     # Candle logic
@@ -181,50 +196,16 @@ class BollingerBot(BaseStrategy):
         self._lower = self._sma - self.BB_STD_DEV * stddev
         self._bandwidth = (self._upper - self._lower) / self._sma if self._sma > 0 else 0
 
-    # ------------------------------------------------------------------
-    # Order helpers
-    # ------------------------------------------------------------------
-
-    async def _open_position(self, price: float, side: str) -> None:
-        usdt = await self.engine.get_balance(self.name, "USDT")
-        if usdt < 10:
-            self.logger.warning("Insufficient USDT for margin")
-            return
-
-        spend = usdt * self.TRADE_FRACTION
-        quantity = round(spend / price, 6)
-        direction = "LONG" if side == "BUY" else "SHORT"
-
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name, symbol=self.symbol,
-                side=side, quantity=quantity, price=price,
-            )
+    async def _open_position(self, price: float, side: str, **log_extra) -> "dict | None":
+        """Override to also set entry price for stop-loss tracking."""
+        result = await super()._open_position(price, side, **log_extra)
+        if result is not None:
             self._entry_price = price
-            self._last_trade_candle = self._candle_count
-            self.logger.info(
-                f"BB → OPEN {direction} {quantity:.6f} @ {price:.4f}  "
-                f"lower={self._lower:.4f}  upper={self._upper:.4f}  "
-                f"BW={self._bandwidth:.5f}  "
-                f"fee={result.get('fee_usdt', 0):.4f}  "
-                f"(trade_id={result.get('trade_id')})"
-            )
-        except ValueError as exc:
-            self.logger.error(f"OPEN {direction} failed: {exc}")
+        return result
 
-    async def _close_position(self, price: float, side: str, reason: str) -> None:
-        try:
-            result = await self.engine.place_order(
-                bot_id=self.name, symbol=self.symbol,
-                side=side, quantity=0, price=price,
-            )
+    async def _close_position(self, price: float, side: str, reason: str) -> "dict | None":
+        """Override to clear entry price on close."""
+        result = await super()._close_position(price, side, reason)
+        if result is not None:
             self._entry_price = None
-            self._last_trade_candle = self._candle_count
-            pnl = result.get("realized_pnl", 0)
-            self.logger.info(
-                f"{reason} → CLOSE @ {price:.4f}  P&L={pnl:+.4f}  "
-                f"fee={result.get('fee_usdt', 0):.4f}  "
-                f"(trade_id={result.get('trade_id')})"
-            )
-        except ValueError as exc:
-            self.logger.error(f"Close failed: {exc}")
+        return result

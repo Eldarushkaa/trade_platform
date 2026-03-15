@@ -191,6 +191,25 @@ class CandleAggregator:
             candle.update(price)
 
     # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    async def flush(self) -> None:
+        """Finalize and emit all in-progress candles.
+
+        Call this at shutdown so the last partial candle is not silently dropped.
+        The candle's close_time is set to now (it may be shorter than
+        interval_seconds if the app shuts down mid-interval).
+        """
+        now = time.time()
+        for symbol, candle in list(self._in_progress.items()):
+            if candle.volume > 0:
+                completed = candle.to_candle(close_time=now)
+                logger.debug(f"CandleAggregator.flush(): emitting partial candle for {symbol}")
+                await self._notify(completed)
+        self._in_progress.clear()
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 

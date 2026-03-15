@@ -7,12 +7,17 @@ with live data) and feeds stored candles one by one, collecting:
     - All trades
     - Performance metrics (Sharpe, max drawdown, win rate, etc.)
 
+Fill model: every order executes at the candle close price.
+Cost model: fee_rate is the only cost (no slippage).
+
 Usage:
     result = await run_backtest("rsi_btc", "BTCUSDT", RSIBot, params={...})
 """
 import logging
 import math
 from dataclasses import dataclass, field
+
+from core.utils import safe_round as _sr
 
 from config import settings
 from core.simulation_engine import SimulationEngine
@@ -80,15 +85,6 @@ class BacktestResult:
     longest_loss_streak: int = 0
 
     def to_dict(self) -> dict:
-        def _safe(v):
-            """Replace inf/nan with JSON-safe values."""
-            if isinstance(v, float):
-                if math.isinf(v):
-                    return 9999.99 if v > 0 else -9999.99
-                if math.isnan(v):
-                    return 0.0
-            return v
-
         return {
             "bot_id": self.bot_id,
             "symbol": self.symbol,
@@ -99,18 +95,18 @@ class BacktestResult:
             "initial_balance": self.initial_balance,
             "final_balance": round(self.final_balance, 2),
             "net_pnl": round(self.net_pnl, 2),
-            "return_pct": round(_safe(self.return_pct), 2),
+            "return_pct": _sr(self.return_pct, 2),
             "total_trades": self.total_trades,
             "trade_count": self.trade_count,
             "win_count": self.win_count,
             "loss_count": self.loss_count,
-            "win_rate": round(_safe(self.win_rate), 1),
-            "avg_win": round(_safe(self.avg_win), 4),
-            "avg_loss": round(_safe(self.avg_loss), 4),
-            "profit_factor": round(_safe(self.profit_factor), 2),
-            "sharpe_ratio": round(_safe(self.sharpe_ratio), 2),
-            "max_drawdown_pct": round(_safe(self.max_drawdown_pct), 2),
-            "total_fees": round(_safe(self.total_fees), 4),
+            "win_rate": _sr(self.win_rate, 1),
+            "avg_win": _sr(self.avg_win, 4),
+            "avg_loss": _sr(self.avg_loss, 4),
+            "profit_factor": _sr(self.profit_factor, 2),
+            "sharpe_ratio": _sr(self.sharpe_ratio, 2),
+            "max_drawdown_pct": _sr(self.max_drawdown_pct, 2),
+            "total_fees": _sr(self.total_fees, 4),
             "liquidations": self.liquidations,
             "longest_win_streak": self.longest_win_streak,
             "longest_loss_streak": self.longest_loss_streak,
@@ -212,12 +208,15 @@ async def run_backtest(
     strategy_class: type,
     params: dict | None = None,
     initial_balance: float | None = None,
+    fee_rate: float | None = None,
     equity_interval: int = 5,
     candle_data: list | None = None,
-    orderbook_data: list | None = None,
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
+
+    Fill model: every order executes at the candle close price.
+    Cost model: fee_rate is the only cost (configurable from UI, default 0.07%).
 
     Args:
         bot_id: Identifier for this backtest run (e.g. "rsi_btc")
@@ -225,13 +224,12 @@ async def run_backtest(
         strategy_class: The strategy class to instantiate (already for_symbol'd)
         params: Optional param overrides {name: value}
         initial_balance: Starting USDT (defaults to settings)
+        fee_rate: Fee rate override (e.g. 0.0007 = 0.07%).
+                  Defaults to settings.simulation_fee_rate when None.
+                  Set from UI when starting a backtest/optimization run.
         equity_interval: Record equity point every N candles (saves memory)
         candle_data: Pre-loaded candle rows (skips DB read if provided).
                      Used by the optimizer to avoid redundant DB queries.
-        orderbook_data: Pre-loaded orderbook snapshot rows ordered oldest→newest.
-                        If provided AND the strategy has _inject_orderbook(), each
-                        candle injects the closest-in-time orderbook snapshot.
-                        Used by OrderbookWallBot for backtesting/optimization.
 
     Returns:
         BacktestResult with metrics, equity curve, and trades.
@@ -246,43 +244,20 @@ async def run_backtest(
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 
-    # --- For OB-signal strategies (ob_wall), trim candles to OB data time range ---
-    # These bots have no useful signal outside OB coverage, so trimming is correct.
-    # For pure candle strategies (RSI, MA, BB), keep the full candle history even
-    # when OB data exists — they use OB only for realistic fill prices, not signals.
-    if orderbook_data and hasattr(strategy_class, "_inject_orderbook") and len(orderbook_data) > 0:
-        from datetime import datetime, timezone as _tz
-        first_ob_ts = orderbook_data[0].get("timestamp", "")
-        last_ob_ts = orderbook_data[-1].get("timestamp", "")
-        try:
-            ob_start_ms = int(datetime.fromisoformat(first_ob_ts.replace("Z", "+00:00")).timestamp() * 1000)
-            ob_end_ms = int(datetime.fromisoformat(last_ob_ts.replace("Z", "+00:00")).timestamp() * 1000)
-            original_count = len(candle_rows)
-            candle_rows = [r for r in candle_rows if ob_start_ms <= r["open_time"] <= ob_end_ms]
-            if not candle_rows:
-                raise ValueError(
-                    f"No candles overlap with orderbook data range "
-                    f"({first_ob_ts} → {last_ob_ts}). "
-                    f"Download candles covering the OB period."
-                )
-            logger.info(
-                f"Backtest {bot_id}: trimmed candles {original_count} → {len(candle_rows)} "
-                f"to match OB data range ({len(orderbook_data)} snapshots)"
-            )
-        except ValueError:
-            raise   # re-raise our "no overlap" error
-        except Exception as e:
-            logger.warning(f"Could not parse OB timestamps for trimming: {e}")
-
     # --- Create isolated engine + portfolio ---
-    engine = SimulationEngine()
+    # skip_db=True: this engine is ephemeral — all trades stay in memory only.
+    # Previously done as engine._skip_db = True (external private flag mutation),
+    # which required a try/finally restore block. Constructor param is safer.
+    engine = SimulationEngine(skip_db=True)
 
     # --- Create fresh strategy instance ---
     bot = strategy_class(engine=engine)
 
     # Register portfolio under the strategy's actual name (bot.name)
     # because strategies call self.engine.place_order(self.name, ...)
-    engine.register_bot(bot.name, symbol, initial_usdt=balance)
+    # fee_rate=None → uses settings.simulation_fee_rate (global default).
+    # fee_rate=X    → overrides for this specific backtest run (from UI).
+    engine.register_bot(bot.name, symbol, initial_usdt=balance, fee_rate=fee_rate)
 
     # Apply param overrides
     if params:
@@ -305,11 +280,14 @@ async def run_backtest(
         initial_balance=balance,
     )
 
-    # --- Tell engine to skip DB writes during backtest ---
-    engine._skip_db = True
-
     # --- Track trades by intercepting engine ---
-    trade_index = [0]  # mutable counter
+    trade_index = [0]       # mutable counter
+    # Holds the open_time of the candle currently being processed.
+    # Updated each loop iteration BEFORE on_candle() fires so that any
+    # trade placed inside on_candle() records the correct candle timestamp.
+    # Using result.candles_processed for this was off-by-one because that
+    # counter is incremented AFTER on_candle() returns.
+    current_candle_open_time = [0]
     original_place_order = engine.place_order
 
     async def intercepting_place_order(bot_id, symbol, side, quantity, price):
@@ -319,7 +297,7 @@ async def run_backtest(
         actual_qty = order_result.get("quantity", quantity)
         result.trades.append({
             "index": trade_index[0],
-            "timestamp": candle_rows[min(result.candles_processed, len(candle_rows) - 1)]["open_time"],
+            "timestamp": current_candle_open_time[0],
             "side": side,
             "action": order_result.get("action", side),
             "price": round(price, 2),
@@ -331,112 +309,58 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
-    # --- Sequential orderbook injection setup ---
-    # Both candles and orderbook snapshots are 1-minute frequency.
-    # We use a simple forward pointer — no binary search needed.
-    #
-    # Two independent flags:
-    #   ob_has_data   — OB snapshots exist → update engine for realistic VWAP fills
-    #   ob_has_inject — bot also has _inject_orderbook() → feed OB into strategy signals
-    ob_has_data = bool(orderbook_data)
-    ob_has_inject = ob_has_data and hasattr(bot, "_inject_orderbook")
-    ob_index = [0]   # mutable pointer into orderbook_data
-
-    if ob_has_data:
-        # Pre-parse timestamps to epoch_ms for fast comparison
-        ob_times_ms: list[int] = []
-        for ob_row in orderbook_data:
-            try:
-                ts = ob_row["timestamp"].replace("Z", "+00:00")
-                dt = datetime.fromisoformat(ts)
-                ob_times_ms.append(int(dt.timestamp() * 1000))
-            except Exception:
-                ob_times_ms.append(0)
-        logger.info(
-            f"Backtest {bot_id}: {len(orderbook_data)} orderbook snapshots loaded "
-            f"(engine VWAP fills=yes, bot inject={ob_has_inject})"
-        )
-    else:
-        ob_times_ms = []
-
-    def _advance_ob_pointer(candle_open_ms: int) -> dict | None:
-        """
-        Advance the sequential pointer to the last snapshot at or before
-        candle_open_ms. Since both series are ~1-min, this typically
-        advances 0 or 1 step per candle.
-        """
-        if not ob_times_ms:
-            return None
-        while (ob_index[0] + 1 < len(ob_times_ms)
-               and ob_times_ms[ob_index[0] + 1] <= candle_open_ms):
-            ob_index[0] += 1
-        # Return current snapshot only if it's at or before candle time
-        if ob_times_ms[ob_index[0]] <= candle_open_ms:
-            return orderbook_data[ob_index[0]]
-        return None
-
-    # --- Replay candles (wrapped in try/finally to always restore flag) ---
+    # --- Replay candles ---
     error_count = [0]
-    try:
-        for i, row in enumerate(candle_rows):
-            candle = Candle(
-                symbol=symbol,
-                interval_seconds=60,
-                open=row["open"],
-                high=row["high"],
-                low=row["low"],
-                close=row["close"],
-                volume=row["volume"],
-                open_time=row["open_time"] / 1000.0,    # convert ms → seconds
-                close_time=row["close_time"] / 1000.0,
-            )
+    for i, row in enumerate(candle_rows):
+        # Set before on_candle() so the intercepting_place_order closure
+        # captures the correct timestamp for any trades placed this candle.
+        current_candle_open_time[0] = row["open_time"]
 
-            # Update engine price (for liquidation checks etc.)
-            engine.update_price(symbol, candle.close)
+        candle = Candle(
+            symbol=symbol,
+            interval_seconds=60,
+            open=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+            open_time=row["open_time"] / 1000.0,    # convert ms → seconds
+            close_time=row["close_time"] / 1000.0,
+        )
 
-            # Inject current orderbook snapshot before the candle fires:
-            # 1. Always feed into engine for realistic VWAP fill prices (all strategies)
-            # 2. Feed into the bot via _inject_orderbook() only for OB-signal bots (ob_wall)
-            if ob_has_data:
-                ob_snap = _advance_ob_pointer(row["open_time"])
-                if ob_snap is not None:
-                    engine.update_orderbook(symbol, ob_snap)        # realistic fills (all bots)
-                    if ob_has_inject:
-                        bot._inject_orderbook(ob_snap)              # type: ignore[attr-defined]
+        # Update engine price (for liquidation checks etc.)
+        engine.update_price(symbol, candle.close)
 
-            # Feed candle to strategy
-            try:
-                await bot.on_candle(candle)
-            except Exception as e:
-                error_count[0] += 1
-                if error_count[0] <= 5:  # Log first 5 errors with traceback
-                    logger.error(f"Backtest candle {i} error: {e}", exc_info=True)
+        # Feed candle to strategy
+        try:
+            await bot.on_candle(candle)
+        except Exception as e:
+            error_count[0] += 1
+            if error_count[0] <= 5:  # Log first 5 errors with traceback
+                logger.error(f"Backtest candle {i} error: {e}", exc_info=True)
 
-            result.candles_processed = i + 1
+        result.candles_processed = i + 1
 
-            # Record equity point at intervals
-            if i % equity_interval == 0 or i == len(candle_rows) - 1:
-                state = await engine.get_portfolio_state(bot.name)
-                total = state["total_value_usdt"]
-                usdt = state.get("usdt_balance", total)
-                result.equity_curve.append({
-                    "time": row["open_time"],
-                    "value": round(total, 2),
-                    "usdt": round(usdt, 2),
-                    "price": round(candle.close, 2),
-                    "side": state.get("position_side", "NONE"),
-                })
+        # Record equity point at intervals
+        if i % equity_interval == 0 or i == len(candle_rows) - 1:
+            state = await engine.get_portfolio_state(bot.name)
+            total = state["total_value_usdt"]
+            usdt = state.get("usdt_balance", total)
+            result.equity_curve.append({
+                "time": row["open_time"],
+                "value": round(total, 2),
+                "usdt": round(usdt, 2),
+                "price": round(candle.close, 2),
+                "side": state.get("position_side", "NONE"),
+            })
 
-        # --- Final state ---
-        final_state = await engine.get_portfolio_state(bot.name)
-        result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
-        result.liquidations = final_state.get("liquidation_count", 0)
+    # --- Final state ---
+    final_state = await engine.get_portfolio_state(bot.name)
+    result.total_fees = round(final_state.get("total_fees_paid", 0), 4)
+    result.liquidations = final_state.get("liquidation_count", 0)
 
-        if error_count[0] > 0:
-            logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
-    finally:
-        # --- Always restore DB writes ---
-        engine._skip_db = False
+    if error_count[0] > 0:
+        logger.warning(f"Backtest {bot_id}: {error_count[0]} candle errors occurred")
 
     result.duration_seconds = time.monotonic() - start_time
 

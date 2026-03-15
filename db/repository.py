@@ -16,15 +16,29 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ------------------------------------------------------------------
 
-_DT_FMT = "%Y-%m-%dT%H:%M:%S.%f"
-
-
 def _dt_to_str(dt: datetime) -> str:
-    return dt.strftime(_DT_FMT)
+    """Serialize *dt* to an ISO-8601 string with explicit +00:00 UTC offset.
+
+    Always normalises to UTC so SQLite lexicographic string comparisons remain
+    correct (all stored values share the same fixed suffix).
+    """
+    if dt.tzinfo is None:
+        # Assume naïve datetimes are already UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "+00:00"
 
 
 def _str_to_dt(s: str) -> datetime:
-    return datetime.strptime(s, _DT_FMT)
+    """Deserialize an ISO-8601 datetime string into a UTC-aware datetime.
+
+    Handles both the old naïve format (no suffix) and the new +00:00 format
+    so existing rows in the DB continue to deserialise correctly.
+    """
+    s_clean = s.replace("+00:00", "").rstrip("Z")
+    dt = datetime.strptime(s_clean, "%Y-%m-%dT%H:%M:%S.%f")
+    return dt.replace(tzinfo=timezone.utc)
 
 
 # ------------------------------------------------------------------
@@ -152,7 +166,7 @@ async def get_trades_for_bot(
             price=row["price"],
             realized_pnl=row["realized_pnl"],
             fee_usdt=row["fee_usdt"],
-            position_side=row["position_side"] if "position_side" in row.keys() else "LONG",
+            position_side=row["position_side"],
             timestamp=_str_to_dt(row["timestamp"]),
         )
         for row in rows
@@ -219,12 +233,9 @@ async def get_bot_trade_stats(bot_id: str) -> dict:
 async def get_bot_trade_stats_since(bot_id: str, since: "datetime") -> dict:
     """Return aggregated trade stats for a bot since a given datetime.
     Includes: trade_count, total_fees_paid, realized_pnl, win_count, loss_count."""
-    from datetime import timezone as _tz
     db = get_db()
-    # DB stores naive UTC strings (no tz suffix). Strip timezone from since so
-    # SQLite lexicographic comparison works correctly.
-    since_naive = since.astimezone(_tz.utc).replace(tzinfo=None)
-    since_str = since_naive.isoformat()
+    # DB now stores "+00:00" suffixed UTC strings. Serialise since consistently.
+    since_str = _dt_to_str(since)
     async with db.execute(
         """
         SELECT

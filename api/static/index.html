@@ -193,6 +193,11 @@
               <option value="5000">5000 iter (exhaustive)</option>
               <option value="10000">10000 iter (max)</option>
             </select>
+            <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);white-space:nowrap" title="Taker fee applied to every simulated order. Default 0.07% ≈ Binance Futures maker/taker + spread.">
+              Fee %:
+              <input id="bt-fee-pct" type="number" value="0.07" min="0.01" max="2" step="0.01"
+                style="width:58px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;text-align:right" />
+            </label>
             <span class="bt-status" id="bt-status"></span>
           </div>
 
