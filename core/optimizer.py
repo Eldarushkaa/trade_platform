@@ -21,13 +21,87 @@ import logging
 import math
 import random
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
-from core.backtest_engine import run_backtest
+from config import settings
 from core.utils import safe_float as _safe, safe_round as _sr
 from db import repository as repo
 
 logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# Process-pool worker (runs in separate OS process — no GIL contention)
+# ------------------------------------------------------------------
+
+# Each worker process stores its shared state after _worker_init() runs.
+# This avoids re-pickling the large candle list on every evaluation call.
+_worker_state: dict = {}
+
+
+def _worker_init(
+    strategy_module: str,
+    strategy_cls_name: str,
+    symbol: str,
+    candle_rows: list,
+    fee_rate,
+    initial_balance: float,
+) -> None:
+    """
+    Called ONCE when a worker process starts.
+    Reconstructs the strategy class and caches shared data in module globals.
+    Avoids pickling thousands of candle rows for each individual evaluation.
+    """
+    import importlib
+    module = importlib.import_module(strategy_module)
+    base_cls = getattr(module, strategy_cls_name)
+    _worker_state["strategy_class"] = base_cls.for_symbol(symbol)
+    _worker_state["candle_rows"] = candle_rows
+    _worker_state["fee_rate"] = fee_rate
+    _worker_state["initial_balance"] = initial_balance
+    _worker_state["symbol"] = symbol
+
+
+def _worker_evaluate_params(params: dict) -> dict:
+    """
+    Evaluate one parameter set in a worker process.
+    Creates a fresh asyncio event loop (worker processes have no running loop).
+    Returns a plain dict (must be picklable for IPC).
+    """
+    import asyncio
+    strategy_class = _worker_state["strategy_class"]
+    candle_rows = _worker_state["candle_rows"]
+    fee_rate = _worker_state["fee_rate"]
+    initial_balance = _worker_state["initial_balance"]
+    symbol = _worker_state["symbol"]
+
+    loop = asyncio.new_event_loop()
+    try:
+        from core.backtest_engine import run_backtest
+        bt = loop.run_until_complete(run_backtest(
+            bot_id="opt_worker",
+            symbol=symbol,
+            strategy_class=strategy_class,
+            params=params,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            equity_interval=20,
+            candle_data=candle_rows,
+        ))
+        return {
+            "ok": True,
+            "sharpe": bt.sharpe_ratio,
+            "return_pct": bt.return_pct,
+            "max_dd": bt.max_drawdown_pct,
+            "win_rate": bt.win_rate,
+            "profit_factor": bt.profit_factor,
+            "trade_count": bt.trade_count,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        loop.close()
 
 
 # ------------------------------------------------------------------
@@ -344,13 +418,22 @@ async def optimize_params(
     if not schema:
         raise ValueError(f"Strategy {strategy_class.__name__} has no PARAM_SCHEMA")
 
-    # --- Pre-load candle data once (avoid N redundant DB reads) ---
+    # --- Pre-load candle data once ---
     _cached_candles = await repo.get_historical_candles(symbol)
     if not _cached_candles:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
+
+    # Resolve the original (non-for_symbol) base class for pickling in workers.
+    # for_symbol() creates a dynamic subclass; its __bases__[0] is the real class.
+    _base_cls = strategy_class.__bases__[0] if strategy_class.__bases__ else strategy_class
+    _strategy_module = _base_cls.__module__
+    _strategy_cls_name = _base_cls.__name__
+    _initial_balance = initial_balance or settings.initial_usdt_balance
+
     logger.info(
         f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol} "
-        f"(fill=candle close, fee={fee_rate if fee_rate is not None else 'default'})"
+        f"(fill=candle close, fee={fee_rate if fee_rate is not None else 'default'}, "
+        f"workers={concurrency})"
     )
 
     # Count optimizable dimensions
@@ -378,41 +461,47 @@ async def optimize_params(
     evaluations_done = 0
 
     # ------------------------------------------------------------------
-    # Helper: evaluate one individual
+    # Process pool — created once, workers initialised with shared data
     # ------------------------------------------------------------------
-    _eval_semaphore = asyncio.Semaphore(concurrency)
+    _loop = asyncio.get_running_loop()
+    _pool = ProcessPoolExecutor(
+        max_workers=concurrency,
+        initializer=_worker_init,
+        initargs=(
+            _strategy_module,
+            _strategy_cls_name,
+            symbol,
+            _cached_candles,
+            fee_rate,
+            _initial_balance,
+        ),
+    )
 
     async def _evaluate(ind: _Individual, idx: int) -> _Individual:
         nonlocal evaluations_done
-        async with _eval_semaphore:
-            try:
-                bt = await run_backtest(
-                        bot_id=f"opt_{bot_id}_{evaluations_done}",
-                        symbol=symbol,
-                        strategy_class=strategy_class,
-                        params=ind.params,
-                        initial_balance=initial_balance,
-                        fee_rate=fee_rate,
-                        equity_interval=20,
-                        candle_data=_cached_candles,
-                    )
-                ind.sharpe = bt.sharpe_ratio
-                ind.return_pct = bt.return_pct
-                ind.max_dd = bt.max_drawdown_pct
-                ind.win_rate = bt.win_rate
-                ind.profit_factor = bt.profit_factor
-                ind.trade_count = bt.trade_count
-                ind.fitness = _compute_fitness(bt.sharpe_ratio, bt.return_pct, bt.max_drawdown_pct, bt.trade_count)
-                ind.evaluated = True
-            except Exception as e:
-                logger.warning(f"Eval failed for individual: {e}")
+        try:
+            res = await _loop.run_in_executor(_pool, _worker_evaluate_params, ind.params)
+            if res.get("ok"):
+                ind.sharpe = res["sharpe"]
+                ind.return_pct = res["return_pct"]
+                ind.max_dd = res["max_dd"]
+                ind.win_rate = res["win_rate"]
+                ind.profit_factor = res["profit_factor"]
+                ind.trade_count = res["trade_count"]
+                ind.fitness = _compute_fitness(res["sharpe"], res["return_pct"], res["max_dd"], res["trade_count"])
+            else:
+                logger.warning(f"Eval failed for individual: {res.get('error')}")
                 ind.fitness = -2000.0
-                ind.evaluated = True
-            evaluations_done += 1
-            return ind
+            ind.evaluated = True
+        except Exception as e:
+            logger.warning(f"Eval exception for individual: {e}")
+            ind.fitness = -2000.0
+            ind.evaluated = True
+        evaluations_done += 1
+        return ind
 
     async def _evaluate_batch(individuals: list[_Individual]) -> None:
-        """Evaluate a batch of individuals with bounded concurrency."""
+        """Evaluate a batch of individuals in parallel across worker processes."""
         tasks = [_evaluate(ind, i) for i, ind in enumerate(individuals)]
         await asyncio.gather(*tasks)
 
@@ -665,8 +754,9 @@ async def optimize_params(
             )
 
     # ------------------------------------------------------------------
-    # 4. Final results
+    # 4. Cleanup + final results
     # ------------------------------------------------------------------
+    _pool.shutdown(wait=False)   # don't block — workers are done
     result.iterations_run = evaluations_done
     result.duration_seconds = time.monotonic() - start_time
 

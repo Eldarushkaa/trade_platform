@@ -3,12 +3,23 @@ RSI Bot — Wilder's Exponential RSI for 1-minute bidirectional futures trading.
 
 Operates on 1-MINUTE CANDLES. USDT-Margined perpetual futures with leverage.
 
-Strategy logic (bidirectional):
-    RSI < 30 (oversold)   → OPEN LONG  (expect bounce up)
-    RSI > 70 (overbought) → OPEN SHORT (expect drop)
+Entry logic (bidirectional):
+    RSI < OVERSOLD  (default 30) → OPEN LONG  (expect bounce up)
+    RSI > OVERBOUGHT(default 70) → OPEN SHORT (expect drop)
 
     If already in opposite position, close it first then open new direction.
-    This doubles signal count vs spot — every overbought IS a trade, not just exit.
+
+Exit logic (two independent mechanisms):
+    1. Mean-reversion exit (RSI recovery):
+       - LONG exits when RSI recovers above EXIT_RSI_LONG (default 55)
+       - SHORT exits when RSI drops below EXIT_RSI_SHORT (default 45)
+       This produces typical hold times of 15 min – 2 hours.
+
+    2. Max-hold fallback (time-based):
+       - Force-closes any open position after MAX_HOLD_CANDLES candles (default 120 = 2 hrs)
+       - Prevents runaway drawdown if RSI never recovers
+
+Both mechanisms are optimizable, giving the GA many ways to tune hold duration.
 
 Multi-coin usage:
     from strategies.example_rsi_bot import RSIBot
@@ -34,11 +45,14 @@ class RSIBot(BaseStrategy):
     symbol = "BTCUSDT"
 
     # --- Strategy parameters (tuned for 1-minute candles) ---
-    RSI_PERIOD = 10              # Shorter period = faster signals on 1-min
-    OVERSOLD = 30.0              # Go LONG below this
-    OVERBOUGHT = 70.0            # Go SHORT above this
-    TRADE_FRACTION = 1.0         # Use 100% of free USDT for margin
-    COOLDOWN_CANDLES = 3         # Min candles between trades
+    RSI_PERIOD       = 10        # Shorter period = faster signals on 1-min
+    OVERSOLD         = 30.0      # Go LONG below this
+    OVERBOUGHT       = 70.0      # Go SHORT above this
+    EXIT_RSI_LONG    = 55.0      # Close LONG when RSI recovers to this level
+    EXIT_RSI_SHORT   = 45.0      # Close SHORT when RSI drops to this level
+    MAX_HOLD_CANDLES = 120       # Force-close after this many candles (120 = 2 hrs)
+    TRADE_FRACTION   = 1.0       # Use 100% of free USDT for margin
+    COOLDOWN_CANDLES = 3         # Min candles between new entries
 
     PARAM_SCHEMA = {
         "RSI_PERIOD": {
@@ -53,6 +67,18 @@ class RSIBot(BaseStrategy):
             "type": "float", "default": 70.0, "min": 55.0, "max": 95.0,
             "description": "Short entry threshold (RSI above this → SHORT)",
         },
+        "EXIT_RSI_LONG": {
+            "type": "float", "default": 55.0, "min": 30.0, "max": 75.0,
+            "description": "Close LONG when RSI recovers above this (mean-reversion exit)",
+        },
+        "EXIT_RSI_SHORT": {
+            "type": "float", "default": 45.0, "min": 25.0, "max": 70.0,
+            "description": "Close SHORT when RSI drops below this (mean-reversion exit)",
+        },
+        "MAX_HOLD_CANDLES": {
+            "type": "int", "default": 120, "min": 10, "max": 1440,
+            "description": "Force-close position after this many candles (time-stop)",
+        },
         "TRADE_FRACTION": {
             "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
             "description": "Fraction of free USDT to use per trade",
@@ -60,7 +86,7 @@ class RSIBot(BaseStrategy):
         },
         "COOLDOWN_CANDLES": {
             "type": "int", "default": 3, "min": 0, "max": 30,
-            "description": "Minimum candles between trades",
+            "description": "Minimum candles between new entries",
         },
     }
 
@@ -74,6 +100,7 @@ class RSIBot(BaseStrategy):
         self._avg_loss: Optional[float] = None
         self._prev_close: Optional[float] = None
         self._warmup_closes: list[float] = []
+        self._position_opened_candle: int = -1   # candle count when position was opened
 
     def set_params(self, updates: dict) -> dict:
         """
@@ -122,34 +149,58 @@ class RSIBot(BaseStrategy):
         if rsi is None:
             return
 
-        cooldown_ok = (
-            self._candle_count - self._last_trade_candle >= self.COOLDOWN_CANDLES
-        )
-
         # Get current position: positive = LONG, negative = SHORT, 0 = none
         position = await self.engine.get_balance(self.name, "POSITION")
 
         self.logger.debug(
-            f"close={close:.2f}  RSI={rsi:.1f}  pos={position:.6f}  "
-            f"cooldown={'OK' if cooldown_ok else 'WAIT'}"
+            f"close={close:.2f}  RSI={rsi:.1f}  pos={position:.6f}"
         )
 
-        if not cooldown_ok:
+        # ------------------------------------------------------------------
+        # EXIT LOGIC (checked before entry to avoid stale positions)
+        # ------------------------------------------------------------------
+
+        if position > 0:
+            # --- LONG position: check mean-reversion exit or time-stop ---
+            candles_held = self._candle_count - self._position_opened_candle
+            if rsi > self.EXIT_RSI_LONG:
+                await self._close_position(close, "SELL", f"RSI exit LONG ({rsi:.1f}>{self.EXIT_RSI_LONG})")
+                position = 0
+            elif candles_held >= self.MAX_HOLD_CANDLES:
+                await self._close_position(close, "SELL", f"Time-stop LONG ({candles_held} candles)")
+                position = 0
+
+        elif position < 0:
+            # --- SHORT position: check mean-reversion exit or time-stop ---
+            candles_held = self._candle_count - self._position_opened_candle
+            if rsi < self.EXIT_RSI_SHORT:
+                await self._close_position(close, "BUY", f"RSI exit SHORT ({rsi:.1f}<{self.EXIT_RSI_SHORT})")
+                position = 0
+            elif candles_held >= self.MAX_HOLD_CANDLES:
+                await self._close_position(close, "BUY", f"Time-stop SHORT ({candles_held} candles)")
+                position = 0
+
+        # ------------------------------------------------------------------
+        # ENTRY LOGIC (only when flat + cooldown satisfied)
+        # ------------------------------------------------------------------
+
+        cooldown_ok = (
+            self._candle_count - self._last_trade_candle >= self.COOLDOWN_CANDLES
+        )
+        if not cooldown_ok or position != 0:
             return
 
         # --- Oversold → go LONG ---
-        if rsi < self.OVERSOLD and position <= 0:
-            # Close SHORT if open
-            if position < 0:
-                await self._close_position(close, "BUY", "Close SHORT before LONG")
-            await self._open_position(close, "BUY", RSI=f"{rsi:.1f}")
+        if rsi < self.OVERSOLD:
+            result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}")
+            if result is not None:
+                self._position_opened_candle = self._candle_count
 
         # --- Overbought → go SHORT ---
-        elif rsi > self.OVERBOUGHT and position >= 0:
-            # Close LONG if open
-            if position > 0:
-                await self._close_position(close, "SELL", "Close LONG before SHORT")
-            await self._open_position(close, "SELL", RSI=f"{rsi:.1f}")
+        elif rsi > self.OVERBOUGHT:
+            result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}")
+            if result is not None:
+                self._position_opened_candle = self._candle_count
 
     # ------------------------------------------------------------------
     # Wilder RSI
@@ -188,4 +239,3 @@ class RSIBot(BaseStrategy):
             return 100.0
         rs = self._avg_gain / self._avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
-
