@@ -528,6 +528,8 @@ function _loadBtTask(type) {
 
 // ── Restore in-progress / completed tasks on page load ─────────
 // Called once after bots list is populated (so the selector can be set).
+// PRIMARY strategy: query server for ALL tasks (works on any device/browser).
+// FALLBACK: localStorage (same session, same device).
 async function initBtPanel() {
   // Open panel by default so results are immediately visible on load
   if (!_backtestOpen) {
@@ -536,14 +538,27 @@ async function initBtPanel() {
     document.getElementById('bt-chevron').classList.add('open');
   }
 
-  // Try to restore WFO task first (higher priority), then Optimize task
-  for (const type of ['wfo', 'opt']) {
-    const saved = _loadBtTask(type);
-    if (!saved) continue;
+  const statusEl = document.getElementById('bt-status');
 
-    const { taskId, botId } = saved;
-    try {
-      const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+  // ── Primary: ask server for ALL known tasks ─────────────────────
+  try {
+    const allTasks = await get(`${API}/backtest/status`);
+    const tasks = allTasks.tasks || [];
+
+    if (tasks.length > 0) {
+      // Sort: walk_forward first, then optimize; running before completed
+      const typeOrder = { 'walk_forward': 0, 'optimize': 1 };
+      const stateOrder = { 'running': 0, 'completed': 1, 'error': 2 };
+      tasks.sort((a, b) => {
+        const td = (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9);
+        if (td !== 0) return td;
+        return (stateOrder[a.status] ?? 9) - (stateOrder[b.status] ?? 9);
+      });
+
+      const task = tasks[0]; // most relevant task
+      const isWfo = task.type === 'walk_forward';
+      const type  = isWfo ? 'wfo' : 'opt';
+      const botId = task.bot_id;
 
       // Select the correct bot in the panel selector
       const sel = document.getElementById('bt-bot-select');
@@ -553,30 +568,57 @@ async function initBtPanel() {
         _updateBtButtons();
       }
 
-      const status = document.getElementById('bt-status');
-
-      if (poll.status === 'completed' && poll.result) {
-        // Already done — restore results immediately
-        if (type === 'wfo') {
-          renderWFOResults(poll.result);
-          status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s (restored)`;
-        } else {
-          renderOptResults(poll.result);
-          status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s (restored)`;
-        }
+      if (task.status === 'completed' && task.has_result) {
+        // Fetch full result (summary doesn't include result payload)
+        try {
+          const full = await get(`${API}/backtest/status?task_id=${task.task_id}`);
+          if (full.result) {
+            if (isWfo) {
+              renderWFOResults(full.result);
+              statusEl.textContent = `✓ Walk-Forward complete in ${full.result.duration_seconds}s (restored)`;
+            } else {
+              renderOptResults(full.result);
+              statusEl.textContent = `✓ Optimization complete in ${full.result.duration_seconds}s (restored)`;
+            }
+          }
+        } catch(e) { console.warn('initBtPanel: could not fetch full result', e); }
         _clearBtTask(type);
+
+      } else if (task.status === 'running') {
+        statusEl.textContent = `⏳ ${task.progress?.msg || 'Running...'} (resumed)`;
+        _saveBtTask(type, task.task_id, botId); // keep localStorage in sync
+        _resumePoll(type, task.task_id);
+      }
+
+      await loadDataStatus();
+      return; // server gave us a definitive answer
+    }
+  } catch(e) {
+    console.warn('initBtPanel: server query failed, falling back to localStorage', e);
+  }
+
+  // ── Fallback: localStorage (same session / offline) ─────────────
+  for (const type of ['wfo', 'opt']) {
+    const saved = _loadBtTask(type);
+    if (!saved) continue;
+    const { taskId, botId } = saved;
+    try {
+      const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+      const sel = document.getElementById('bt-bot-select');
+      if (sel && botId) { sel.value = botId; localStorage.setItem('bt_bot_id', botId); _updateBtButtons(); }
+      if (poll.status === 'completed' && poll.result) {
+        if (type === 'wfo') { renderWFOResults(poll.result); statusEl.textContent = `✓ WFO restored (${poll.result.duration_seconds}s)`; }
+        else                { renderOptResults(poll.result); statusEl.textContent = `✓ Opt restored (${poll.result.duration_seconds}s)`; }
+        _clearBtTask(type);
+        break;
       } else if (poll.status === 'running') {
-        // Re-attach polling loop in background
-        status.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
+        statusEl.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
         _resumePoll(type, taskId);
+        break;
       } else {
-        // error or unknown — clear
         _clearBtTask(type);
       }
-    } catch(e) {
-      // Task not found on server (expired) — clean up
-      _clearBtTask(type);
-    }
+    } catch(e2) { _clearBtTask(type); }
   }
 
   await loadDataStatus();

@@ -96,7 +96,15 @@ class BotManager:
                 bot.set_params(saved)
                 logger.info(f"Loaded saved params for '{bot_id}': {saved}")
             except ValueError as exc:
-                logger.warning(f"Ignoring invalid saved params for '{bot_id}': {exc}")
+                logger.warning(
+                    f"Ignoring invalid saved params for '{bot_id}': {exc}. "
+                    f"Clearing stale params from DB (bot will use defaults)."
+                )
+                # Clear stale params so this warning doesn't repeat on every restart
+                try:
+                    await repo.save_bot_params(bot_id, {})
+                except Exception as clear_exc:
+                    logger.debug(f"Could not clear stale params for '{bot_id}': {clear_exc}")
 
     # ------------------------------------------------------------------
     # Start / Stop
