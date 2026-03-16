@@ -1118,13 +1118,19 @@ async function loadDataStatus() {
   } catch (e) { console.warn('loadDataStatus', e); }
 }
 
-async function downloadHistory(days) {
+// Tracks the last test-window download so "Use test window" can pre-fill backtest dates
+let _lastTestWindow = null;   // { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
+
+async function downloadHistory(days, startDate = null) {
   const btns = document.querySelectorAll('.bt-btn-dl');
   btns.forEach(b => { b.disabled = true; });
-  document.getElementById('bt-data-info').textContent = `Downloading ${days}d of data...`;
+  const label = startDate ? `${days}d from ${startDate}` : `${days}d`;
+  document.getElementById('bt-data-info').textContent = `Downloading ${label} of 5m data...`;
 
   try {
-    const resp = await postJson(`${API}/backtest/download`, { days });
+    const body = { days };
+    if (startDate) body.start_date = startDate;
+    const resp = await postJson(`${API}/backtest/download`, body);
     if (resp.ok) {
       const total = resp.data.results.reduce((s, r) => s + (r.candles_downloaded || 0), 0);
       document.getElementById('bt-data-info').textContent = `✓ Downloaded ${total} candles`;
@@ -1137,6 +1143,40 @@ async function downloadHistory(days) {
 
   btns.forEach(b => { b.disabled = false; });
   await loadDataStatus();
+}
+
+async function downloadTestData() {
+  const dateInput = document.getElementById('bt-test-start-date');
+  const startDate = dateInput ? dateInput.value : '';
+  if (!startDate) {
+    alert('Please pick a start date for the 14-day test window.');
+    return;
+  }
+  // Compute end date (start + 14 days) for display / pre-fill
+  const start = new Date(startDate + 'T00:00:00Z');
+  const end   = new Date(start.getTime() + 14 * 86400_000);
+  const endDate = end.toISOString().slice(0, 10);
+  _lastTestWindow = { start: startDate, end: endDate };
+
+  await downloadHistory(14, startDate);
+}
+
+function clearBtDates() {
+  const s = document.getElementById('bt-start-date');
+  const e = document.getElementById('bt-end-date');
+  if (s) s.value = '';
+  if (e) e.value = '';
+}
+
+function fillTestDates() {
+  if (!_lastTestWindow) {
+    alert('No test window downloaded yet. Use "📥 14d Test from:" first.');
+    return;
+  }
+  const s = document.getElementById('bt-start-date');
+  const e = document.getElementById('bt-end-date');
+  if (s) s.value = _lastTestWindow.start;
+  if (e) e.value = _lastTestWindow.end;
 }
 
 function _btFeeRate() {
@@ -1159,15 +1199,26 @@ async function runBacktest() {
   document.getElementById('bt-opt-results').style.display = 'none';
 
   const feeRate = _btFeeRate();
+  const body = { bot_id: selectedBot, fee_rate: feeRate };
+
+  // Optional date range filter
+  const startDate = (document.getElementById('bt-start-date') || {}).value;
+  const endDate   = (document.getElementById('bt-end-date')   || {}).value;
+  if (startDate) body.start_date = startDate;
+  if (endDate)   body.end_date   = endDate;
+
   try {
-    const resp = await postJson(`${API}/backtest/run`, { bot_id: selectedBot, fee_rate: feeRate });
+    const resp = await postJson(`${API}/backtest/run`, body);
     if (!resp.ok) {
       status.textContent = `✗ ${resp.data.detail || 'Error'}`;
       btn.disabled = false;
       return;
     }
     const r = resp.data;
-    status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s`;
+    const rangeLabel = (startDate || endDate)
+      ? ` [${startDate || '…'} → ${endDate || '…'}]`
+      : '';
+    status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s${rangeLabel}`;
 
     renderBacktestResults(r);
   } catch (e) {

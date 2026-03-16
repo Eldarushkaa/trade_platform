@@ -189,8 +189,8 @@ def _compute_metrics(result: BacktestResult) -> None:
         if returns and len(returns) > 1:
             mean_ret = sum(returns) / len(returns)
             std_ret = math.sqrt(sum((r - mean_ret) ** 2 for r in returns) / (len(returns) - 1))
-            # Annualize: 1-min candles → 525,600 per year
-            annualization = math.sqrt(525_600)
+            # Annualize: 5-min candles → 105,120 per year (288 candles/day × 365)
+            annualization = math.sqrt(105_120)
             result.sharpe_ratio = (mean_ret / std_ret * annualization) if std_ret > 0 else 0
         else:
             result.sharpe_ratio = 0
@@ -211,6 +211,8 @@ async def run_backtest(
     fee_rate: float | None = None,
     equity_interval: int = 5,
     candle_data: list | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
@@ -230,6 +232,8 @@ async def run_backtest(
         equity_interval: Record equity point every N candles (saves memory)
         candle_data: Pre-loaded candle rows (skips DB read if provided).
                      Used by the optimizer to avoid redundant DB queries.
+        start_ms: Optional start filter (epoch ms) — only candles >= start_ms
+        end_ms:   Optional end filter (epoch ms) — only candles <= end_ms
 
     Returns:
         BacktestResult with metrics, equity curve, and trades.
@@ -240,7 +244,10 @@ async def run_backtest(
     balance = initial_balance or settings.initial_usdt_balance
 
     # --- Load historical candles (from cache or DB) ---
-    candle_rows = candle_data if candle_data is not None else await repo.get_historical_candles(symbol)
+    if candle_data is not None:
+        candle_rows = candle_data
+    else:
+        candle_rows = await repo.get_historical_candles(symbol, start_ms=start_ms, end_ms=end_ms)
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 
@@ -318,7 +325,7 @@ async def run_backtest(
 
         candle = Candle(
             symbol=symbol,
-            interval_seconds=60,
+            interval_seconds=300,   # 5-minute candles
             open=row["open"],
             high=row["high"],
             low=row["low"],

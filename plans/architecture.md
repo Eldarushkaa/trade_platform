@@ -9,10 +9,10 @@
 
 A Python async crypto futures trading simulation platform that:
 - Connects to **Binance Futures WebSocket** for live price data
-- Runs **12 trading bots** (4 strategies × 3 coins) simultaneously in simulation
+- Runs **6 trading bots** (2 strategies × 3 coins) simultaneously in simulation
 - Simulates **USDT-M perpetual futures** with 3× leverage, margin, and liquidation
 - Provides a **FastAPI web dashboard** to monitor bots, trades, and portfolio in real-time
-- Supports **backtesting** and **genetic parameter optimization** for each strategy
+- Supports **backtesting** (with optional training/test date-range filtering) and **genetic parameter optimization** for each strategy
 - Has an optional **LLM agent** (OpenAI) that periodically adjusts bot parameters
 
 ---
@@ -38,15 +38,13 @@ trade_platform/
 ├── data/                          # Market data ingestion
 │   ├── binance_feed.py            # Binance Futures WebSocket aggTrade stream
 │   ├── price_cache.py             # In-memory latest price + pub/sub
-│   ├── candle_aggregator.py       # Builds 1-min OHLCV candles from ticks
+│   ├── candle_aggregator.py       # Builds 5-min OHLCV candles from ticks
 │   └── historical.py             # REST download of historical klines
 │
 ├── strategies/                    # Signal logic only — no DB, no HTTP
-│   ├── __init__.py                # Exports all strategy classes
+│   ├── __init__.py                # Exports active strategy classes
 │   ├── example_rsi_bot.py         # Wilder RSI + EMA trend filter
-│   ├── example_ma_crossover.py    # MACD crossover + histogram filter
-│   ├── bollinger_bot.py           # Bollinger Band mean reversion
-│   └── orderbook_wall_bot.py      # Order-book gap + wall detection
+│   └── example_ma_crossover.py    # MACD crossover + histogram filter
 │
 ├── db/                            # Persistence layer
 │   ├── database.py                # aiosqlite connection, WAL mode, migrations
@@ -81,14 +79,12 @@ trade_platform/
 graph TD
     WS[Binance Futures WebSocket\nfstream.binance.com] --> Feed[BinanceFeed]
     Feed --> PC[PriceCache\nlatest price + pub/sub]
-    PC -->|on_tick| CA[CandleAggregator\n1-min OHLCV builder]
+    PC -->|on_tick| CA[CandleAggregator\n5-min OHLCV builder]
     PC -->|dispatch_price| BM[BotManager\nupdate_price + liquidation check]
     CA -->|on_candle| BM
     BM -->|candle per symbol| Bot1[rsi_btc / rsi_eth / rsi_sol]
     BM -->|candle per symbol| Bot2[ma_btc / ma_eth / ma_sol]
-    BM -->|candle per symbol| Bot3[bb_btc / bb_eth / bb_sol]
-    BM -->|candle per symbol| Bot4[ob_btc / ob_eth / ob_sol]
-    Bot1 & Bot2 & Bot3 & Bot4 -->|place_order| SE[SimulationEngine]
+    Bot1 & Bot2 -->|place_order| SE[SimulationEngine]
     SE --> VP[VirtualPortfolio\nmargin / PnL / liquidation]
     SE -->|insert_trade| DB[(SQLite — aiosqlite\nWAL mode)]
     BM -->|snapshot every 60s| DB
@@ -98,14 +94,12 @@ graph TD
 
 ---
 
-## Bots (4 strategies × 3 coins = 12 instances)
+## Bots (2 strategies × 3 coins = 6 instances)
 
 | Bot name pattern | Strategy file | Signal type |
 |---|---|---|
 | `rsi_btc/eth/sol` | `example_rsi_bot.py` | Wilder RSI + EMA(50) trend filter |
 | `ma_btc/eth/sol` | `example_ma_crossover.py` | MACD crossover + histogram momentum |
-| `bb_btc/eth/sol` | `bollinger_bot.py` | Bollinger Band mean reversion |
-| `ob_btc/eth/sol` | `orderbook_wall_bot.py` | Order-book gap + wall detection |
 
 Each bot is a dynamically-created subclass via `BaseStrategy.for_symbol(symbol)`:
 ```python
@@ -174,8 +168,8 @@ Orchestrates all bots:
 
 ### `CandleAggregator` — `data/candle_aggregator.py`
 
-Converts raw price ticks → 1-minute OHLCV candles:
-- `on_tick(symbol, price)` — updates in-progress candle; emits completed candle at minute boundary
+Converts raw price ticks → 5-minute OHLCV candles:
+- `on_tick(symbol, price)` — updates in-progress candle; emits completed candle at 5-min boundary
 - `flush()` — emits any partial in-progress candle (called on shutdown)
 - `subscribe / unsubscribe` — pub/sub for candle callbacks
 
@@ -183,7 +177,7 @@ Converts raw price ticks → 1-minute OHLCV candles:
 
 ### Backtest & Optimizer — `core/backtest_engine.py`, `core/optimizer.py`
 
-- `run_backtest(bot_id, symbol, strategy_class, params)` — replays DB historical candles through a fresh `SimulationEngine(skip_db=True)` instance; returns metrics + equity curve
+- `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms)` — replays DB historical 5m candles through a fresh `SimulationEngine(skip_db=True)` instance; optional `start_ms`/`end_ms` filter enables running on a held-out test window vs the full training set; Sharpe annualized using 105,120 candles/year (288 × 365)
 - `optimize_params(...)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; returns best params found
 
 ---
@@ -253,9 +247,9 @@ No module-level globals with `set_xxx()` injection.
 | `GET` | `/api/portfolio/orderbook/{symbol}` | Latest OB snapshot |
 | `GET` | `/api/trades/{bot_name}` | Paginated trade history for a bot |
 | `GET` | `/api/trades/{bot_name}/stats` | Aggregated trade stats for a time window |
-| `POST` | `/api/backtest/download` | Download historical klines from Binance |
+| `POST` | `/api/backtest/download` | Download 5m klines from Binance (`days` up to 180, optional `start_date` for test window) |
 | `GET` | `/api/backtest/data-status` | Available historical data |
-| `POST` | `/api/backtest/run` | Run a backtest |
+| `POST` | `/api/backtest/run` | Run a backtest (optional `start_date`/`end_date` for training vs test split) |
 | `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background) |
 | `GET` | `/api/backtest/status` | Poll backtest/optimization task status |
 | `GET` | `/api/llm/status` | LLM agent status + last decision |

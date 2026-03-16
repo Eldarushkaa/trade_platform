@@ -62,12 +62,15 @@ def _get_symbols(request: Request) -> list[str]:
 class DownloadRequest(BaseModel):
     symbols: list[str] | None = None   # defaults to all configured symbols
     days: int = 14
+    start_date: str | None = None      # optional ISO date "YYYY-MM-DD"; window = [start_date, start_date+days]
 
 
 class BacktestRequest(BaseModel):
     bot_id: str
     params: dict | None = None         # optional param overrides (uses current if None)
     fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
+    start_date: str | None = None      # optional start filter "YYYY-MM-DD" UTC
+    end_date: str | None = None        # optional end filter   "YYYY-MM-DD" UTC
 
 
 class OptimizeRequest(BaseModel):
@@ -103,18 +106,31 @@ def _get_bot_info(request: Request, bot_id: str) -> tuple:
 
 @router.post("/download")
 async def download_historical(request: Request, req: DownloadRequest):
-    """Download historical 1m klines from Binance and store in DB."""
+    """Download historical 5m klines from Binance and store in DB.
+
+    - ``days=180`` with no ``start_date`` → 6 months ending now (training window)
+    - ``days=14`` with ``start_date="YYYY-MM-DD"`` → 14d starting from that date (test window)
+    """
     symbols = req.symbols or _get_symbols(request)
     if not symbols:
         raise HTTPException(status_code=400, detail="No symbols specified")
 
-    days = max(1, min(req.days, 30))
+    days = max(1, min(req.days, 1095))  # cap at 3 years
+
+    # Validate start_date if provided
+    start_date = req.start_date
+    if start_date:
+        try:
+            from datetime import datetime
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date must be YYYY-MM-DD format")
 
     # Run download for each symbol
     results = []
     for sym in symbols:
         try:
-            result = await download_klines(sym, days=days)
+            result = await download_klines(sym, days=days, start_date=start_date)
             results.append(result)
         except Exception as e:
             results.append({
@@ -154,10 +170,15 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     Run a backtest for one bot using current (or overridden) parameters.
     Returns full results including equity curve and metrics.
 
-    Backtests use candle data only — fills execute at candle close price.
+    Backtests use 5m candle data — fills execute at candle close price.
     Fee is applied on every order; use ``fee_rate`` to override the default
     (e.g. 0.0007 = 0.07%). Omit to use the platform default.
+
+    Use ``start_date`` / ``end_date`` (YYYY-MM-DD) to restrict the candle
+    window — e.g. run on the held-out 14d test set rather than all data.
     """
+    from datetime import datetime, timezone
+
     strategy_class, symbol, current_params = _get_bot_info(request, req.bot_id)
 
     # Use provided params or fall back to current
@@ -169,7 +190,28 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     if task_id in _running_tasks and not _running_tasks[task_id].get("done", True):
         raise HTTPException(status_code=409, detail="A backtest is already running for this bot")
 
-    # Run backtest (blocking for the request — typically < 5 seconds)
+    # Convert optional date strings → epoch ms for DB filtering
+    start_ms: int | None = None
+    end_ms: int | None = None
+    try:
+        if req.start_date:
+            start_ms = int(
+                datetime.strptime(req.start_date, "%Y-%m-%d")
+                .replace(tzinfo=timezone.utc)
+                .timestamp() * 1000
+            )
+        if req.end_date:
+            # end_date is inclusive — advance to end of that day
+            from datetime import timedelta
+            end_ms = int(
+                (datetime.strptime(req.end_date, "%Y-%m-%d")
+                 .replace(tzinfo=timezone.utc) + timedelta(days=1))
+                .timestamp() * 1000
+            ) - 1
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+
+    # Run backtest (blocking for the request — typically < 10 seconds for 6m of 5m candles)
     # Fill model: candle close price. Cost model: fee_rate only (no slippage).
     try:
         result = await run_backtest(
@@ -178,6 +220,8 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
             strategy_class=strategy_class,
             params=params,
             fee_rate=req.fee_rate,
+            start_ms=start_ms,
+            end_ms=end_ms,
         )
         return result.to_dict()
     except ValueError as e:

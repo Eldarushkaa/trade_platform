@@ -50,8 +50,6 @@ from data.orderbook_feed import fetch_depth
 # ------------------------------------------------------------------
 from strategies.example_rsi_bot import RSIBot
 from strategies.example_ma_crossover import MACrossoverBot
-from strategies.bollinger_bot import BollingerBot
-from strategies.orderbook_wall_bot import OrderbookWallBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
@@ -60,7 +58,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 STRATEGY_CLASSES = [RSIBot, MACrossoverBot]
 
-# Build 6 bot classes: one per strategy × symbol combination
+# Build 6 bot classes: one per strategy × symbol combination (RSI + MA × 3 coins)
 REGISTERED_BOTS = []
 for strategy_cls in STRATEGY_CLASSES:
     for sym in SYMBOLS:
@@ -87,7 +85,7 @@ _install_log_handler()
 # depth snapshot and walks the OB levels for a realistic VWAP fill price.
 simulation_engine = SimulationEngine(ob_fetcher=fetch_depth)
 bot_manager = BotManager(engine=simulation_engine)
-candle_aggregator = CandleAggregator(interval_seconds=60)  # 1-minute candles
+candle_aggregator = CandleAggregator(interval_seconds=300)  # 5-minute candles
 
 # ------------------------------------------------------------------
 # FastAPI lifespan: startup / shutdown
@@ -98,7 +96,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Starting Trade Platform in [{settings.trading_mode.upper()}] mode | "
         f"Fee: {settings.simulation_fee_rate * 100:.3f}% | "
-        f"Candle interval: 1m | "
+        f"Candle interval: 5m | "
         f"Bots: {len(REGISTERED_BOTS)} ({len(STRATEGY_CLASSES)} strategies × {len(SYMBOLS)} coins)"
     )
 
@@ -209,7 +207,7 @@ async def health():
         "mode": settings.trading_mode,
         "leverage": settings.leverage,
         "fee_rate_pct": settings.simulation_fee_rate * 100,
-        "candle_interval": "1m",
+        "candle_interval": "5m",
         "symbols": SYMBOLS,
         "strategies": [cls.__name__ for cls in STRATEGY_CLASSES],
         "bots": bot_manager.list_bots(),

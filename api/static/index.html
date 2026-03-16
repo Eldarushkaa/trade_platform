@@ -41,12 +41,22 @@
 <div class="layout">
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-      <button class="bt-btn bt-btn-dl" onclick="downloadHistory(14)" style="font-size:11px;padding:5px 10px">📥 Download 14d Data</button>
-      <span style="display:flex;align-items:center;gap:6px">
-        <span id="msk-clock" style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums" title="Moscow time (UTC+3)"></span>
+    <!-- Data download controls -->
+    <div style="margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px;flex-wrap:wrap">
+        <span style="font-size:10px;color:var(--muted);white-space:nowrap">📥 Training:</span>
+        <button class="bt-btn bt-btn-dl" onclick="downloadHistory(365)"  style="font-size:11px;padding:4px 8px;flex:1" title="Download 1 year of 5m candles">1y</button>
+        <button class="bt-btn bt-btn-dl" onclick="downloadHistory(730)"  style="font-size:11px;padding:4px 8px;flex:1" title="Download 2 years of 5m candles">2y</button>
+        <button class="bt-btn bt-btn-dl" onclick="downloadHistory(1095)" style="font-size:11px;padding:4px 8px;flex:1" title="Download 3 years of 5m candles">3y</button>
+        <span id="msk-clock" style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap" title="Moscow time (UTC+3)"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px">
+        <button class="bt-btn bt-btn-dl" id="bt-dl-test-btn" onclick="downloadTestData()" style="font-size:11px;padding:5px 8px;white-space:nowrap" title="Download 14d of 5m candles starting from selected date (held-out test window)">📥 14d Test from:</button>
+        <input type="date" id="bt-test-start-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;flex:1" title="Start date for test data download" />
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
         <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
-      </span>
+      </div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:10px;color:var(--muted)">
       <span>📖 DOM snapshots:</span>
@@ -181,6 +191,21 @@
         </div>
         <div class="backtest-body" id="backtest-body">
 
+          <!-- Date range filter for backtest (optional — leave blank to use all data) -->
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+            <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;white-space:nowrap">Backtest range:</span>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)">
+              From
+              <input type="date" id="bt-start-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:11px" title="Start date for backtest (leave blank = all data)" />
+            </label>
+            <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)">
+              To
+              <input type="date" id="bt-end-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:11px" title="End date for backtest (leave blank = all data)" />
+            </label>
+            <button onclick="clearBtDates()" style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer" title="Clear date filters">✕ Clear</button>
+            <button onclick="fillTestDates()" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer" title="Fill dates from last test download window">Use test window</button>
+          </div>
+
           <!-- Backtest actions -->
           <div class="bt-actions-row">
             <button class="bt-btn bt-btn-run" id="bt-run-btn" onclick="runBacktest()" disabled>▶ Run Backtest</button>
@@ -238,6 +263,6 @@
 
 <!-- Lightweight chart via Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>
