@@ -1,4 +1,58 @@
 // ── Backtest & Optimization ────────────────────────────────────
+// The backtest panel is INDEPENDENT of the bot selected in the sidebar.
+// It has its own bot selector and persists results across page reloads
+// via localStorage (task_id) + server /api/backtest/status polling.
+
+// ── Bot selector helpers ───────────────────────────────────────
+
+/** Return the bot_id currently chosen in the backtest panel selector */
+function getBtBot() {
+  const sel = document.getElementById('bt-bot-select');
+  return sel ? sel.value : '';
+}
+
+/** Populate the backtest bot selector from the global bots cache */
+function populateBtBotSelect(bots) {
+  const sel = document.getElementById('bt-bot-select');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— select bot —</option>';
+  bots.forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b.name;
+    opt.textContent = `${b.name} (${b.symbol})`;
+    sel.appendChild(opt);
+  });
+  // Restore previously selected bot from localStorage
+  const saved = localStorage.getItem('bt_bot_id');
+  if (saved && bots.find(b => b.name === saved)) {
+    sel.value = saved;
+  } else if (current && bots.find(b => b.name === current)) {
+    sel.value = current;
+  }
+  _updateBtButtons();
+}
+
+/** Called when the user changes the bot selector */
+function onBtBotChange() {
+  const botId = getBtBot();
+  if (botId) localStorage.setItem('bt_bot_id', botId);
+  _updateBtButtons();
+  loadDataStatus();
+}
+
+function _updateBtButtons() {
+  const hasBot = !!getBtBot();
+  // Buttons are also gated on data availability — loadDataStatus handles that.
+  // Here we just disable everything if no bot is selected.
+  if (!hasBot) {
+    document.getElementById('bt-run-btn').disabled = true;
+    document.getElementById('bt-opt-btn').disabled = true;
+    document.getElementById('bt-wfo-btn').disabled = true;
+  }
+}
+
+// ── Panel open/close ───────────────────────────────────────────
 
 function toggleBacktest() {
   _backtestOpen = !_backtestOpen;
@@ -6,6 +60,8 @@ function toggleBacktest() {
   document.getElementById('bt-chevron').classList.toggle('open', _backtestOpen);
   if (_backtestOpen) loadDataStatus();
 }
+
+// ── Data status ────────────────────────────────────────────────
 
 async function loadDataStatus() {
   try {
@@ -18,7 +74,6 @@ async function loadDataStatus() {
     if (total > 0) {
       const syms = Object.entries(d.symbols).filter(([,v]) => v.count > 0);
       const coinCount = syms.length;
-      // Find most recent candle end date across all symbols
       let latestEnd = null;
       syms.forEach(([, v]) => {
         if (v.end) {
@@ -26,19 +81,19 @@ async function loadDataStatus() {
           if (!latestEnd || d > latestEnd) latestEnd = d;
         }
       });
-      // Show per-coin candle count (total / coins) + last date
       const perCoin = coinCount > 0 ? Math.round(total / coinCount) : total;
       const dateStr = latestEnd
         ? `${latestEnd.toLocaleDateString('en-US', {month:'short', day:'numeric'})} ${String(latestEnd.getHours()).padStart(2,'0')}:${String(latestEnd.getMinutes()).padStart(2,'0')}`
         : '';
-      info.innerHTML = `${perCoin} candles/coin · ${coinCount} coin${coinCount > 1 ? 's' : ''}<br><span style="color:var(--muted);font-size:9px">Last: ${dateStr}</span>`;
-      badge.textContent = `(${perCoin}/coin, ${dateStr})`;
-      document.getElementById('bt-run-btn').disabled = false;
-      document.getElementById('bt-opt-btn').disabled = false;
-      document.getElementById('bt-wfo-btn').disabled = false;
+      if (info) info.innerHTML = `${perCoin} candles/coin · ${coinCount} coin${coinCount > 1 ? 's' : ''}<br><span style="color:var(--muted);font-size:9px">Last: ${dateStr}</span>`;
+      if (badge) badge.textContent = `(${perCoin}/coin, ${dateStr})`;
+      const hasBot = !!getBtBot();
+      document.getElementById('bt-run-btn').disabled = !hasBot;
+      document.getElementById('bt-opt-btn').disabled = !hasBot;
+      document.getElementById('bt-wfo-btn').disabled = !hasBot;
     } else {
-      info.innerHTML = 'No data — download first';
-      badge.textContent = '';
+      if (info) info.innerHTML = 'No data — download first';
+      if (badge) badge.textContent = '';
       document.getElementById('bt-run-btn').disabled = true;
       document.getElementById('bt-opt-btn').disabled = true;
       document.getElementById('bt-wfo-btn').disabled = true;
@@ -51,7 +106,8 @@ async function downloadHistory(days, startDate = null) {
   const btns = document.querySelectorAll('.bt-btn-dl');
   btns.forEach(b => { b.disabled = true; });
   const label = startDate ? `${days}d from ${startDate}` : `${days}d`;
-  document.getElementById('bt-data-info').textContent = `Downloading ${label} of 5m data...`;
+  const info = document.getElementById('bt-data-info');
+  if (info) info.textContent = `Downloading ${label} of 5m data...`;
 
   try {
     const body = { days };
@@ -59,12 +115,12 @@ async function downloadHistory(days, startDate = null) {
     const resp = await postJson(`${API}/backtest/download`, body);
     if (resp.ok) {
       const total = resp.data.results.reduce((s, r) => s + (r.candles_downloaded || 0), 0);
-      document.getElementById('bt-data-info').textContent = `✓ Downloaded ${total} candles`;
+      if (info) info.textContent = `✓ Downloaded ${total} candles`;
     } else {
-      document.getElementById('bt-data-info').textContent = `✗ ${resp.data.detail || 'Error'}`;
+      if (info) info.textContent = `✗ ${resp.data.detail || 'Error'}`;
     }
   } catch (e) {
-    document.getElementById('bt-data-info').textContent = `✗ ${e.message}`;
+    if (info) info.textContent = `✗ ${e.message}`;
   }
 
   btns.forEach(b => { b.disabled = false; });
@@ -78,12 +134,10 @@ async function downloadTestData() {
     alert('Please pick a start date for the 14-day test window.');
     return;
   }
-  // Compute end date (start + 14 days) for display / pre-fill
   const start = new Date(startDate + 'T00:00:00Z');
   const end   = new Date(start.getTime() + 14 * 86400_000);
   const endDate = end.toISOString().slice(0, 10);
   _lastTestWindow = { start: startDate, end: endDate };
-
   await downloadHistory(14, startDate);
 }
 
@@ -107,8 +161,6 @@ function fillTestDates() {
 }
 
 function _btFeeRate() {
-  // Read the fee % input and return it as a decimal (e.g. 0.07% → 0.0007).
-  // Falls back to null (backend uses its default) if invalid.
   const el = document.getElementById('bt-fee-pct');
   if (!el) return null;
   const v = parseFloat(el.value);
@@ -118,7 +170,8 @@ function _btFeeRate() {
 
 // ── Run backtest ───────────────────────────────────────────────
 async function runBacktest() {
-  if (!selectedBot) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const btn = document.getElementById('bt-run-btn');
   const status = document.getElementById('bt-status');
   btn.disabled = true;
@@ -127,9 +180,8 @@ async function runBacktest() {
   document.getElementById('bt-opt-results').style.display = 'none';
 
   const feeRate = _btFeeRate();
-  const body = { bot_id: selectedBot, fee_rate: feeRate };
+  const body = { bot_id: botId, fee_rate: feeRate };
 
-  // Optional date range filter
   const startDate = (document.getElementById('bt-start-date') || {}).value;
   const endDate   = (document.getElementById('bt-end-date')   || {}).value;
   if (startDate) body.start_date = startDate;
@@ -147,7 +199,6 @@ async function runBacktest() {
       ? ` [${startDate || '…'} → ${endDate || '…'}]`
       : '';
     status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s${rangeLabel}`;
-
     renderBacktestResults(r);
   } catch (e) {
     status.textContent = `✗ ${e.message}`;
@@ -159,17 +210,14 @@ async function runBacktest() {
 function renderBacktestResults(r) {
   document.getElementById('bt-results').style.display = 'block';
 
-  // Safe number formatter: handles null, "Infinity", "-Infinity" strings from Python safe_round()
   const _n = (v, dec = 2, fallback = '—') => {
     const n = parseFloat(v);
     if (isNaN(n)) return fallback;
     if (!isFinite(n)) return n > 0 ? '∞' : '-∞';
     return n.toFixed(dec);
   };
-  // Numeric value for comparisons (never NaN/Inf → use 0 as neutral)
   const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
 
-  // Metrics grid
   const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
   const metricsEl = document.getElementById('bt-metrics');
   metricsEl.innerHTML = `
@@ -218,7 +266,6 @@ function renderBacktestResults(r) {
       <div class="value negative">${r.longest_loss_streak}</div>
     </div>`;
 
-  // Equity chart
   renderBacktestChart(r.equity_curve);
 }
 
@@ -232,7 +279,6 @@ function renderBacktestChart(curve) {
   const sides  = curve.map(p => p.side  || 'NONE');
   const trends = curve.map(p => p.trend || 'none');
 
-  // Color helpers for position side (equity line)
   const sideColor = s => s === 'LONG'  ? 'rgba(0,200,120,0.85)'
                        : s === 'SHORT' ? 'rgba(255,80,80,0.85)'
                        :                 'rgba(130,130,160,0.5)';
@@ -240,8 +286,6 @@ function renderBacktestChart(curve) {
                        : s === 'SHORT' ? 'rgba(255,80,80,0.12)'
                        :                 'rgba(130,130,160,0.05)';
 
-  // Color helpers for trend zones (price line background)
-  // bull = green tint, bear = red tint, warmup = grey
   const trendPriceColor = t => t === 'bull'   ? 'rgba(0,200,120,0.7)'
                               : t === 'bear'   ? 'rgba(255,80,80,0.7)'
                               : t === 'warmup' ? 'rgba(180,180,200,0.35)'
@@ -258,7 +302,6 @@ function renderBacktestChart(curve) {
     data: {
       labels,
       datasets: [
-        // USDT balance area fill
         {
           label: 'USDT Balance',
           data: usdtValues,
@@ -268,7 +311,6 @@ function renderBacktestChart(curve) {
           yAxisID: 'yEq',
           order: 3,
         },
-        // Total value line — colored by position side
         {
           label: 'Total Value',
           data: values,
@@ -282,7 +324,6 @@ function renderBacktestChart(curve) {
           },
           borderColor: 'rgba(130,130,160,0.5)',
         },
-        // Coin price line — colored by EMA trend (bull/bear/warmup)
         {
           label: 'Coin Price',
           data: prices,
@@ -348,7 +389,8 @@ function renderBacktestChart(curve) {
 
 // ── Optimization ───────────────────────────────────────────────
 async function runOptimize() {
-  if (!selectedBot) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const btn = document.getElementById('bt-opt-btn');
   const status = document.getElementById('bt-status');
   const iters = parseInt(document.getElementById('bt-opt-iters').value) || 200;
@@ -360,8 +402,7 @@ async function runOptimize() {
   document.getElementById('bt-wfo-results').style.display = 'none';
 
   try {
-    // Start optimization (returns task_id)
-    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: selectedBot, iterations: iters, fee_rate: feeRate });
+    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: botId, iterations: iters, fee_rate: feeRate });
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
@@ -370,8 +411,9 @@ async function runOptimize() {
     }
 
     const taskId = startResp.data.task_id;
+    // Persist so we can resume on reload
+    _saveBtTask('opt', taskId, botId);
 
-    // Poll for completion
     let done = false;
     while (!done) {
       await new Promise(r => setTimeout(r, 2000));
@@ -382,9 +424,11 @@ async function runOptimize() {
           done = true;
           renderOptResults(poll.result);
           status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s`;
+          _clearBtTask('opt');
         } else if (poll.status === 'error') {
           done = true;
           status.textContent = `✗ ${poll.error}`;
+          _clearBtTask('opt');
         }
       } catch (e) {
         console.warn('poll error', e);
@@ -400,7 +444,8 @@ async function runOptimize() {
 
 // ── Walk-Forward Optimization ──────────────────────────────────
 async function runWalkForward() {
-  if (!selectedBot) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const btn = document.getElementById('bt-wfo-btn');
   const status = document.getElementById('bt-status');
   const iters = parseInt(document.getElementById('bt-opt-iters').value) || 200;
@@ -416,7 +461,7 @@ async function runWalkForward() {
 
   try {
     const startResp = await postJson(`${API}/backtest/walk-forward`, {
-      bot_id: selectedBot,
+      bot_id: botId,
       n_folds: folds,
       test_pct: testPct / 100,
       iterations: iters,
@@ -430,8 +475,9 @@ async function runWalkForward() {
     }
 
     const taskId = startResp.data.task_id;
+    // Persist so we can resume on reload
+    _saveBtTask('wfo', taskId, botId);
 
-    // Poll for completion
     let done = false;
     while (!done) {
       await new Promise(r => setTimeout(r, 3000));
@@ -442,9 +488,11 @@ async function runWalkForward() {
           done = true;
           renderWFOResults(poll.result);
           status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s`;
+          _clearBtTask('wfo');
         } else if (poll.status === 'error') {
           done = true;
           status.textContent = `✗ ${poll.error}`;
+          _clearBtTask('wfo');
         }
       } catch (e) {
         console.warn('wfo poll error', e);
@@ -458,6 +506,114 @@ async function runWalkForward() {
   btn.textContent = '📊 Walk-Forward';
 }
 
+// ── localStorage helpers for task persistence ──────────────────
+function _saveBtTask(type, taskId, botId) {
+  try {
+    localStorage.setItem(`bt_task_${type}`, JSON.stringify({ taskId, botId, ts: Date.now() }));
+  } catch(e) {}
+}
+function _clearBtTask(type) {
+  try { localStorage.removeItem(`bt_task_${type}`); } catch(e) {}
+}
+function _loadBtTask(type) {
+  try {
+    const raw = localStorage.getItem(`bt_task_${type}`);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    // Ignore tasks older than 12 hours (server evicts after 1h anyway)
+    if (Date.now() - obj.ts > 12 * 3600 * 1000) { _clearBtTask(type); return null; }
+    return obj;
+  } catch(e) { return null; }
+}
+
+// ── Restore in-progress / completed tasks on page load ─────────
+// Called once after bots list is populated (so the selector can be set).
+async function initBtPanel() {
+  // Open panel by default so results are immediately visible on load
+  if (!_backtestOpen) {
+    _backtestOpen = true;
+    document.getElementById('backtest-body').classList.add('open');
+    document.getElementById('bt-chevron').classList.add('open');
+  }
+
+  // Try to restore WFO task first (higher priority), then Optimize task
+  for (const type of ['wfo', 'opt']) {
+    const saved = _loadBtTask(type);
+    if (!saved) continue;
+
+    const { taskId, botId } = saved;
+    try {
+      const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+
+      // Select the correct bot in the panel selector
+      const sel = document.getElementById('bt-bot-select');
+      if (sel && botId) {
+        sel.value = botId;
+        localStorage.setItem('bt_bot_id', botId);
+        _updateBtButtons();
+      }
+
+      const status = document.getElementById('bt-status');
+
+      if (poll.status === 'completed' && poll.result) {
+        // Already done — restore results immediately
+        if (type === 'wfo') {
+          renderWFOResults(poll.result);
+          status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s (restored)`;
+        } else {
+          renderOptResults(poll.result);
+          status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s (restored)`;
+        }
+        _clearBtTask(type);
+      } else if (poll.status === 'running') {
+        // Re-attach polling loop in background
+        status.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
+        _resumePoll(type, taskId);
+      } else {
+        // error or unknown — clear
+        _clearBtTask(type);
+      }
+    } catch(e) {
+      // Task not found on server (expired) — clean up
+      _clearBtTask(type);
+    }
+  }
+
+  await loadDataStatus();
+}
+
+/** Resume polling a background task after page reload */
+async function _resumePoll(type, taskId) {
+  const isWfo = type === 'wfo';
+  const status = document.getElementById('bt-status');
+  let done = false;
+  while (!done) {
+    await new Promise(r => setTimeout(r, isWfo ? 3000 : 2000));
+    try {
+      const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+      status.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
+      if (poll.status === 'completed') {
+        done = true;
+        if (isWfo) {
+          renderWFOResults(poll.result);
+          status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s`;
+        } else {
+          renderOptResults(poll.result);
+          status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s`;
+        }
+        _clearBtTask(type);
+      } else if (poll.status === 'error') {
+        done = true;
+        status.textContent = `✗ ${poll.error}`;
+        _clearBtTask(type);
+      }
+    } catch(e) {
+      console.warn('resume poll error', e);
+    }
+  }
+}
+
+// ── WFO render ─────────────────────────────────────────────────
 function renderWFOResults(r) {
   _lastWFOResult = r;
   const wrap = document.getElementById('bt-wfo-results');
@@ -472,7 +628,6 @@ function renderWFOResults(r) {
   const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
   const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
 
-  // WFE colour coding
   const wfeClass = wfe => {
     const w = _v(wfe);
     if (w >= 0.6) return 'positive';
@@ -486,7 +641,6 @@ function renderWFOResults(r) {
     return '❌ Overfit';
   };
 
-  // Folds table rows
   const fmtMs = ms => {
     if (!ms) return '—';
     return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -508,7 +662,6 @@ function renderWFOResults(r) {
       </tr>`;
   });
 
-  // Summary header metrics
   const avgWfe = _v(r.avg_wfe);
   const avgWfeClass = avgWfe >= 0.6 ? 'positive' : avgWfe >= 0.3 ? 'neutral' : 'negative';
   const avgWfeTip = avgWfe >= 0.6
@@ -608,7 +761,6 @@ function renderWFOResults(r) {
       </div>
     </div>`;
 
-  // Render OOS equity curve
   renderWFOChart(r.oos_equity_curve || []);
 }
 
@@ -661,13 +813,15 @@ function renderWFOChart(curve) {
 }
 
 async function applyWFOParams() {
-  if (!_lastWFOResult || !selectedBot) return;
+  if (!_lastWFOResult) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const params = _lastWFOResult.final_params;
   try {
-    const resp = await put(`${API}/bots/${selectedBot}/params`, params);
+    const resp = await put(`${API}/bots/${botId}/params`, params);
     if (resp.ok) {
       showToast(`✓ Applied ${Object.keys(resp.data.applied).length} walk-forward param(s)`, 'success');
-      await loadParams(selectedBot);
+      await loadParams(botId);
     } else {
       showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
     }
@@ -677,7 +831,9 @@ async function applyWFOParams() {
 }
 
 async function runBacktestWithWFO() {
-  if (!_lastWFOResult || !selectedBot) return;
+  if (!_lastWFOResult) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const btn = document.getElementById('bt-run-btn');
   const status = document.getElementById('bt-status');
   btn.disabled = true;
@@ -686,7 +842,7 @@ async function runBacktestWithWFO() {
   try {
     const feeRate = _btFeeRate();
     const resp = await postJson(`${API}/backtest/run`, {
-      bot_id: selectedBot,
+      bot_id: botId,
       params: _lastWFOResult.final_params,
       fee_rate: feeRate,
     });
@@ -702,12 +858,12 @@ async function runBacktestWithWFO() {
   btn.disabled = false;
 }
 
+// ── Optimize results render ────────────────────────────────────
 function renderOptResults(r) {
   _lastOptResult = r;
   const wrap = document.getElementById('bt-opt-results');
   wrap.style.display = 'block';
 
-  // Safe number helpers (same as renderBacktestResults)
   const _n = (v, dec = 2, fallback = '—') => {
     const n = parseFloat(v);
     if (isNaN(n)) return fallback;
@@ -721,7 +877,6 @@ function renderOptResults(r) {
   const ga = r.ga_stats || {};
   const sharpeDelta = _v(imp.sharpe_delta);
 
-  // Build param comparison table
   let paramRows = '';
   const allKeys = new Set([...Object.keys(r.current_params || {}), ...Object.keys(r.best_params || {})]);
   allKeys.forEach(key => {
@@ -799,13 +954,15 @@ function renderOptResults(r) {
 }
 
 async function applyOptParams() {
-  if (!_lastOptResult || !selectedBot) return;
+  if (!_lastOptResult) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const params = _lastOptResult.best_params;
   try {
-    const resp = await put(`${API}/bots/${selectedBot}/params`, params);
+    const resp = await put(`${API}/bots/${botId}/params`, params);
     if (resp.ok) {
       showToast(`✓ Applied ${Object.keys(resp.data.applied).length} optimized param(s)`, 'success');
-      await loadParams(selectedBot);
+      await loadParams(botId);
     } else {
       showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
     }
@@ -815,7 +972,9 @@ async function applyOptParams() {
 }
 
 async function runBacktestWithOpt() {
-  if (!_lastOptResult || !selectedBot) return;
+  if (!_lastOptResult) return;
+  const botId = getBtBot();
+  if (!botId) return;
   const btn = document.getElementById('bt-run-btn');
   const status = document.getElementById('bt-status');
   btn.disabled = true;
@@ -824,7 +983,7 @@ async function runBacktestWithOpt() {
   try {
     const feeRate = _btFeeRate();
     const resp = await postJson(`${API}/backtest/run`, {
-      bot_id: selectedBot,
+      bot_id: botId,
       params: _lastOptResult.best_params,
       fee_rate: feeRate,
     });

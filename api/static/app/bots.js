@@ -68,6 +68,9 @@ async function loadBots() {
     // Cache bots list for use in loadDataStatus (symbol lookup)
     _botsCache = bots;
 
+    // Populate the standalone backtest panel bot selector
+    if (typeof populateBtBotSelect === 'function') populateBtBotSelect(bots);
+
     // Fetch per-bot period stats in parallel for the global stats bar period toggle
     const periodStats = {};
     await Promise.all(bots.map(async bot => {
@@ -231,14 +234,6 @@ function selectBot(name) {
   document.getElementById('no-bot').style.display = 'none';
   document.getElementById('bot-detail').style.display = 'block';
   document.getElementById('detail-title').textContent = name;
-
-  // Reset backtest UI
-  document.getElementById('bt-results').style.display = 'none';
-  document.getElementById('bt-opt-results').style.display = 'none';
-  document.getElementById('bt-status').textContent = '';
-  document.getElementById('bt-metrics').innerHTML = '';
-  if (_backtestChart) { _backtestChart.destroy(); _backtestChart = null; }
-  _lastOptResult = null;
 
   loadBotDetail(name);
   // Mark active

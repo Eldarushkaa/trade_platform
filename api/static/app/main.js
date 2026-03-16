@@ -50,7 +50,10 @@ _tickMskClock();
 setInterval(_tickMskClock, 1000);
 
 // ── Bootstrap ──────────────────────────────────────────────────
-refresh();
-loadDataStatus();       // show data status in sidebar on load
+// First refresh populates bots list + bt-bot-select, then we init the bt panel
+// (which reads localStorage + restores any in-progress/completed task from server)
+refresh().then(() => {
+  if (typeof initBtPanel === 'function') initBtPanel();
+});
 loadLogs();             // populate log badge count on load
 _refreshInterval = setInterval(refresh, _refreshSeconds * 1000);

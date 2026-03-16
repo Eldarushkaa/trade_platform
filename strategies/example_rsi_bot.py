@@ -1,51 +1,57 @@
 """
-RSI Bot — Wilder's RSI with EMA50/200 trend filter and ATR volatility filter.
+RSI Bot — Wilder's RSI with EMA50/200 trend filter, ATR volatility filter,
+and dynamic RSI thresholds via vol_factor = ATR / EMA(ATR, 50).
 
 Operates on 5-MINUTE CANDLES. USDT-Margined perpetual futures with leverage.
 
 Entry logic (trend-filtered mean-reversion):
     Entry is allowed only when ALL three conditions are met:
-      1. RSI is oversold/overbought (entry signal)
+      1. RSI is oversold/overbought (using DYNAMIC thresholds)
       2. EMA trend agrees: LONG only if EMA50 > EMA200 (bull trend), SHORT only if EMA50 < EMA200
-      3. ATR/price >= ATR_MIN_PCT (enough volatility for mean-reversion to work)
+      3. ATR/price >= ATR_MIN_PCT = 0.004 (enough volatility for mean-reversion to work)
 
-    RSI < OVERSOLD  AND EMA50 > EMA200  AND atr_ok → OPEN LONG
-    RSI > OVERBOUGHT AND EMA50 < EMA200 AND atr_ok → OPEN SHORT
+    dynamic_oversold  = OVERSOLD  - 8 * (vol_factor - 1)
+    dynamic_overbought= OVERBOUGHT + 8 * (vol_factor - 1)
+    where vol_factor  = ATR / EMA(ATR, 50)
+
+    RSI < dynamic_oversold   AND EMA50 > EMA200  AND atr_ok → OPEN LONG
+    RSI > dynamic_overbought AND EMA50 < EMA200  AND atr_ok → OPEN SHORT
 
     If already in opposite position, close it first then open new direction.
 
 Warmup:
     No trades are placed until candle #200 (EMA200 requires 200 bars to initialise).
-    EMA50 and ATR(14) are also computed during warmup.
+    EMA50 and ATR(14) and EMA_ATR(50) are also computed during warmup.
 
 Exit logic (two independent mechanisms):
-    1. Mean-reversion exit (RSI recovery):
-       - LONG exits when RSI recovers above EXIT_RSI_LONG (default 55)
-       - SHORT exits when RSI drops below EXIT_RSI_SHORT (default 45)
+    1. Mean-reversion exit (RSI recovery) — derived from dynamic thresholds:
+       exit_long  = dynamic_oversold  + 20
+       exit_short = dynamic_overbought - 20
+       (These float with volatility; in calm markets exits are tighter.)
 
     2. Max-hold fallback (time-based):
        - Force-closes any open position after MAX_HOLD_CANDLES candles (default 30 = 2.5 hrs)
        - Prevents runaway drawdown if RSI never recovers
 
 Indicators (all fixed periods, not optimized — keeps search space small):
-    EMA_FAST  = 50   candles  (trend direction)
-    EMA_SLOW  = 200  candles  (macro trend filter)
-    ATR       = 14   candles  (volatility, True Range)
+    EMA_FAST      = 50   candles  (trend direction)
+    EMA_SLOW      = 200  candles  (macro trend filter)
+    ATR_PERIOD    = 14   candles  (volatility, True Range)
+    EMA_ATR_PERIOD= 50   candles  (smooth ATR for vol_factor baseline)
+    ATR_MIN_PCT   = 0.004         (hardcoded; skip low-volatility candles)
 
 ATR:
     True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
     ATR = Wilder EMA of TR (alpha = 1/14)
-    Filter: atr / close >= ATR_MIN_PCT  (skip when market is too quiet)
+    EMA_ATR = standard EMA of ATR values (k = 2/51)
+    vol_factor = ATR / EMA_ATR  (>1 = volatile, <1 = quiet)
 
 Optimizable parameters (all with tight, realistic ranges):
     RSI_PERIOD       7–21     RSI lookback
-    OVERSOLD         20–35    Long entry threshold
-    OVERBOUGHT       65–80    Short entry threshold
-    EXIT_RSI_LONG    45–65    Close LONG exit level
-    EXIT_RSI_SHORT   35–55    Close SHORT exit level
-    MAX_HOLD_CANDLES 10–50    Time-stop in candles
+    OVERSOLD         20–35    Base long entry threshold (adjusted by vol_factor)
+    OVERBOUGHT       65–80    Base short entry threshold (adjusted by vol_factor)
+    MAX_HOLD_CANDLES 10–40    Time-stop in candles
     COOLDOWN_CANDLES 0–10     Min candles between entries
-    ATR_MIN_PCT      0.001–0.008  Min ATR/price volatility filter
 
 Multi-coin usage:
     from strategies.example_rsi_bot import RSIBot
@@ -70,20 +76,19 @@ class RSIBot(BaseStrategy):
     symbol = "BTCUSDT"
 
     # --- Fixed indicator periods (not optimized — keeps search space small) ---
-    EMA_FAST_PERIOD = 50
-    EMA_SLOW_PERIOD = 200   # warmup guard: no trades until this many candles seen
-    ATR_PERIOD      = 14
+    EMA_FAST_PERIOD  = 50
+    EMA_SLOW_PERIOD  = 200   # warmup guard: no trades until this many candles seen
+    ATR_PERIOD       = 14
+    EMA_ATR_PERIOD   = 50    # smoothing window for ATR baseline (vol_factor denominator)
+    ATR_MIN_PCT      = 0.004 # hardcoded min ATR/price filter (skip low-vol candles)
 
     # --- Optimizable strategy parameters ---
     RSI_PERIOD       = 14       # Wilder RSI lookback
-    OVERSOLD         = 30.0     # Go LONG below this
-    OVERBOUGHT       = 70.0     # Go SHORT above this
-    EXIT_RSI_LONG    = 55.0     # Close LONG when RSI recovers above this
-    EXIT_RSI_SHORT   = 45.0     # Close SHORT when RSI drops below this
+    OVERSOLD         = 30.0     # Base LONG threshold (shifted by vol_factor)
+    OVERBOUGHT       = 70.0     # Base SHORT threshold (shifted by vol_factor)
     MAX_HOLD_CANDLES = 30       # Force-close after this many candles (~2.5 hrs)
     TRADE_FRACTION   = 1.0      # Use 100% of free USDT for margin
     COOLDOWN_CANDLES = 3        # Min candles between new entries
-    ATR_MIN_PCT      = 0.002    # Min ATR/price ratio to allow trade entry
 
     PARAM_SCHEMA = {
         "RSI_PERIOD": {
@@ -92,22 +97,14 @@ class RSIBot(BaseStrategy):
         },
         "OVERSOLD": {
             "type": "float", "default": 30.0, "min": 20.0, "max": 35.0,
-            "description": "Long entry threshold (RSI below this → LONG)",
+            "description": "Base long entry threshold (shifted down in high-vol via vol_factor)",
         },
         "OVERBOUGHT": {
             "type": "float", "default": 70.0, "min": 65.0, "max": 80.0,
-            "description": "Short entry threshold (RSI above this → SHORT)",
-        },
-        "EXIT_RSI_LONG": {
-            "type": "float", "default": 55.0, "min": 45.0, "max": 65.0,
-            "description": "Close LONG when RSI recovers above this (mean-reversion exit)",
-        },
-        "EXIT_RSI_SHORT": {
-            "type": "float", "default": 45.0, "min": 35.0, "max": 55.0,
-            "description": "Close SHORT when RSI drops below this (mean-reversion exit)",
+            "description": "Base short entry threshold (shifted up in high-vol via vol_factor)",
         },
         "MAX_HOLD_CANDLES": {
-            "type": "int", "default": 30, "min": 10, "max": 50,
+            "type": "int", "default": 30, "min": 10, "max": 40,
             "description": "Force-close position after this many candles (time-stop)",
         },
         "TRADE_FRACTION": {
@@ -118,10 +115,6 @@ class RSIBot(BaseStrategy):
         "COOLDOWN_CANDLES": {
             "type": "int", "default": 3, "min": 0, "max": 10,
             "description": "Minimum candles between new entries",
-        },
-        "ATR_MIN_PCT": {
-            "type": "float", "default": 0.002, "min": 0.001, "max": 0.008,
-            "description": "Min ATR/price ratio for entry (skip low-volatility candles)",
         },
     }
 
@@ -144,8 +137,9 @@ class RSIBot(BaseStrategy):
         # Shared warmup buffer for EMAs (we collect up to EMA_SLOW_PERIOD closes)
         self._ema_warmup: list[float] = []
 
-        # --- ATR volatility filter state ---
+        # --- ATR volatility filter + EMA(ATR) for vol_factor ---
         self._atr: Optional[float] = None
+        self._ema_atr: Optional[float] = None    # EMA of ATR for baseline (vol_factor denominator)
         self._warmup_tr: list[float] = []
 
         # --- Position tracking ---
@@ -198,13 +192,31 @@ class RSIBot(BaseStrategy):
         if rsi is None:
             return
 
+        # Also wait for EMA_ATR to be ready (needs ATR * EMA_ATR_PERIOD samples)
+        if self._ema_atr is None or self._atr is None:
+            return
+
+        # ------------------------------------------------------------------
+        # DYNAMIC RSI THRESHOLDS via vol_factor
+        # ------------------------------------------------------------------
+        # vol_factor > 1 → more volatile than average → widen thresholds
+        # vol_factor < 1 → quieter than average       → tighten thresholds
+        vol_factor = self._atr / self._ema_atr
+        adj = 8.0 * (vol_factor - 1.0)
+        dyn_oversold   = self.OVERSOLD   - adj   # lower in high-vol (easier to reach)
+        dyn_overbought = self.OVERBOUGHT + adj   # higher in high-vol (easier to reach)
+        # Exit levels derived from dynamic entry levels
+        exit_long  = dyn_oversold   + 20.0
+        exit_short = dyn_overbought - 20.0
+
         # Get current position: positive = LONG, negative = SHORT, 0 = flat
         position = await self.engine.get_balance(self.name, "POSITION")
 
         self.logger.debug(
             f"close={close:.2f}  RSI={rsi:.1f}  "
             f"EMA50={self._ema_fast:.2f}  EMA200={self._ema_slow:.2f}  "
-            f"ATR%={self._atr/close*100:.3f}  pos={position:.6f}"
+            f"ATR%={self._atr/close*100:.3f}  vol_factor={vol_factor:.3f}  "
+            f"OS={dyn_oversold:.1f}  OB={dyn_overbought:.1f}  pos={position:.6f}"
         )
 
         # ------------------------------------------------------------------
@@ -213,8 +225,8 @@ class RSIBot(BaseStrategy):
 
         if position > 0:
             candles_held = self._candle_count - self._position_opened_candle
-            if rsi > self.EXIT_RSI_LONG:
-                await self._close_position(close, "SELL", f"RSI exit LONG ({rsi:.1f}>{self.EXIT_RSI_LONG})")
+            if rsi > exit_long:
+                await self._close_position(close, "SELL", f"RSI exit LONG ({rsi:.1f}>{exit_long:.1f})")
                 position = 0
             elif candles_held >= self.MAX_HOLD_CANDLES:
                 await self._close_position(close, "SELL", f"Time-stop LONG ({candles_held} candles)")
@@ -222,8 +234,8 @@ class RSIBot(BaseStrategy):
 
         elif position < 0:
             candles_held = self._candle_count - self._position_opened_candle
-            if rsi < self.EXIT_RSI_SHORT:
-                await self._close_position(close, "BUY", f"RSI exit SHORT ({rsi:.1f}<{self.EXIT_RSI_SHORT})")
+            if rsi < exit_short:
+                await self._close_position(close, "BUY", f"RSI exit SHORT ({rsi:.1f}<{exit_short:.1f})")
                 position = 0
             elif candles_held >= self.MAX_HOLD_CANDLES:
                 await self._close_position(close, "BUY", f"Time-stop SHORT ({candles_held} candles)")
@@ -241,17 +253,17 @@ class RSIBot(BaseStrategy):
         trend_up   = self._ema_fast > self._ema_slow   # bullish: fast above slow
         trend_down = self._ema_fast < self._ema_slow   # bearish: fast below slow
 
-        # Volatility filter: require minimum ATR/price ratio
-        atr_ok = (self._atr is None) or (self._atr / close >= self.ATR_MIN_PCT)
+        # Volatility filter: require minimum ATR/price ratio (hardcoded 0.004)
+        atr_ok = self._atr / close >= self.ATR_MIN_PCT
 
         # --- Oversold + bullish trend + enough volatility → LONG ---
-        if rsi < self.OVERSOLD and trend_up and atr_ok:
+        if rsi < dyn_oversold and trend_up and atr_ok:
             result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}")
             if result is not None:
                 self._position_opened_candle = self._candle_count
 
         # --- Overbought + bearish trend + enough volatility → SHORT ---
-        elif rsi > self.OVERBOUGHT and trend_down and atr_ok:
+        elif rsi > dyn_overbought and trend_down and atr_ok:
             result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}")
             if result is not None:
                 self._position_opened_candle = self._candle_count
@@ -309,8 +321,10 @@ class RSIBot(BaseStrategy):
         """
         True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
         ATR = Wilder EMA of TR (alpha = 1/ATR_PERIOD).
+        EMA_ATR = standard EMA of ATR values (k = 2/(EMA_ATR_PERIOD+1)).
 
-        Warmup: collect ATR_PERIOD True Range values, seed with their simple average.
+        Warmup: collect ATR_PERIOD True Range values, seed ATR with their simple average.
+        EMA_ATR seeds on the first ATR value and then updates every candle.
         """
         prev_close = self._prev_close if self._prev_close is not None else close
 
@@ -326,9 +340,14 @@ class RSIBot(BaseStrategy):
             if len(self._warmup_tr) >= self.ATR_PERIOD:
                 self._atr = sum(self._warmup_tr) / self.ATR_PERIOD
                 self._warmup_tr.clear()
+                # Seed EMA_ATR with the first ATR value
+                self._ema_atr = self._atr
         else:
-            alpha = 1.0 / self.ATR_PERIOD
-            self._atr = alpha * tr + (1 - alpha) * self._atr
+            alpha_atr = 1.0 / self.ATR_PERIOD
+            self._atr = alpha_atr * tr + (1 - alpha_atr) * self._atr
+            # Update EMA(ATR, 50) — standard EMA formula
+            k_ema_atr = 2.0 / (self.EMA_ATR_PERIOD + 1)
+            self._ema_atr = self._atr * k_ema_atr + self._ema_atr * (1 - k_ema_atr)
 
     # ------------------------------------------------------------------
     # Wilder RSI

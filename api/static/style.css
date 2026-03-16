@@ -324,7 +324,13 @@ td.pnl-neg { color: var(--red); }
 .llm-log-entry .actions { color: var(--muted); }
 .llm-log-entry .ts { color: var(--muted); font-size: 10px; }
 
-/* --- Backtest panel --- */
+/* --- Standalone Backtest Panel (below layout, full-width) --- */
+.bt-standalone-panel {
+  margin: 0 24px 24px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+/* Keep legacy .backtest-section for any other usage */
 .backtest-section {
   margin-top: 20px; background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; overflow: hidden;
