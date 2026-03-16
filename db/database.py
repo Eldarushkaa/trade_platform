@@ -99,18 +99,6 @@ async def _create_tables() -> None:
             updated_at  TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS llm_decisions (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp       TEXT NOT NULL,
-            prompt_summary  TEXT,
-            response_json   TEXT,
-            actions_taken   TEXT,
-            success         INTEGER NOT NULL DEFAULT 1,
-            error_message   TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_llm_decisions_ts ON llm_decisions(timestamp);
-
         CREATE TABLE IF NOT EXISTS historical_candles (
             symbol          TEXT NOT NULL,
             open_time       INTEGER NOT NULL,     -- UTC epoch milliseconds
@@ -124,26 +112,6 @@ async def _create_tables() -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_hist_symbol ON historical_candles(symbol);
-
-        CREATE TABLE IF NOT EXISTS orderbook_snapshots (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol          TEXT    NOT NULL,
-            timestamp       TEXT    NOT NULL,
-            depth_limit     INTEGER NOT NULL,
-            bids_json       TEXT    NOT NULL,
-            asks_json       TEXT    NOT NULL,
-            best_bid        REAL,
-            best_ask        REAL,
-            spread          REAL,
-            bid_depth_usdt  REAL,
-            ask_depth_usdt  REAL,
-            mid_price       REAL,
-            imbalance       REAL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_ob_symbol    ON orderbook_snapshots(symbol);
-        CREATE INDEX IF NOT EXISTS idx_ob_timestamp  ON orderbook_snapshots(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_ob_sym_ts     ON orderbook_snapshots(symbol, timestamp);
     """)
 
     # --- Additive migrations (safe to run on existing DBs) ---

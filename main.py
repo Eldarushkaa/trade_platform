@@ -16,15 +16,13 @@ Data flow:
         → BinanceFeed (raw aggTrade ticks)
             → PriceCache (latest price per symbol + pub/sub)
                 → BotManager.dispatch_price()   (updates engine price cache)
-                → CandleAggregator.on_tick()    (builds 1-min OHLC candles)
+                → CandleAggregator.on_tick()    (builds 5-min OHLC candles)
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (4 strategies × 3 coins = 12 bots):
+Bot instances (2 strategies × 3 coins = 6 bots):
     rsi_btc, rsi_eth, rsi_sol       — Wilder RSI + trend filter
     ma_btc, ma_eth, ma_sol          — MACD crossover + histogram
-    bb_btc, bb_eth, bb_sol          — Bollinger Band mean reversion
-    ob_btc, ob_eth, ob_sol          — Orderbook wall / gap detection
 """
 import asyncio
 import logging
@@ -39,7 +37,6 @@ from config import settings
 from db.database import init_db, close_db
 from core.simulation_engine import SimulationEngine
 from core.bot_manager import BotManager
-from core import llm_agent
 from data.binance_feed import BinanceFeed
 from data.price_cache import price_cache
 from data.candle_aggregator import CandleAggregator
@@ -81,8 +78,9 @@ _install_log_handler()
 # ------------------------------------------------------------------
 # Global singletons
 # ------------------------------------------------------------------
-# ob_fetcher=fetch_depth: every place_order() call fetches a fresh Binance
+# ob_fetcher=fetch_depth: every place_order() call fetches a live Binance
 # depth snapshot and walks the OB levels for a realistic VWAP fill price.
+# This is used only for live-mode order execution — not for UI display.
 simulation_engine = SimulationEngine(ob_fetcher=fetch_depth)
 bot_manager = BotManager(engine=simulation_engine)
 candle_aggregator = CandleAggregator(interval_seconds=300)  # 5-minute candles
@@ -129,19 +127,15 @@ async def lifespan(app: FastAPI):
     feed_task = asyncio.create_task(feed.start(), name="binance-feed")
     logger.info(f"Binance feed started for symbols: {symbols}")
 
-    # 6. Wire app.state so all routes and the LLM agent can access singletons
+    # 6. Wire app.state so all routes can access singletons
     app.state.bot_manager = bot_manager
     app.state.engine = simulation_engine
     app.state.symbols = SYMBOLS
-
-    # 7. Start LLM agent (if enabled in config)
-    await llm_agent.start_agent(app)
 
     yield  # ← App is running
 
     # ------ Shutdown ------
     logger.info("Shutting down...")
-    await llm_agent.stop_agent()
     await feed.stop()
     feed_task.cancel()
     try:
@@ -174,14 +168,12 @@ app = FastAPI(
 from api.routes import bots as bots_router
 from api.routes import trades as trades_router
 from api.routes import portfolio as portfolio_router
-from api.routes import llm as llm_router
 from api.routes import backtest as backtest_router
 from api.routes import logs as logs_router
 
 app.include_router(bots_router.router, prefix="/api")
 app.include_router(trades_router.router, prefix="/api")
 app.include_router(portfolio_router.router, prefix="/api")
-app.include_router(llm_router.router, prefix="/api")
 app.include_router(backtest_router.router, prefix="/api")
 app.include_router(logs_router.router, prefix="/api")
 

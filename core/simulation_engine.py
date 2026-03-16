@@ -139,7 +139,7 @@ class SimulationEngine(BaseOrderEngine):
         self._fee_rates: dict[str, float] = {}
         self._skip_db: bool = skip_db
         self._ob_fetcher: Optional[OBFetcher] = ob_fetcher
-        # Latest orderbook snapshots per symbol (populated by ob_fetcher or update_orderbook)
+        # Latest orderbook snapshots per symbol (populated by ob_fetcher on each place_order)
         # { "BTCUSDT": {"bids": [(price, qty), ...], "asks": [(price, qty), ...]} }
         self._orderbooks: dict[str, dict] = {}
 
@@ -317,50 +317,6 @@ class SimulationEngine(BaseOrderEngine):
             f"slippage={slippage * 100:.4f}%"
         )
         return fill_price, "vwap"
-
-    # ------------------------------------------------------------------
-    # Per-symbol position aggregation (used by stats bar)
-    # ------------------------------------------------------------------
-
-    def get_coin_positions(self) -> dict:
-        """
-        Per-symbol aggregate position view across all bots.
-
-        For each symbol returns:
-          - total_long_qty:   Sum of all open LONG quantities
-          - total_short_qty:  Sum of all open SHORT quantities
-          - net_qty:          total_long_qty - total_short_qty
-          - net_side:         "LONG" / "SHORT" / "FLAT"
-          - long_bots:        List of bot_ids holding LONGs
-          - short_bots:       List of bot_ids holding SHORTs
-        """
-        by_symbol: dict[str, dict] = {}
-        for bot_id, portfolio in self._portfolios.items():
-            sym = portfolio.symbol
-            if sym not in by_symbol:
-                by_symbol[sym] = {
-                    "total_long_qty": 0.0,
-                    "total_short_qty": 0.0,
-                    "long_bots": [],
-                    "short_bots": [],
-                }
-            pos = portfolio.position
-            if pos.is_open:
-                if pos.side == "LONG":
-                    by_symbol[sym]["total_long_qty"] += pos.quantity
-                    by_symbol[sym]["long_bots"].append(bot_id)
-                elif pos.side == "SHORT":
-                    by_symbol[sym]["total_short_qty"] += pos.quantity
-                    by_symbol[sym]["short_bots"].append(bot_id)
-
-        for sym, data in by_symbol.items():
-            net = data["total_long_qty"] - data["total_short_qty"]
-            data["net_qty"] = round(net, 8)
-            data["net_side"] = "LONG" if net > 1e-10 else ("SHORT" if net < -1e-10 else "FLAT")
-            data["total_long_qty"] = round(data["total_long_qty"], 8)
-            data["total_short_qty"] = round(data["total_short_qty"], 8)
-
-        return by_symbol
 
     # ------------------------------------------------------------------
     # BaseOrderEngine implementation
@@ -552,18 +508,13 @@ class SimulationEngine(BaseOrderEngine):
         await repo.insert_snapshot(snap)
 
     async def get_orderbook_snapshot(self, symbol: str) -> Optional[dict]:
-        """Return the latest orderbook snapshot for *symbol*.
+        """Return the latest in-memory orderbook snapshot for *symbol*, or None.
 
-        Returns the in-memory cached snapshot first (populated by ob_fetcher
-        on every place_order call, or by update_orderbook() from external code).
-        Falls back to DB only if the cache is empty — this avoids a DB round-trip
-        on every candle for strategies that use OB for signal generation (ob_wall).
+        Populated by ob_fetcher on every place_order() call (live mode).
+        Returns None in backtest mode (ob_fetcher=None) — strategies should
+        not rely on OB data during backtests.
         """
-        cached = self._orderbooks.get(symbol)
-        if cached is not None:
-            return cached
-        # Cache miss: try DB (live mode with old snapshots, or first call after restart)
-        return await repo.get_orderbook_full(symbol)
+        return self._orderbooks.get(symbol)
 
     # ------------------------------------------------------------------
     # Public portfolio helpers (preferred over direct _portfolios access)

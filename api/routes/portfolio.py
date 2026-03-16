@@ -1,6 +1,7 @@
 """
 API routes for portfolio data.
 
+GET /api/portfolio/all                 — all bots portfolio state (for dashboard)
 GET /api/portfolio/{bot_name}          — current live portfolio state (futures)
 GET /api/portfolio/{bot_name}/history  — historical snapshots (for charting)
 """
@@ -30,46 +31,6 @@ class SnapshotOut(BaseModel):
     total_value_usdt: float
     asset_price: Optional[float] = None
     timestamp: datetime
-
-
-@router.get("/coin-positions")
-async def get_coin_positions(request: Request):
-    """
-    Return per-symbol aggregate position view across all bots.
-
-    Response:
-      coin_positions: {symbol: {total_long_qty, total_short_qty, net_qty, net_side,
-                                long_bots, short_bots}}
-    """
-    engine = _get_engine(request)
-    return {
-        "coin_positions": engine.get_coin_positions(),
-    }
-
-
-@router.get("/orderbook-status")
-async def get_orderbook_status():
-    """
-    Return DOM collection status per symbol: row count, time range, latest metrics.
-    Data is collected by the standalone scripts/collect_orderbook.py service.
-    """
-    status = await repo.get_orderbook_status()
-    return {"orderbook": status}
-
-
-@router.get("/orderbook/{symbol}")
-async def get_orderbook_latest(symbol: str):
-    """
-    Return the latest full orderbook snapshot (bids + asks) for a symbol.
-    """
-    data = await repo.get_orderbook_full(symbol.upper())
-    if data is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No orderbook data for '{symbol.upper()}'. "
-                   "Is the collector running?",
-        )
-    return data
 
 
 @router.get("/all")
