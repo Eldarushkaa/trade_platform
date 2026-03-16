@@ -233,46 +233,37 @@ def _compute_fitness(
     profit_factor: float = 1.0,
 ) -> float:
     """
-    Composite fitness focused on profitability.
+    Composite fitness balancing profitability, risk, and statistical significance.
 
-    Components (all clamped to sensible ranges):
-      - Return %:       main signal — absolute profitability (50% weight)
-      - Sharpe ratio:   stability / risk-adjusted return (20% weight)
-      - Profit factor:  quality of trades, gross_profit/gross_loss (20% weight)
-      - Max drawdown:   nonlinear risk penalty (10% weight)
-      - Trade count:    hard minimum filter (< 5 trades → heavy penalty)
+    Components:
+      - Sharpe ratio:   40% — risk-adjusted stability
+      - Profit factor:  30% — gross_profit / gross_loss quality
+      - Return %:       20% — absolute profitability
+      - Max drawdown:   20% — risk penalty
+      - log(trades):    10% — reward statistically significant sample sizes
 
-    Drawdown penalty is nonlinear:
-      < 30% DD → mild (0..1.0)
-      30–50% DD → moderate (1.0..2.0)
-      > 50% DD → hard penalty (3.0) — at 3× leverage this means near-liquidation
+    Hard filter: < 120 trades → disqualified (target: 3 years of data).
+    This prevents the GA from finding high-return params that only trade 10 times
+    (classic overfitting pattern).
+
+    log(trades) bonus grows slowly: 120→4.8, 300→5.7, 500→6.2 — so it rewards
+    having enough trades without pushing towards infinite churning.
     """
-    # Filter: fewer than 5 trades → statistically meaningless
-    if trade_count < 5:
+    # Hard filter: statistically meaningless with fewer than 120 trades on 3yr data
+    if trade_count < 120:
         return -1000.0 + trade_count
 
-    # Return: primary driver. Cap at ±200% to prevent one lucky run dominating
-    r = max(-2.0, min(2.0, return_pct / 100.0))
-
-    # Sharpe: stability signal, clamped to [-5, 5]
-    s = max(-5.0, min(5.0, sharpe))
-
-    # Profit factor: pf=1.0 → break-even, pf=2.0 → great, cap at 3.0
-    pf = min(2.0, max(0.0, profit_factor - 1.0))  # 0..2 range
-
-    # Drawdown: nonlinear penalty
-    if max_dd > 50:
-        dd_penalty = 3.0
-    elif max_dd > 30:
-        dd_penalty = 1.0 + (max_dd - 30.0) / 20.0  # 1.0..2.0
-    else:
-        dd_penalty = max_dd / 30.0  # 0..1.0
+    s  = max(-5.0, min(5.0, sharpe))
+    pf = min(3.0,  max(0.0, profit_factor))          # raw pf, 0..3
+    r  = max(-2.0, min(2.0, return_pct / 100.0))
+    dd = abs(max_dd) / 100.0                          # 0..1+
 
     fitness = (
-        r       * 0.50    # Return — primary driver
-        + s     * 0.20    # Sharpe — stability
-        + pf    * 0.20    # Profit factor — trade quality
-        - dd_penalty * 0.10  # Drawdown guard
+        s  * 0.40
+        + pf * 0.30
+        + r  * 0.20
+        - dd * 0.20
+        + math.log(max(1, trade_count)) * 0.10
     )
     return fitness
 
@@ -1134,8 +1125,23 @@ async def walk_forward_optimize(
         )
         result.folds.append(fold_result)
 
-        # Stitch OOS equity curve (each fold starts where previous ended)
-        result.oos_equity_curve.extend(oos_bt.equity_curve)
+        # Stitch OOS equity curve with chain-scaling so folds connect smoothly.
+        # Each fold's backtest starts from initial_balance → we rescale every point
+        # so fold N starts exactly where fold N-1 ended (compound returns).
+        if oos_bt.equity_curve:
+            fold_start_val = oos_bt.equity_curve[0]["value"]
+            if result.oos_equity_curve and fold_start_val > 0:
+                prev_final = result.oos_equity_curve[-1]["value"]
+                for pt in oos_bt.equity_curve:
+                    scale = pt["value"] / fold_start_val
+                    result.oos_equity_curve.append({
+                        **pt,
+                        "value": round(prev_final * scale, 2),
+                        "usdt":  round(prev_final * (pt.get("usdt", pt["value"]) / fold_start_val), 2),
+                    })
+            else:
+                # First fold: append as-is
+                result.oos_equity_curve.extend(oos_bt.equity_curve)
 
         logger.info(
             f"WFO fold {fold_num}: IS={is_return:+.2f}% → OOS={oos_return:+.2f}% "

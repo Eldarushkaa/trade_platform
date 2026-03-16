@@ -353,12 +353,25 @@ async def run_backtest(
             state = await engine.get_portfolio_state(bot.name)
             total = state["total_value_usdt"]
             usdt = state.get("usdt_balance", total)
+
+            # Capture EMA trend direction from bot if available (RSIBot with trend filter)
+            # "bull" = EMA50 > EMA200, "bear" = EMA50 < EMA200, "warmup" = not yet ready
+            ema_fast = getattr(bot, "_ema_fast", None)
+            ema_slow = getattr(bot, "_ema_slow", None)
+            if ema_fast is None or ema_slow is None:
+                trend = "warmup"
+            elif ema_fast > ema_slow:
+                trend = "bull"
+            else:
+                trend = "bear"
+
             result.equity_curve.append({
                 "time": row["open_time"],
                 "value": round(total, 2),
                 "usdt": round(usdt, 2),
                 "price": round(candle.close, 2),
                 "side": state.get("position_side", "NONE"),
+                "trend": trend,
             })
 
     # --- Final state ---

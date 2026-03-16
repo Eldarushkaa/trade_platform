@@ -225,17 +225,30 @@ function renderBacktestResults(r) {
 function renderBacktestChart(curve) {
   if (!curve || curve.length === 0) return;
 
-  const labels = curve.map(p => {
-    return fmtMoscow(new Date(p.time).toISOString());
-  });
+  const labels = curve.map(p => fmtMoscow(new Date(p.time).toISOString()));
   const values = curve.map(p => p.value);
   const usdtValues = curve.map(p => p.usdt ?? p.value);
   const prices = curve.map(p => p.price);
-  const sides = curve.map(p => p.side || 'NONE');
+  const sides  = curve.map(p => p.side  || 'NONE');
+  const trends = curve.map(p => p.trend || 'none');
 
-  // Color helpers based on position side
-  const sideColor = (s) => s === 'LONG' ? 'rgba(0,200,120,0.8)' : s === 'SHORT' ? 'rgba(255,80,80,0.8)' : 'rgba(130,130,160,0.5)';
-  const sideBg   = (s) => s === 'LONG' ? 'rgba(0,200,120,0.12)' : s === 'SHORT' ? 'rgba(255,80,80,0.12)' : 'rgba(130,130,160,0.05)';
+  // Color helpers for position side (equity line)
+  const sideColor = s => s === 'LONG'  ? 'rgba(0,200,120,0.85)'
+                       : s === 'SHORT' ? 'rgba(255,80,80,0.85)'
+                       :                 'rgba(130,130,160,0.5)';
+  const sideBg   = s => s === 'LONG'  ? 'rgba(0,200,120,0.12)'
+                       : s === 'SHORT' ? 'rgba(255,80,80,0.12)'
+                       :                 'rgba(130,130,160,0.05)';
+
+  // Color helpers for trend zones (price line background)
+  // bull = green tint, bear = red tint, warmup = grey
+  const trendPriceColor = t => t === 'bull'   ? 'rgba(0,200,120,0.7)'
+                              : t === 'bear'   ? 'rgba(255,80,80,0.7)'
+                              : t === 'warmup' ? 'rgba(180,180,200,0.35)'
+                              :                  '#f5a623';
+  const trendPriceBg   = t => t === 'bull'   ? 'rgba(0,200,120,0.06)'
+                              : t === 'bear'   ? 'rgba(255,80,80,0.06)'
+                              :                  'transparent';
 
   const ctx = document.getElementById('bt-chart').getContext('2d');
   if (_backtestChart) _backtestChart.destroy();
@@ -245,7 +258,7 @@ function renderBacktestChart(curve) {
     data: {
       labels,
       datasets: [
-        // USDT balance area fill (always flat bottom)
+        // USDT balance area fill
         {
           label: 'USDT Balance',
           data: usdtValues,
@@ -255,7 +268,7 @@ function renderBacktestChart(curve) {
           yAxisID: 'yEq',
           order: 3,
         },
-        // Total value line — colored by position side, fill between usdt and total
+        // Total value line — colored by position side
         {
           label: 'Total Value',
           data: values,
@@ -269,13 +282,18 @@ function renderBacktestChart(curve) {
           },
           borderColor: 'rgba(130,130,160,0.5)',
         },
+        // Coin price line — colored by EMA trend (bull/bear/warmup)
         {
           label: 'Coin Price',
           data: prices,
-          borderColor: '#f5a623',
           borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2,
           yAxisID: 'yPr',
           order: 2,
+          segment: {
+            borderColor: ctx => trendPriceColor(trends[ctx.p0DataIndex]),
+            backgroundColor: ctx => trendPriceBg(trends[ctx.p0DataIndex]),
+          },
+          borderColor: '#f5a623',
         }
       ]
     },
@@ -298,7 +316,11 @@ function renderBacktestChart(curve) {
                 return `Total: ${fmtUsd(v)}${tag}`;
               }
               if (dsLabel === 'USDT Balance') return `USDT: ${fmtUsd(v)}`;
-              if (dsLabel === 'Coin Price') return `Price: ${fmtUsd(v)}`;
+              if (dsLabel === 'Coin Price') {
+                const t = trends[idx];
+                const tTag = t === 'bull' ? ' 📈 Bull (EMA50>200)' : t === 'bear' ? ' 📉 Bear (EMA50<200)' : t === 'warmup' ? ' ⏳ Warmup' : '';
+                return `Price: ${fmtUsd(v)}${tTag}`;
+              }
               return null;
             }
           }
