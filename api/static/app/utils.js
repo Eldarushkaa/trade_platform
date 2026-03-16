@@ -7,6 +7,7 @@ let _settingsOpen = false;
 let _backtestOpen = false;
 let _backtestChart = null;
 let _lastOptResult = null;     // cached optimization result for "Apply" button
+let _lastWFOResult = null;     // cached walk-forward result for "Apply" button
 let _botsCache = [];           // last known bots list [{name, symbol, is_running}]
 let _statsMode = 'all';        // 'all' | '24h' | '3h' — period for stats grid + chart
 let _portfolioData = null;     // cached portfolio state + trade stats for current bot

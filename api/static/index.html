@@ -175,7 +175,10 @@
           <div class="bt-actions-row">
             <button class="bt-btn bt-btn-run" id="bt-run-btn" onclick="runBacktest()" disabled>▶ Run Backtest</button>
             <button class="bt-btn bt-btn-opt" id="bt-opt-btn" onclick="runOptimize()" disabled>🧠 Optimize</button>
-            <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;">
+            <button class="bt-btn" id="bt-wfo-btn" onclick="runWalkForward()" disabled
+              style="background:rgba(108,99,255,0.12);border:1px solid rgba(108,99,255,0.4);color:#a89fff;border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;white-space:nowrap"
+              title="Walk-Forward Optimization: expands train window each fold, tests on held-out OOS data">📊 Walk-Forward</button>
+            <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;" title="Iterations per fold (Walk-Forward) or total (Optimize)">
               <option value="200">200 iter (quick)</option>
               <option value="500" selected>500 iter</option>
               <option value="1000">1000 iter (deep)</option>
@@ -189,6 +192,31 @@
                 style="width:58px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;text-align:right" />
             </label>
             <span class="bt-status" id="bt-status"></span>
+          </div>
+
+          <!-- WFO settings row (shown always, compact) -->
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:6px 0 2px;font-size:11px;color:var(--muted)">
+            <span style="color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.05em">WALK-FORWARD:</span>
+            <label style="display:flex;align-items:center;gap:4px">
+              Folds
+              <select id="bt-wfo-folds" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px" title="Number of OOS test windows (expanding train)">
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4" selected>4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </label>
+            <label style="display:flex;align-items:center;gap:4px" title="Each OOS test window = this % of total data">
+              OOS %
+              <select id="bt-wfo-testpct" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px">
+                <option value="5">5%</option>
+                <option value="10" selected>10%</option>
+                <option value="15">15%</option>
+                <option value="20">20%</option>
+              </select>
+            </label>
+            <span style="color:var(--muted);font-size:10px" title="WFE = OOS return / IS return. >0.6 = good generalisation">WFE &gt;0.6 good · 0.3–0.6 moderate · &lt;0.3 overfit</span>
           </div>
 
           <!-- Backtest results (hidden until run) -->
@@ -218,6 +246,9 @@
 
           <!-- Optimization results (hidden until optimize) -->
           <div id="bt-opt-results" style="display:none"></div>
+
+          <!-- Walk-Forward results (hidden until WFO) -->
+          <div id="bt-wfo-results" style="display:none"></div>
 
         </div>
       </div>

@@ -35,11 +35,13 @@ async function loadDataStatus() {
       badge.textContent = `(${perCoin}/coin, ${dateStr})`;
       document.getElementById('bt-run-btn').disabled = false;
       document.getElementById('bt-opt-btn').disabled = false;
+      document.getElementById('bt-wfo-btn').disabled = false;
     } else {
       info.innerHTML = 'No data — download first';
       badge.textContent = '';
       document.getElementById('bt-run-btn').disabled = true;
       document.getElementById('bt-opt-btn').disabled = true;
+      document.getElementById('bt-wfo-btn').disabled = true;
     }
   } catch (e) { console.warn('loadDataStatus', e); }
 }
@@ -333,6 +335,7 @@ async function runOptimize() {
   btn.textContent = '⏳ Optimizing...';
   status.textContent = `Optimization running (${iters} iterations)...`;
   document.getElementById('bt-opt-results').style.display = 'none';
+  document.getElementById('bt-wfo-results').style.display = 'none';
 
   try {
     // Start optimization (returns task_id)
@@ -371,6 +374,310 @@ async function runOptimize() {
 
   btn.disabled = false;
   btn.textContent = '🧠 Optimize';
+}
+
+// ── Walk-Forward Optimization ──────────────────────────────────
+async function runWalkForward() {
+  if (!selectedBot) return;
+  const btn = document.getElementById('bt-wfo-btn');
+  const status = document.getElementById('bt-status');
+  const iters = parseInt(document.getElementById('bt-opt-iters').value) || 200;
+  const folds = parseInt(document.getElementById('bt-wfo-folds').value) || 4;
+  const testPct = parseFloat(document.getElementById('bt-wfo-testpct').value) || 10;
+  const feeRate = _btFeeRate();
+
+  btn.disabled = true;
+  btn.textContent = '⏳ WFO Running...';
+  status.textContent = `Walk-Forward: ${folds} folds × ${iters} iters/fold...`;
+  document.getElementById('bt-opt-results').style.display = 'none';
+  document.getElementById('bt-wfo-results').style.display = 'none';
+
+  try {
+    const startResp = await postJson(`${API}/backtest/walk-forward`, {
+      bot_id: selectedBot,
+      n_folds: folds,
+      test_pct: testPct / 100,
+      iterations: iters,
+      fee_rate: feeRate,
+    });
+    if (!startResp.ok) {
+      status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
+      btn.disabled = false;
+      btn.textContent = '📊 Walk-Forward';
+      return;
+    }
+
+    const taskId = startResp.data.task_id;
+
+    // Poll for completion
+    let done = false;
+    while (!done) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+        status.textContent = `⏳ ${poll.progress?.msg || 'Running...'}`;
+        if (poll.status === 'completed') {
+          done = true;
+          renderWFOResults(poll.result);
+          status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s`;
+        } else if (poll.status === 'error') {
+          done = true;
+          status.textContent = `✗ ${poll.error}`;
+        }
+      } catch (e) {
+        console.warn('wfo poll error', e);
+      }
+    }
+  } catch (e) {
+    status.textContent = `✗ ${e.message}`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '📊 Walk-Forward';
+}
+
+function renderWFOResults(r) {
+  _lastWFOResult = r;
+  const wrap = document.getElementById('bt-wfo-results');
+  wrap.style.display = 'block';
+
+  const _n = (v, dec = 2, fallback = '—') => {
+    const n = parseFloat(v);
+    if (isNaN(n)) return fallback;
+    if (!isFinite(n)) return n > 0 ? '∞' : '-∞';
+    return n.toFixed(dec);
+  };
+  const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
+
+  // WFE colour coding
+  const wfeClass = wfe => {
+    const w = _v(wfe);
+    if (w >= 0.6) return 'positive';
+    if (w >= 0.3) return 'neutral';
+    return 'negative';
+  };
+  const wfeLabel = wfe => {
+    const w = _v(wfe);
+    if (w >= 0.6) return '✅ Good';
+    if (w >= 0.3) return '⚠️ Moderate';
+    return '❌ Overfit';
+  };
+
+  // Folds table rows
+  const fmtMs = ms => {
+    if (!ms) return '—';
+    return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+  };
+
+  let foldRows = '';
+  (r.folds || []).forEach(f => {
+    foldRows += `
+      <tr>
+        <td style="color:var(--muted)">#${f.fold}</td>
+        <td style="font-size:10px;color:var(--muted)">${fmtMs(f.train_start_ms)}–${fmtMs(f.train_end_ms)}</td>
+        <td style="font-size:10px;color:var(--muted)">${fmtMs(f.test_start_ms)}–${fmtMs(f.test_end_ms)}</td>
+        <td class="${sign(f.is_return_pct)}">${_v(f.is_return_pct) >= 0 ? '+' : ''}${_n(f.is_return_pct)}%</td>
+        <td class="${sign(f.oos_return_pct)}">${_v(f.oos_return_pct) >= 0 ? '+' : ''}${_n(f.oos_return_pct)}%</td>
+        <td class="${sign(f.oos_sharpe)}">${_n(f.oos_sharpe)}</td>
+        <td class="${sign(f.oos_profit_factor - 1)}">${_n(f.oos_profit_factor)}</td>
+        <td style="color:var(--muted)">${f.oos_trade_count || 0}</td>
+        <td class="${wfeClass(f.wfe)}">${_n(f.wfe, 2)} <span style="font-size:9px">${wfeLabel(f.wfe)}</span></td>
+      </tr>`;
+  });
+
+  // Summary header metrics
+  const avgWfe = _v(r.avg_wfe);
+  const avgWfeClass = avgWfe >= 0.6 ? 'positive' : avgWfe >= 0.3 ? 'neutral' : 'negative';
+  const avgWfeTip = avgWfe >= 0.6
+    ? '✅ Strategy generalises well — low overfitting'
+    : avgWfe >= 0.3
+      ? '⚠️ Moderate overfitting — use with caution'
+      : '❌ Heavy curve-fitting — params may not work live';
+
+  wrap.innerHTML = `
+    <div class="bt-opt-results">
+      <h4>📊 Walk-Forward Optimization Results</h4>
+
+      <div class="bt-metrics" style="margin-bottom:14px">
+        <div class="bt-metric">
+          <div class="label">Avg WFE</div>
+          <div class="value ${avgWfeClass}" title="${avgWfeTip}">${_n(r.avg_wfe, 2)}</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Avg OOS Return</div>
+          <div class="value ${sign(r.avg_oos_return_pct)}">${_v(r.avg_oos_return_pct) >= 0 ? '+' : ''}${_n(r.avg_oos_return_pct)}%</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Avg OOS Sharpe</div>
+          <div class="value ${sign(r.avg_oos_sharpe)}">${_n(r.avg_oos_sharpe)}</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Total OOS Trades</div>
+          <div class="value neutral">${r.total_oos_trades || 0}</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Final IS Return</div>
+          <div class="value ${sign(r.final_is_return_pct)}">${_v(r.final_is_return_pct) >= 0 ? '+' : ''}${_n(r.final_is_return_pct)}%</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Final IS Sharpe</div>
+          <div class="value ${sign(r.final_is_sharpe)}">${_n(r.final_is_sharpe)}</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Folds</div>
+          <div class="value neutral">${(r.folds || []).length} / ${r.n_folds}</div>
+        </div>
+        <div class="bt-metric">
+          <div class="label">Duration</div>
+          <div class="value neutral">${r.duration_seconds}s</div>
+        </div>
+      </div>
+
+      <div style="padding:8px 12px;border-radius:6px;font-size:11px;margin-bottom:14px;
+        background:${avgWfe >= 0.6 ? 'rgba(0,200,120,0.08)' : avgWfe >= 0.3 ? 'rgba(245,166,35,0.08)' : 'rgba(255,80,80,0.08)'};
+        border-left:3px solid ${avgWfe >= 0.6 ? 'var(--green)' : avgWfe >= 0.3 ? 'var(--yellow)' : 'var(--red)'}">
+        <b>Walk-Forward Efficiency:</b> ${avgWfeTip}
+        <br><span style="color:var(--muted);font-size:10px">WFE = OOS return / IS return. &gt;0.6 good, 0.3–0.6 moderate, &lt;0.3 overfit</span>
+      </div>
+
+      <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:var(--muted)">FOLD-BY-FOLD RESULTS</div>
+      <div style="overflow-x:auto;margin-bottom:14px">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid #2a2d3a">
+              <th style="text-align:left;padding:4px 8px">Fold</th>
+              <th style="text-align:left;padding:4px 8px">Train period</th>
+              <th style="text-align:left;padding:4px 8px">Test period</th>
+              <th style="text-align:right;padding:4px 8px">IS Ret</th>
+              <th style="text-align:right;padding:4px 8px">OOS Ret</th>
+              <th style="text-align:right;padding:4px 8px">OOS Sharpe</th>
+              <th style="text-align:right;padding:4px 8px">OOS PF</th>
+              <th style="text-align:right;padding:4px 8px">Trades</th>
+              <th style="text-align:right;padding:4px 8px">WFE</th>
+            </tr>
+          </thead>
+          <tbody>${foldRows}</tbody>
+        </table>
+      </div>
+
+      <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:var(--muted)">STITCHED OOS EQUITY CURVE</div>
+      <div style="position:relative;height:220px;margin-bottom:14px">
+        <canvas id="bt-wfo-chart"></canvas>
+      </div>
+
+      <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:var(--muted)">FINAL PARAMS (optimized on full dataset)</div>
+      <div class="bt-param-compare" style="margin-bottom:12px">
+        <div class="hdr">Parameter</div>
+        <div class="hdr">Value</div>
+        <div class="hdr"></div>
+        <div class="hdr"></div>
+        ${Object.entries(r.final_params || {}).map(([k, v]) => `
+          <div>${k.replace(/_/g, ' ')}</div>
+          <div class="changed">${v}</div>
+          <div></div>
+          <div></div>
+        `).join('')}
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="bt-btn bt-btn-apply" onclick="applyWFOParams()">✅ Apply Final Params</button>
+        <button class="bt-btn bt-btn-run" onclick="runBacktestWithWFO()" style="font-size:11px;padding:5px 12px">▶ Backtest with Final Params</button>
+      </div>
+    </div>`;
+
+  // Render OOS equity curve
+  renderWFOChart(r.oos_equity_curve || []);
+}
+
+function renderWFOChart(curve) {
+  if (!curve || curve.length === 0) return;
+  const ctx = document.getElementById('bt-wfo-chart');
+  if (!ctx) return;
+
+  const labels = curve.map(p => fmtMoscow(new Date(p.time).toISOString()));
+  const values = curve.map(p => p.value);
+
+  if (window._wfoChart) window._wfoChart.destroy();
+
+  window._wfoChart = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'OOS Equity',
+        data: values,
+        borderColor: '#6c63ff',
+        backgroundColor: 'rgba(108,99,255,0.12)',
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: 'origin',
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `$${ctx.parsed.y.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2d3a' } },
+        y: {
+          ticks: { color: '#8892a4', callback: v => '$' + v.toLocaleString('en-US', { maximumFractionDigits: 0 }) },
+          grid: { color: '#2a2d3a' }
+        }
+      }
+    }
+  });
+}
+
+async function applyWFOParams() {
+  if (!_lastWFOResult || !selectedBot) return;
+  const params = _lastWFOResult.final_params;
+  try {
+    const resp = await put(`${API}/bots/${selectedBot}/params`, params);
+    if (resp.ok) {
+      showToast(`✓ Applied ${Object.keys(resp.data.applied).length} walk-forward param(s)`, 'success');
+      await loadParams(selectedBot);
+    } else {
+      showToast(`✗ ${resp.data.detail || 'Error'}`, 'error');
+    }
+  } catch (e) {
+    showToast(`✗ ${e.message}`, 'error');
+  }
+}
+
+async function runBacktestWithWFO() {
+  if (!_lastWFOResult || !selectedBot) return;
+  const btn = document.getElementById('bt-run-btn');
+  const status = document.getElementById('bt-status');
+  btn.disabled = true;
+  status.textContent = '⏳ Running backtest with WFO final params...';
+
+  try {
+    const feeRate = _btFeeRate();
+    const resp = await postJson(`${API}/backtest/run`, {
+      bot_id: selectedBot,
+      params: _lastWFOResult.final_params,
+      fee_rate: feeRate,
+    });
+    if (resp.ok) {
+      status.textContent = `✓ ${resp.data.candles_processed} candles in ${resp.data.duration_seconds}s (WFO final params)`;
+      renderBacktestResults(resp.data);
+    } else {
+      status.textContent = `✗ ${resp.data.detail || 'Error'}`;
+    }
+  } catch (e) {
+    status.textContent = `✗ ${e.message}`;
+  }
+  btn.disabled = false;
 }
 
 function renderOptResults(r) {

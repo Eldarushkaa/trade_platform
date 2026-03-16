@@ -1,11 +1,12 @@
 """
 API routes for Backtesting & Optimization.
 
-POST /api/backtest/download       — download historical klines from Binance
-GET  /api/backtest/data-status    — check what historical data is stored
-POST /api/backtest/run            — run a backtest for one bot
-POST /api/backtest/optimize       — optimize params for one bot
-GET  /api/backtest/status         — check running backtest/optimization status
+POST /api/backtest/download         — download historical klines from Binance
+GET  /api/backtest/data-status      — check what historical data is stored
+POST /api/backtest/run              — run a backtest for one bot
+POST /api/backtest/optimize         — optimize params for one bot (GA, background)
+POST /api/backtest/walk-forward     — walk-forward optimization (expanding windows)
+GET  /api/backtest/status           — check running backtest/optimization status
 """
 import asyncio
 import logging
@@ -15,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.backtest_engine import run_backtest
-from core.optimizer import optimize_params
+from core.optimizer import optimize_params, walk_forward_optimize
 from data.historical import download_klines, get_data_status
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,14 @@ class OptimizeRequest(BaseModel):
     bot_id: str
     iterations: int = 500              # max optimization iterations (200/500/1000/2000/5000)
     fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
+
+
+class WalkForwardRequest(BaseModel):
+    bot_id: str
+    n_folds: int = 4                   # number of OOS test windows
+    test_pct: float = 0.10             # fraction of total data per OOS window (0.05–0.25)
+    iterations: int = 500              # GA budget PER FOLD (not total!)
+    fee_rate: float | None = None      # fee rate override
 
 
 # ------------------------------------------------------------------
@@ -296,6 +305,106 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
         "bot_id": req.bot_id,
         "iterations": iterations,
         "message": f"Optimization started. Poll /api/backtest/status?task_id={task_id} for progress.",
+    }
+
+
+@router.post("/walk-forward")
+async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
+    """
+    Walk-Forward Optimization for one bot.
+
+    Divides the full historical dataset into expanding training windows + fixed OOS
+    test windows. For each fold: optimizes GA on train data, then evaluates the best
+    params on the held-out OOS window.
+
+    Produces:
+      - Per-fold metrics (IS return, OOS return, WFE score)
+      - Stitched OOS equity curve (honest out-of-sample performance)
+      - Final params optimized on the full dataset (for production use)
+
+    Walk-Forward Efficiency (WFE) = oos_return / is_return:
+      > 0.6  → strategy generalises well
+      0.3–0.6 → moderate overfitting, use with caution
+      < 0.3  → heavy curve-fitting
+
+    This is a long-running operation. Returns task_id immediately.
+    Poll /api/backtest/status?task_id=... for progress.
+    """
+    strategy_class, symbol, current_params = _get_bot_info(request, req.bot_id)
+
+    n_folds = max(2, min(req.n_folds, 10))
+    test_pct = max(0.05, min(req.test_pct, 0.25))
+    iterations = max(10, min(req.iterations, 10000))
+    task_id = f"wfo_{req.bot_id}"
+
+    # Check if already running
+    if task_id in _running_tasks and not _running_tasks[task_id].get("done", True):
+        raise HTTPException(status_code=409, detail="A walk-forward optimization is already running for this bot")
+
+    # Progress tracker
+    progress_state = {"pct": 0, "msg": "Starting..."}
+
+    async def on_progress(pct, msg):
+        progress_state["pct"] = pct
+        progress_state["msg"] = msg
+
+    # Run in background
+    async def _run():
+        try:
+            import os
+            cpu_count = os.cpu_count() or 4
+            concurrency = min(8, max(2, cpu_count))
+
+            result = await walk_forward_optimize(
+                bot_id=req.bot_id,
+                symbol=symbol,
+                strategy_class=strategy_class,
+                current_params=current_params,
+                n_folds=n_folds,
+                test_pct=test_pct,
+                max_iterations=iterations,
+                fee_rate=req.fee_rate,
+                progress_callback=on_progress,
+                concurrency=concurrency,
+            )
+            _running_tasks[task_id]["result"] = result.to_dict()
+            _running_tasks[task_id]["done"] = True
+            _running_tasks[task_id]["status"] = "completed"
+            _running_tasks[task_id]["completed_at"] = time.monotonic()
+        except Exception as e:
+            logger.error(f"Walk-forward error: {e}", exc_info=True)
+            _running_tasks[task_id]["done"] = True
+            _running_tasks[task_id]["status"] = "error"
+            _running_tasks[task_id]["error"] = str(e)
+            _running_tasks[task_id]["completed_at"] = time.monotonic()
+
+    task = asyncio.create_task(_run(), name=task_id)
+    _running_tasks[task_id] = {
+        "task": task,
+        "type": "walk_forward",
+        "bot_id": req.bot_id,
+        "n_folds": n_folds,
+        "iterations_per_fold": iterations,
+        "done": False,
+        "status": "running",
+        "progress": progress_state,
+        "result": None,
+        "error": None,
+    }
+
+    total_iters = iterations * (n_folds + 1)
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "bot_id": req.bot_id,
+        "n_folds": n_folds,
+        "test_pct": test_pct,
+        "iterations_per_fold": iterations,
+        "total_estimated_iterations": total_iters,
+        "message": (
+            f"Walk-Forward started ({n_folds} folds × {iterations} iters + final). "
+            f"Poll /api/backtest/status?task_id={task_id} for progress."
+        ),
     }
 
 
