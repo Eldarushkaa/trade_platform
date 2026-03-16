@@ -921,6 +921,7 @@ class WalkForwardResult:
         self.final_params: dict = {}
         self.final_is_return_pct: float = 0.0
         self.final_is_sharpe: float = 0.0
+        self.final_is_trade_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -939,6 +940,7 @@ class WalkForwardResult:
             "final_params": self.final_params,
             "final_is_return_pct": _sr(self.final_is_return_pct, 2),
             "final_is_sharpe": _sr(self.final_is_sharpe, 2),
+            "final_is_trade_count": self.final_is_trade_count,
             "folds": [f.to_dict() for f in self.folds],
         }
 
@@ -1172,6 +1174,7 @@ async def walk_forward_optimize(
         result.final_params = final_opt.best_params
         result.final_is_return_pct = final_opt.best_return_pct
         result.final_is_sharpe = final_opt.best_sharpe
+        result.final_is_trade_count = final_opt.best_trade_count
     except Exception as e:
         logger.error(f"WFO final optimization failed: {e}", exc_info=True)
         # Fall back to best fold params

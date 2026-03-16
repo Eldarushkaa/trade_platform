@@ -12,7 +12,7 @@ A Python async crypto futures trading simulation platform that:
 - Runs **6 trading bots** (2 strategies × 3 coins) simultaneously in simulation
 - Simulates **USDT-M perpetual futures** with 3× leverage, margin, and liquidation
 - Provides a **FastAPI web dashboard** to monitor bots, trades, and portfolio in real-time
-- Supports **backtesting** (with optional training/test date-range filtering) and **genetic parameter optimization** for each strategy
+- Supports **backtesting**, **genetic parameter optimization**, and **Walk-Forward Optimization (WFO)** for each strategy
 - Uses **on-demand OB depth fetching** (Binance REST) for realistic VWAP fill prices on live orders
 
 ---
@@ -98,7 +98,7 @@ graph TD
 
 | Bot name pattern | Strategy file | Signal type |
 |---|---|---|
-| `rsi_btc/eth/sol` | `example_rsi_bot.py` | Wilder RSI + EMA(50) trend filter |
+| `rsi_btc/eth/sol` | `example_rsi_bot.py` | Wilder RSI + EMA(50/200) trend filter + ATR volatility filter |
 | `ma_btc/eth/sol` | `example_ma_crossover.py` | MACD crossover + histogram momentum |
 
 Each bot is a dynamically-created subclass via `BaseStrategy.for_symbol(symbol)`:
@@ -189,8 +189,10 @@ On-demand Binance Futures REST call for live VWAP fill pricing:
 
 ### Backtest & Optimizer — `core/backtest_engine.py`, `core/optimizer.py`
 
-- `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms)` — replays DB historical 5m candles through a fresh `SimulationEngine(skip_db=True)` instance; optional `start_ms`/`end_ms` filter enables running on a held-out test window vs the full training set; Sharpe annualized using 105,120 candles/year (288 × 365)
-- `optimize_params(...)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; returns best params found
+- `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms)` — replays DB historical 5m candles through a fresh `SimulationEngine(skip_db=True)` instance; optional `start_ms`/`end_ms` filter enables running on a held-out test window vs the full training set; Sharpe annualized using 105,120 candles/year (288 × 365); each equity curve point includes `trend` field (`"bull"/"bear"/"warmup"`) derived from bot's EMA50 vs EMA200
+- `optimize_params(...)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; accepts `_candle_override` list for fold-specific windows (used by WFO); fitness function: `Sharpe×0.40 + ProfitFactor×0.30 + Return×0.20 - Drawdown×0.20 + log(trades)×0.10`; hard gate: `if trade_count < 120: return -1000 + trade_count`
+- `walk_forward_optimize(...)` — expanding-window WFO: divides candles into N folds, GA-optimizes each IS window, evaluates on OOS window; produces `WalkForwardResult` with per-fold metrics, WFE score, stitched OOS equity curve (chain-scaled, not reset to initial balance), and final params optimized on full dataset
+- **Walk-Forward Efficiency (WFE)** = OOS return / IS return: >0.6 good generalisation, 0.3–0.6 moderate, <0.3 overfit
 
 ---
 
@@ -244,11 +246,12 @@ No module-level globals with `set_xxx()` injection.
 | `GET` | `/api/portfolio/{name}/history` | Portfolio snapshot history (for charting) |
 | `GET` | `/api/trades/{bot_name}` | Paginated trade history for a bot |
 | `GET` | `/api/trades/{bot_name}/stats` | Aggregated trade stats for a time window |
-| `POST` | `/api/backtest/download` | Download 5m klines from Binance (`days` up to 180, optional `start_date` for test window) |
+| `POST` | `/api/backtest/download` | Download 5m klines from Binance (`days` up to 1095, optional `start_date` for test window) |
 | `GET` | `/api/backtest/data-status` | Available historical candle counts per symbol |
 | `POST` | `/api/backtest/run` | Run a backtest (optional `start_date`/`end_date` for training vs test split) |
-| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background) |
-| `GET` | `/api/backtest/status` | Poll backtest/optimization task status |
+| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background task) |
+| `POST` | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async, background task) |
+| `GET` | `/api/backtest/status` | Poll status of all or specific backtest/optimization tasks (TTL=1h) |
 | `GET` | `/api/logs` | Recent WARNING+ log lines |
 | `GET` | `/health` | Liveness check + mode/market info |
 | `GET` | `/` | Dashboard HTML |

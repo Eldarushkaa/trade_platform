@@ -17,7 +17,7 @@ api/static/
     ├── bots.js         ← sidebar bot list, global stats bar, bot control
     ├── portfolio.js    ← portfolio panel, stats grid, chart, trades table
     ├── settings.js     ← strategy parameter editor, toast
-    ├── backtest.js     ← data download, date pickers, run/optimize/results
+    ├── backtest.js     ← standalone backtest/optimize/WFO panel (independent of sidebar)
     ├── logs.js         ← log viewer panel
     └── main.js         ← refresh loop, Moscow clock, bot reset, bootstrap
 ```
@@ -25,13 +25,13 @@ api/static/
 Scripts are loaded in **dependency order** at the bottom of `index.html`:
 
 ```html
-<script src="/static/app/utils.js?v=18"></script>    <!-- must be first -->
-<script src="/static/app/bots.js?v=18"></script>
-<script src="/static/app/portfolio.js?v=18"></script>
-<script src="/static/app/settings.js?v=18"></script>
-<script src="/static/app/backtest.js?v=18"></script>
-<script src="/static/app/logs.js?v=18"></script>
-<script src="/static/app/main.js?v=18"></script>     <!-- must be last (runs bootstrap) -->
+<script src="/static/app/utils.js?v=19"></script>    <!-- must be first -->
+<script src="/static/app/bots.js?v=19"></script>
+<script src="/static/app/portfolio.js?v=19"></script>
+<script src="/static/app/settings.js?v=19"></script>
+<script src="/static/app/backtest.js?v=19"></script>
+<script src="/static/app/logs.js?v=19"></script>
+<script src="/static/app/main.js?v=19"></script>     <!-- must be last (runs bootstrap) -->
 ```
 
 Bump the `?v=N` cache-buster whenever you change any module.
@@ -46,14 +46,15 @@ Any module can read and write them freely (there is no module encapsulation).
 | Variable | Type | Owner (primary writer) | Consumers |
 |---|---|---|---|
 | `API` | `string` const `'/api'` | utils | all |
-| `selectedBot` | `string\|null` | bots (`selectBot`) | bots, portfolio, settings, backtest, main |
+| `selectedBot` | `string\|null` | bots (`selectBot`) | bots, portfolio, settings, main |
 | `portfolioChart` | `Chart\|null` | portfolio (`_renderChart`) | portfolio |
 | `_paramsCache` | `object` | settings (`loadParams`) | settings |
 | `_settingsOpen` | `bool` | settings (`toggleSettings`) | settings |
 | `_backtestOpen` | `bool` | backtest (`toggleBacktest`) | backtest |
 | `_backtestChart` | `Chart\|null` | backtest (`renderBacktestChart`) | backtest |
 | `_lastOptResult` | `object\|null` | backtest (`renderOptResults`) | backtest |
-| `_botsCache` | `array` | bots (`loadBots`) | backtest (`loadDataStatus`) |
+| `_lastWFOResult` | `object\|null` | backtest (`renderWFOResults`) | backtest |
+| `_botsCache` | `array` | bots (`loadBots`) | backtest (`populateBtBotSelect`) |
 | `_statsMode` | `'all'\|'24h'\|'3h'` | bots (`toggleStatsMode`) | bots, portfolio |
 | `_portfolioData` | `{p, stats24h, stats3h}\|null` | portfolio (`loadPortfolio`) | bots (re-render on toggle) |
 | `_historyData` | `{snaps, trades}\|null` | portfolio (`loadHistory`) | bots (re-render on toggle) |
@@ -85,13 +86,15 @@ loadBots()
   → GET /api/trades/{bot}/stats?hours=24|3   (for each bot, in parallel)
   → writes _botsCache, _globalStatsData
   → calls renderGlobalStats() + builds DOM bot cards
+  → calls populateBtBotSelect(bots)          ← populates backtest panel dropdown
 ```
 
 **Key functions:**
-- `loadBots()` — full sidebar refresh
+- `loadBots()` — full sidebar refresh; also calls `populateBtBotSelect(bots)`
 - `renderGlobalStats(portfolios, bots, periodStats)` — renders the top stats bar including the strategy×coin return matrix
 - `controlBot(name, action)` — POST start/stop, then refresh
-- `selectBot(name)` — sets `selectedBot`, shows detail panel, resets backtest UI, calls `loadBotDetail()`
+- `selectBot(name)` — sets `selectedBot`, shows detail panel, calls `loadBotDetail()`  
+  ⚠️ Does **NOT** reset backtest panel — backtest is now independent of sidebar selection
 - `loadBotDetail(name)` — fan-out to `loadPortfolio + loadHistory + loadTrades + loadParams` in parallel
 - `toggleStatsMode(mode)` — switches `_statsMode`, re-renders global stats bar + bot detail stats + chart
 
@@ -131,7 +134,23 @@ Manages the collapsible "Strategy Parameters" panel inside bot detail.
 - `showToast(msg, type)` / `hideToast()` — 4-second auto-hide inline notification
 
 ### `backtest.js`
-Handles all data download, backtesting, and genetic-algorithm optimization.
+**Standalone panel** (`#bt-standalone-panel`) — fully independent of `selectedBot`.  
+Has its own bot dropdown, persists results across page reloads and browser tabs.
+
+**Bot selector:**
+```
+<select id="bt-bot-select">    ← populated by populateBtBotSelect() called from loadBots()
+getBtBot()                     ← all backtest functions use this instead of selectedBot
+onBtBotChange()                ← saves selection to localStorage.bt_bot_id
+```
+
+**Task persistence (survive page reload / new tab / different device):**
+- `_saveBtTask(type, taskId, botId)` — writes to `localStorage` (`bt_task_wfo`, `bt_task_opt`)
+- `_clearBtTask(type)` / `_loadBtTask(type)` — read/clear with 12h TTL
+- `initBtPanel()` — called once on startup **after** bots list is loaded:
+  1. **Primary**: `GET /api/backtest/status` (no params) → server returns all tasks → pick most relevant (WFO > opt, running > completed) → restore results or resume polling. Works on any device/browser.
+  2. **Fallback**: if server query fails, try `localStorage` task_id hints
+  3. Opens panel by default so results are immediately visible
 
 **Training data download (sidebar):**
 ```
@@ -154,9 +173,10 @@ Handles all data download, backtesting, and genetic-algorithm optimization.
   → fillTestDates()   — pre-fills from _lastTestWindow
 ```
 
-**Run flow:**
+**Run backtest flow:**
 ```
 runBacktest()
+  → reads getBtBot() for bot_id
   → reads bt-start-date / bt-end-date
   → POST /api/backtest/run  {bot_id, fee_rate, start_date?, end_date?}
   → calls renderBacktestResults(r) → renderBacktestChart(r.equity_curve)
@@ -166,17 +186,37 @@ runBacktest()
 ```
 runOptimize()
   → POST /api/backtest/optimize  → {task_id}
+  → _saveBtTask('opt', taskId, botId)
   → polls GET /api/backtest/status?task_id=… every 2s
   → on completed → renderOptResults(r)
     → shows param comparison table + GA stats
     → [✅ Apply] → applyOptParams() → PUT /api/bots/{id}/params
     → [▶ Backtest with Optimized] → runBacktestWithOpt()
+  → _clearBtTask('opt')
+```
+
+**Walk-Forward Optimization (WFO) flow:**
+```
+runWalkForward()
+  → POST /api/backtest/walk-forward  {bot_id, n_folds, test_pct, iterations, fee_rate}
+  → _saveBtTask('wfo', taskId, botId)
+  → polls GET /api/backtest/status?task_id=… every 3s
+  → on completed → renderWFOResults(r)
+    → summary metrics (Avg WFE, Avg OOS Return, etc.)
+    → fold-by-fold table (IS/OOS return, WFE per fold)
+    → stitched OOS equity curve chart (renderWFOChart)
+    → final params table
+    → [✅ Apply Final Params] → applyWFOParams()
+    → [▶ Backtest with Final Params] → runBacktestWithWFO()
+  → _clearBtTask('wfo')
 ```
 
 **Backtest equity chart** (`renderBacktestChart`):
 - `yEq` axis: USDT balance (fill) + Total value line (colored by position side: green=LONG, red=SHORT, gray=NONE)
-- `yPr` axis: Coin price line
-- Tooltip shows position side tag on Total Value
+- `yPr` axis: Coin price line — colored by EMA trend: green=bull (EMA50>EMA200), red=bear, grey=warmup
+- Tooltip shows position side tag + trend label (📈 Bull / 📉 Bear / ⏳ Warmup)
+
+**WFO chart** (`renderWFOChart`): stitched out-of-sample equity curve, `canvas#bt-wfo-chart`, rendered inside `#bt-wfo-results` innerHTML
 
 ### `logs.js`
 System log viewer.
@@ -193,7 +233,7 @@ Bootstrap and refresh orchestration. Runs last.
 - `resetAllBots()` — confirm dialog → POST `/api/bots/reset-all`
 - `resetBot(name)` — confirm dialog → POST `/api/bots/{name}/reset`
 - `_tickMskClock()` — runs every 1s, updates `#msk-clock`
-- **Bootstrap**: calls `refresh()`, `loadDataStatus()`, `loadLogs()`, starts `_refreshInterval`
+- **Bootstrap**: `refresh().then(() => initBtPanel())` — bots loaded first so bt-bot-select is populated before initBtPanel runs
 
 ---
 
@@ -215,7 +255,9 @@ Bootstrap and refresh orchestration. Runs last.
 | backtest | POST | `/api/backtest/download` | Download Binance klines |
 | backtest | POST | `/api/backtest/run` | Run backtest |
 | backtest | POST | `/api/backtest/optimize` | Start GA optimization (async) |
-| backtest | GET | `/api/backtest/status?task_id=…` | Poll optimization progress |
+| backtest | POST | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async) |
+| backtest | GET | `/api/backtest/status` | All tasks summary (for restore on load) |
+| backtest | GET | `/api/backtest/status?task_id=…` | Poll single task progress/result |
 | logs | GET | `/api/logs?level=WARNING&limit=200` | System log records |
 | logs | DELETE | `/api/logs` | Clear log buffer |
 | main | POST | `/api/bots/reset-all` | Reset all bot data |
@@ -245,16 +287,20 @@ Key IDs that JS writes to or reads from:
 | `settings-strategy-label` | settings | Strategy name label |
 | `btn-save-params` | settings | Save button disabled state |
 | `settings-toast` | settings | Toast notification span |
-| `backtest-section`, `backtest-body`, `bt-chevron` | backtest | Collapsible backtest panel |
+| `bt-standalone-panel` | backtest | Standalone backtest panel (full-width, below layout) |
+| `bt-bot-select` | backtest | Bot selector dropdown (independent of sidebar) |
+| `backtest-body`, `bt-chevron` | backtest | Collapsible backtest panel body |
 | `bt-data-info`, `bt-data-badge` | backtest | Candle count status text |
-| `bt-test-start-date` | backtest | Test window start date picker |
+| `bt-test-start-date` | backtest | Test window start date picker (in sidebar) |
 | `bt-start-date`, `bt-end-date` | backtest | Backtest date range pickers |
-| `bt-run-btn`, `bt-opt-btn` | backtest | Action buttons (disabled if no data) |
-| `bt-opt-iters` | backtest | Optimization iteration count select |
+| `bt-run-btn`, `bt-opt-btn`, `bt-wfo-btn` | backtest | Action buttons (disabled if no bot/data) |
+| `bt-opt-iters` | backtest | Iteration count select (shared by Optimize + WFO) |
+| `bt-wfo-folds`, `bt-wfo-testpct` | backtest | WFO fold count and OOS% selectors |
 | `bt-fee-pct` | backtest | Fee rate % input |
 | `bt-status` | backtest | Status text (running/done/error) |
-| `bt-results`, `bt-metrics`, `bt-chart` | backtest | Result section + metrics grid + canvas |
+| `bt-results`, `bt-metrics`, `bt-chart` | backtest | Backtest result section + metrics grid + canvas |
 | `bt-opt-results` | backtest | Optimization result section (innerHTML replaced) |
+| `bt-wfo-results` | backtest | WFO result section (innerHTML replaced; contains `bt-wfo-chart` canvas) |
 | `log-panel`, `log-panel-body`, `log-chevron` | logs | Collapsible log panel |
 | `log-level-select` | logs | WARNING/ERROR filter select |
 | `log-count-badge` | logs | Warning count badge (hidden when 0) |
@@ -266,7 +312,7 @@ Key IDs that JS writes to or reads from:
 
 ## 6. CSS Conventions (`style.css`)
 
-The stylesheet is a single flat file, ~435 lines. Key patterns:
+The stylesheet is a single flat file. Key patterns:
 
 | Pattern | Classes | Notes |
 |---|---|---|
@@ -279,6 +325,7 @@ The stylesheet is a single flat file, ~435 lines. Key patterns:
 | Action badges (trades) | `.action-badge.open-long/.close-long/.open-short/.close-short` | Color-coded trade action |
 | Stats matrix | `.gs-matrix`, `.gs-cell-green/.gs-cell-red/.gs-cell-neutral` | Strategy×coin return grid |
 | Backtest buttons | `.bt-btn-dl` (purple), `.bt-btn-run` (green), `.bt-btn-opt` (yellow), `.bt-btn-apply` (green) | |
+| Standalone backtest panel | `.bt-standalone-panel` | Full-width card: `margin: 0 24px 24px`, outside the `.layout` grid |
 | Responsive | `@media (max-width: 768px)` | Single column layout |
 
 ---
@@ -311,7 +358,44 @@ BACKTEST ON TEST WINDOW
 
 ---
 
-## 8. Adding a New UI Panel
+## 8. RSI Strategy Parameters (current `PARAM_SCHEMA`)
+
+After refactoring `strategies/example_rsi_bot.py`:
+
+| Parameter | Range | Notes |
+|---|---|---|
+| `RSI_PERIOD` | 7–21 int | Wilder RSI lookback |
+| `OVERSOLD` | 20.0–35.0 float | **Base** long entry (shifted by `vol_factor`) |
+| `OVERBOUGHT` | 65.0–80.0 float | **Base** short entry (shifted by `vol_factor`) |
+| `MAX_HOLD_CANDLES` | 10–40 int | Time-stop |
+| `COOLDOWN_CANDLES` | 0–10 int | Min candles between entries |
+
+**Removed from PARAM_SCHEMA (now fixed/derived):**
+- `ATR_MIN_PCT` — hardcoded `0.004`
+- `EXIT_RSI_LONG` — derived: `dyn_oversold + 20`
+- `EXIT_RSI_SHORT` — derived: `dyn_overbought - 20`
+
+**Dynamic RSI thresholds via `vol_factor`:**
+```
+EMA_ATR = EMA(ATR, 50)            # smoothed baseline
+vol_factor = ATR / EMA_ATR        # >1 = volatile, <1 = quiet
+adj = 8.0 * (vol_factor - 1)
+dyn_oversold   = OVERSOLD   - adj  # lower entry threshold when volatile
+dyn_overbought = OVERBOUGHT + adj  # higher entry threshold when volatile
+exit_long      = dyn_oversold  + 20
+exit_short     = dyn_overbought - 20
+```
+
+**Fixed indicator periods (not optimizable):**
+- `EMA_FAST_PERIOD = 50` (trend direction)
+- `EMA_SLOW_PERIOD = 200` (macro trend + warmup guard)
+- `ATR_PERIOD = 14`
+- `EMA_ATR_PERIOD = 50`
+- Warmup: no trades until EMA200 + ATR both initialized (~200 candles)
+
+---
+
+## 9. Adding a New UI Panel
 
 1. Create `api/static/app/mypanel.js`
 2. Add the `<script>` tag in `index.html` before `main.js`
@@ -321,7 +405,7 @@ BACKTEST ON TEST WINDOW
 
 ---
 
-## 9. Adding a New API Endpoint to the UI
+## 10. Adding a New API Endpoint to the UI
 
 1. Identify which module owns the relevant UI section
 2. Use `get()`, `post()`, `postJson()`, or `put()` from `utils.js`
@@ -336,15 +420,26 @@ BACKTEST ON TEST WINDOW
 
 ---
 
-## 10. Chart.js Usage Summary
+## 11. Chart.js Usage Summary
 
-Two separate Chart.js instances are maintained:
+Three separate Chart.js instances are maintained:
 
 | Variable | Canvas ID | Module | Datasets |
 |---|---|---|---|
 | `portfolioChart` | `portfolio-chart` | portfolio.js | USDT fill, coin value fill, total value line, coin price line, long/short markers |
-| `_backtestChart` | `bt-chart` | backtest.js | USDT balance fill, total value line (colored by side), coin price line |
+| `_backtestChart` | `bt-chart` | backtest.js | USDT balance fill, total value line (colored by side), coin price line (colored by EMA trend) |
+| `window._wfoChart` | `bt-wfo-chart` | backtest.js | Stitched OOS equity curve (WFO results) |
 
-Both charts are **destroyed and recreated** on every render call (no incremental update). This is intentional — data shape changes between renders.
+All charts are **destroyed and recreated** on every render call (no incremental update). This is intentional — data shape changes between renders.
 
 The `dashedSegment` helper in `portfolio.js` renders gap spans as dashed lines using Chart.js `segment` callbacks.
+
+**Backtest price line coloring** (Chart.js `segment` callback):
+```js
+// Equity curve trend field: "bull" | "bear" | "warmup" | "none"
+// Added by backtest_engine.py using bot._ema_fast vs bot._ema_slow
+borderColor: ctx => trends[ctx.p0DataIndex] === 'bull'   ? green
+                  : trends[ctx.p0DataIndex] === 'bear'   ? red
+                  : trends[ctx.p0DataIndex] === 'warmup' ? grey
+                  : orange
+```

@@ -4,18 +4,28 @@ and dynamic RSI thresholds via vol_factor = ATR / EMA(ATR, 50).
 
 Operates on 5-MINUTE CANDLES. USDT-Margined perpetual futures with leverage.
 
-Entry logic (trend-filtered mean-reversion):
-    Entry is allowed only when ALL three conditions are met:
-      1. RSI is oversold/overbought (using DYNAMIC thresholds)
+Entry logic (trend-filtered mean-reversion with reversal crossover):
+    Entry is allowed only when ALL four conditions are met:
+      1. RSI crosses the reversal entry level in the right direction
       2. EMA trend agrees: LONG only if EMA50 > EMA200 (bull trend), SHORT only if EMA50 < EMA200
       3. ATR/price >= ATR_MIN_PCT = 0.004 (enough volatility for mean-reversion to work)
+      4. Cooldown period has passed since last trade
 
     dynamic_oversold  = OVERSOLD  - 8 * (vol_factor - 1)
     dynamic_overbought= OVERBOUGHT + 8 * (vol_factor - 1)
     where vol_factor  = ATR / EMA(ATR, 50)
 
-    RSI < dynamic_oversold   AND EMA50 > EMA200  AND atr_ok → OPEN LONG
-    RSI > dynamic_overbought AND EMA50 < EMA200  AND atr_ok → OPEN SHORT
+    Entry levels (hardcoded REVERSAL_BUFFER = 5.0 RSI points):
+      rsi_entry_long  = dynamic_oversold  + REVERSAL_BUFFER
+      rsi_entry_short = dynamic_overbought - REVERSAL_BUFFER
+
+    LONG:  rsi_prev < rsi_entry_long  AND rsi_now >= rsi_entry_long   (RSI crossed UP)
+           AND EMA50 > EMA200 AND atr_ok  → OPEN LONG
+    SHORT: rsi_prev > rsi_entry_short AND rsi_now <= rsi_entry_short  (RSI crossed DOWN)
+           AND EMA50 < EMA200 AND atr_ok  → OPEN SHORT
+
+    Using a crossover (prev/now) instead of a simple level check ensures entries happen
+    exactly at the moment the RSI turns from extreme → more entries, less lag.
 
     If already in opposite position, close it first then open new direction.
 
@@ -45,6 +55,9 @@ ATR:
     ATR = Wilder EMA of TR (alpha = 1/14)
     EMA_ATR = standard EMA of ATR values (k = 2/51)
     vol_factor = ATR / EMA_ATR  (>1 = volatile, <1 = quiet)
+
+Fixed internal constants (not optimised):
+    REVERSAL_BUFFER  5.0      RSI points above oversold / below overbought for reversal entry
 
 Optimizable parameters (all with tight, realistic ranges):
     RSI_PERIOD       7–21     RSI lookback
@@ -81,6 +94,7 @@ class RSIBot(BaseStrategy):
     ATR_PERIOD       = 14
     EMA_ATR_PERIOD   = 50    # smoothing window for ATR baseline (vol_factor denominator)
     ATR_MIN_PCT      = 0.004 # hardcoded min ATR/price filter (skip low-vol candles)
+    REVERSAL_BUFFER  = 5.0   # RSI points above oversold / below overbought for reversal entry (not optimized)
 
     # --- Optimizable strategy parameters ---
     RSI_PERIOD       = 14       # Wilder RSI lookback
@@ -144,6 +158,9 @@ class RSIBot(BaseStrategy):
 
         # --- Position tracking ---
         self._position_opened_candle: int = -1
+
+        # --- Reversal crossover state ---
+        self._rsi_prev: Optional[float] = None  # RSI value from previous candle (crossover detection)
 
     def set_params(self, updates: dict) -> dict:
         """Reset RSI state when RSI_PERIOD changes (Wilder alpha depends on period)."""
@@ -256,17 +273,30 @@ class RSIBot(BaseStrategy):
         # Volatility filter: require minimum ATR/price ratio (hardcoded 0.004)
         atr_ok = self._atr / close >= self.ATR_MIN_PCT
 
-        # --- Oversold + bullish trend + enough volatility → LONG ---
-        if rsi < dyn_oversold and trend_up and atr_ok:
-            result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}")
+        # Reversal entry levels: buffer above oversold / below overbought
+        rsi_entry_long  = dyn_oversold  + self.REVERSAL_BUFFER
+        rsi_entry_short = dyn_overbought - self.REVERSAL_BUFFER
+
+        # --- RSI crossed UP through rsi_entry_long + bullish trend + enough volatility → LONG ---
+        if (self._rsi_prev is not None
+                and self._rsi_prev < rsi_entry_long
+                and rsi >= rsi_entry_long
+                and trend_up and atr_ok):
+            result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}")
             if result is not None:
                 self._position_opened_candle = self._candle_count
 
-        # --- Overbought + bearish trend + enough volatility → SHORT ---
-        elif rsi > dyn_overbought and trend_down and atr_ok:
-            result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}")
+        # --- RSI crossed DOWN through rsi_entry_short + bearish trend + enough volatility → SHORT ---
+        elif (self._rsi_prev is not None
+                and self._rsi_prev > rsi_entry_short
+                and rsi <= rsi_entry_short
+                and trend_down and atr_ok):
+            result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}")
             if result is not None:
                 self._position_opened_candle = self._candle_count
+
+        # Save RSI for next candle's crossover detection
+        self._rsi_prev = rsi
 
     # ------------------------------------------------------------------
     # EMA50 / EMA200 (trend filter)

@@ -742,6 +742,10 @@ function renderWFOResults(r) {
           <div class="value ${sign(r.final_is_sharpe)}">${_n(r.final_is_sharpe)}</div>
         </div>
         <div class="bt-metric">
+          <div class="label">Final IS Trades</div>
+          <div class="value neutral">${r.final_is_trade_count || 0}</div>
+        </div>
+        <div class="bt-metric">
           <div class="label">Folds</div>
           <div class="value neutral">${(r.folds || []).length} / ${r.n_folds}</div>
         </div>
