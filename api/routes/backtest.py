@@ -75,7 +75,7 @@ class BacktestRequest(BaseModel):
 
 class OptimizeRequest(BaseModel):
     bot_id: str
-    iterations: int = 500              # max optimization iterations (200/500/1000/2000/5000)
+    iterations: int = 200              # max optimization iterations (50/100/200/500/1000/2000/5000)
     fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
 
 
@@ -83,7 +83,7 @@ class WalkForwardRequest(BaseModel):
     bot_id: str
     n_folds: int = 4                   # number of OOS test windows
     test_pct: float = 0.10             # fraction of total data per OOS window (0.05–0.25)
-    iterations: int = 500              # GA budget PER FOLD (not total!)
+    iterations: int = 100              # GA budget PER FOLD (not total!). Total = iterations * (n_folds+1)
     fee_rate: float | None = None      # fee rate override
 
 

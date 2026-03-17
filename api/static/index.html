@@ -196,13 +196,14 @@
       <button class="bt-btn" id="bt-wfo-btn" onclick="runWalkForward()" disabled
         style="background:rgba(108,99,255,0.12);border:1px solid rgba(108,99,255,0.4);color:#a89fff;border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;white-space:nowrap"
         title="Walk-Forward Optimization: expands train window each fold, tests on held-out OOS data">📊 Walk-Forward</button>
-      <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;" title="Iterations per fold (Walk-Forward) or total (Optimize)">
+      <select id="bt-opt-iters" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;" title="Iterations per fold (Walk-Forward) or total (Optimize). Walk-Forward multiplies by (folds+1).">
+        <option value="50">50 iter (WFO fast)</option>
+        <option value="100" selected>100 iter (WFO balanced)</option>
         <option value="200">200 iter (quick)</option>
-        <option value="500" selected>500 iter</option>
+        <option value="500">500 iter</option>
         <option value="1000">1000 iter (deep)</option>
         <option value="2000">2000 iter (thorough)</option>
         <option value="5000">5000 iter (exhaustive)</option>
-        <option value="10000">10000 iter (max)</option>
       </select>
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);white-space:nowrap" title="Taker fee applied to every simulated order. Default 0.07% ≈ Binance Futures maker/taker + spread.">
         Fee %:

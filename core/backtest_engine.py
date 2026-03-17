@@ -355,15 +355,19 @@ async def run_backtest(
             usdt = state.get("usdt_balance", total)
 
             # Capture EMA trend direction from bot if available (RSIBot with trend filter)
-            # "bull" = EMA50 > EMA200, "bear" = EMA50 < EMA200, "warmup" = not yet ready
+            # Поддерживаем два варианта:
+            #   - old RSIBot (EMA50/EMA200 кросс): _ema_fast + _ema_slow оба присутствуют
+            #   - new RSIBot (только EMA200): только _ema_slow, тренд = цена vs EMA200
             ema_fast = getattr(bot, "_ema_fast", None)
             ema_slow = getattr(bot, "_ema_slow", None)
-            if ema_fast is None or ema_slow is None:
+            if ema_slow is None:
                 trend = "warmup"
-            elif ema_fast > ema_slow:
-                trend = "bull"
+            elif ema_fast is not None:
+                # EMA-кросс: bull если fast > slow
+                trend = "bull" if ema_fast > ema_slow else "bear"
             else:
-                trend = "bear"
+                # Только EMA200: bull если цена выше EMA200
+                trend = "bull" if candle.close > ema_slow else "bear"
 
             result.equity_curve.append({
                 "time": row["open_time"],

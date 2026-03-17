@@ -359,7 +359,7 @@ function renderBacktestChart(curve) {
               if (dsLabel === 'USDT Balance') return `USDT: ${fmtUsd(v)}`;
               if (dsLabel === 'Coin Price') {
                 const t = trends[idx];
-                const tTag = t === 'bull' ? ' 📈 Bull (EMA50>200)' : t === 'bear' ? ' 📉 Bear (EMA50<200)' : t === 'warmup' ? ' ⏳ Warmup' : '';
+                const tTag = t === 'bull' ? ' 📈 Bull (price>EMA200)' : t === 'bear' ? ' 📉 Bear (price<EMA200)' : t === 'warmup' ? ' ⏳ Warmup' : '';
                 return `Price: ${fmtUsd(v)}${tTag}`;
               }
               return null;

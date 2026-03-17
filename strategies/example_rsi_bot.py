@@ -1,5 +1,5 @@
 """
-RSI Bot — Wilder's RSI с EMA200 макро-фильтром и ATR фильтром волатильности.
+RSI Bot — Wilder's RSI с двумя нормализованными фильтрами (нет hardcoded порогов).
 
 Работает на 5-МИНУТНЫХ СВЕЧАХ. USDT-маржинальные бессрочные фьючерсы с плечом.
 
@@ -7,39 +7,48 @@ RSI Bot — Wilder's RSI с EMA200 макро-фильтром и ATR фильт
     RSI — инструмент возврата к среднему. Стратегия открывает позиции когда
     RSI находится в экстремальных зонах и ждёт восстановления к 50.
 
-Логика входа (3 условия):
-    1. RSI пересекает порог в нужном направлении (crossover prev→now)
-    2. Цена выше EMA200 → только LONG; ниже EMA200 → только SHORT
-       (защита от торговли против сильного тренда)
-    3. ATR / price >= ATR_MIN_PCT (минимальная волатильность для работы mean-reversion)
-    4. Прошёл cooldown с последней сделки
+Два фильтра (оба нормализованные, не зависят от актива/эпохи):
 
-    Пороги входа (статические, без динамической адаптации):
-        LONG:  RSI пересёк OVERSOLD снизу вверх (rsi_prev < OVERSOLD, rsi_now >= OVERSOLD)
-               И close > EMA200
-        SHORT: RSI пересёк OVERBOUGHT сверху вниз (rsi_prev > OVERBOUGHT, rsi_now <= OVERBOUGHT)
-               И close < EMA200
+1. Regime filter — "рынок не в тренде":
+   distance = |close - EMA200| / EMA200 < EMA_DISTANCE_THRESHOLD (1.5%)
+   Когда цена далеко от EMA200 → рынок trending → RSI ненадёжен.
+   Это НЕ directional filter: LONG и SHORT оба разрешены.
+
+2. Volatility filter — "рынок не мёртвый":
+   vol_ratio = ATR / EMA(ATR, 50)
+   vol_ok = vol_ratio > 1.0  (текущая волатильность выше средней)
+   Нормализован относительно собственной истории → не требует подгонки под актив.
+
+   Принцип:
+     vol_ratio > 1.0 → волатильнее нормы → есть ход для mean-reversion
+     vol_ratio < 1.0 → тише нормы → RSI-сигналы = шум
+
+Логика входа (crossover + оба фильтра):
+    LONG:  RSI пересёк OVERSOLD снизу вверх + regime_ok + vol_ok
+    SHORT: RSI пересёк OVERBOUGHT сверху вниз + regime_ok + vol_ok
 
 Логика выхода:
-    1. RSI восстановился до 50 — основной выход:
+    1. RSI восстановился до 50:
        exit LONG:  RSI > 50
        exit SHORT: RSI < 50
-    2. Time-stop: MAX_HOLD_CANDLES свечей без восстановления (защита от runaway drawdown)
+    2. Time-stop: MAX_HOLD_CANDLES свечей (защита от runaway drawdown)
 
 Warmup:
     Торговля начинается после инициализации EMA200 (200 свечей).
-    RSI и ATR инициализируются параллельно в течение warmup.
+    RSI, ATR и EMA(ATR) инициализируются параллельно.
 
 Индикаторы (все периоды фиксированы, не оптимизируются):
-    EMA_SLOW_PERIOD = 200  (макро-фильтр тренда)
-    ATR_PERIOD      = 14   (волатильность, True Range)
-    ATR_MIN_PCT     = 0.004 (минимальный ATR/price, фиксировано)
+    EMA_SLOW_PERIOD        = 200   (anchor для regime-фильтра)
+    ATR_PERIOD             = 14    (волатильность, Wilder True Range)
+    EMA_ATR_PERIOD         = 50    (baseline ATR для нормализации vol_ratio)
+    EMA_DISTANCE_THRESHOLD = 0.015 (порог distance до EMA200, 1.5%)
 
 ATR:
     True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
-    ATR = Wilder EMA of TR (alpha = 1/14)
+    ATR        = Wilder EMA of TR (alpha = 1/14)
+    EMA(ATR)   = стандартная EMA(ATR, 50) — baseline для vol_ratio
 
-Оптимизируемые параметры (только 3 — минимальное пространство поиска):
+Оптимизируемые параметры (только 3):
     RSI_PERIOD   7–21    RSI lookback (Wilder)
     OVERSOLD     20–35   Порог входа LONG
     OVERBOUGHT   65–80   Порог входа SHORT
@@ -71,14 +80,15 @@ class RSIBot(BaseStrategy):
     symbol = "BTCUSDT"
 
     # --- Фиксированные периоды индикаторов (не оптимизируются) ---
-    EMA_SLOW_PERIOD = 200    # warmup guard: торговля только после EMA200
-    ATR_PERIOD      = 14     # Wilder ATR для фильтра волатильности
-    ATR_MIN_PCT     = 0.004  # минимальный ATR/price (пропускаем низковолатильные свечи)
+    EMA_SLOW_PERIOD        = 200    # anchor: EMA200 для distance-фильтра
+    ATR_PERIOD             = 14     # Wilder ATR (True Range)
+    EMA_ATR_PERIOD         = 50     # период EMA(ATR) для baseline волатильности
+    EMA_DISTANCE_THRESHOLD = 0.015  # макс. дистанция до EMA200 (1.5%) для mean-reversion режима
 
     # --- Оптимизируемые параметры стратегии ---
-    RSI_PERIOD       = 14    # Wilder RSI lookback
-    OVERSOLD         = 30.0  # Порог входа LONG
-    OVERBOUGHT       = 70.0  # Порог входа SHORT
+    RSI_PERIOD   = 14    # Wilder RSI lookback
+    OVERSOLD     = 30.0  # Порог входа LONG
+    OVERBOUGHT   = 70.0  # Порог входа SHORT
 
     # --- Фиксированные параметры управления позицией (не оптимизируются) ---
     MAX_HOLD_CANDLES = 50    # Time-stop (~4 часа на 5м свечах)
@@ -128,12 +138,13 @@ class RSIBot(BaseStrategy):
         self._prev_close: Optional[float] = None
         self._warmup_closes: list[float] = []
 
-        # --- EMA200 (макро-фильтр тренда) ---
+        # --- EMA200 (anchor для regime-фильтра) ---
         self._ema_slow: Optional[float] = None
         self._ema_warmup: list[float] = []
 
-        # --- ATR (фильтр волатильности) ---
+        # --- ATR + EMA(ATR) (относительный фильтр волатильности) ---
         self._atr: Optional[float] = None
+        self._ema_atr: Optional[float] = None  # EMA(ATR) — baseline для vol_ratio
         self._warmup_tr: list[float] = []
 
         # --- Состояние позиции и кросс-детектор RSI ---
@@ -141,7 +152,7 @@ class RSIBot(BaseStrategy):
         self._rsi_prev: Optional[float] = None  # RSI предыдущей свечи для crossover
 
     def set_params(self, updates: dict) -> dict:
-        """Сбросить RSI state при изменении RSI_PERIOD (Wilder alpha зависит от периода)."""
+        """Сбросить RSI state при изменении RSI_PERIOD."""
         applied = super().set_params(updates)
         if "RSI_PERIOD" in applied:
             self._avg_gain = None
@@ -164,12 +175,12 @@ class RSIBot(BaseStrategy):
         high  = candle.high
         low   = candle.low
 
-        # Снимаем prev_close ДО обновления ATR (оба индикатора используют одно значение)
+        # Снимаем prev_close ДО обновления ATR
         prev_close_snapshot = self._prev_close
 
         # --- Обновление индикаторов ---
         self._update_ema_slow(close)
-        self._update_atr(high, low, close)           # записывает self._prev_close = close
+        self._update_atr(high, low, close)
         self._update_rsi(close, prev_close_snapshot)
 
         # --- Warmup guard: ждём EMA200 ---
@@ -179,26 +190,44 @@ class RSIBot(BaseStrategy):
             )
             return
 
-        # RSI тоже должен быть готов
+        # RSI и ATR тоже должны быть готовы
         rsi = self._compute_rsi()
-        if rsi is None:
+        if rsi is None or self._atr is None:
             return
 
-        # ATR должен быть готов для фильтра волатильности
-        if self._atr is None:
+        # Также ждём EMA(ATR) для vol_ratio
+        if self._ema_atr is None:
             return
+
+        # ------------------------------------------------------------------
+        # FILTER 1 — REGIME: mean-reversion работает когда цена близко к EMA200
+        # distance = |close - EMA200| / EMA200
+        # Нормализован: не зависит от цены актива, работает везде одинаково
+        # ------------------------------------------------------------------
+        distance = abs(close - self._ema_slow) / self._ema_slow
+        regime_ok = distance < self.EMA_DISTANCE_THRESHOLD
+
+        # ------------------------------------------------------------------
+        # FILTER 2 — VOLATILITY: торгуем только когда волатильность выше нормы
+        # vol_ratio = ATR / EMA(ATR) — нормализован относительно своей истории
+        # > 1.0 → сейчас волатильнее нормы → есть ход для mean-reversion
+        # < 1.0 → тише нормы → сигналы RSI = шум
+        # ------------------------------------------------------------------
+        vol_ratio = self._atr / self._ema_atr
+        vol_ok = vol_ratio > 1.0
 
         # --- Текущая позиция ---
         position = await self.engine.get_balance(self.name, "POSITION")
 
         self.logger.debug(
             f"close={close:.2f}  RSI={rsi:.1f}  "
-            f"EMA200={self._ema_slow:.2f}  "
-            f"ATR%={self._atr/close*100:.3f}  pos={position:.6f}"
+            f"EMA200={self._ema_slow:.2f}  dist={distance*100:.2f}%  "
+            f"vol_ratio={vol_ratio:.2f}  "
+            f"regime={'✓' if regime_ok else '✗'}  vol={'✓' if vol_ok else '✗'}  pos={position:.6f}"
         )
 
         # ------------------------------------------------------------------
-        # EXIT LOGIC (проверяем до входа)
+        # EXIT LOGIC (проверяем до входа, независимо от режима)
         # ------------------------------------------------------------------
 
         if position > 0:
@@ -220,54 +249,44 @@ class RSIBot(BaseStrategy):
                 position = 0
 
         # ------------------------------------------------------------------
-        # ENTRY LOGIC: RSI crossover + EMA200 тренд + ATR фильтр
+        # ENTRY LOGIC: RSI crossover + regime filter + ATR filter
         # ------------------------------------------------------------------
 
         cooldown_ok = (self._candle_count - self._last_trade_candle >= self.COOLDOWN_CANDLES)
         if not cooldown_ok or position != 0:
-            # Сохраняем RSI для следующей свечи
             self._rsi_prev = rsi
             return
 
-        # Фильтр волатильности: ATR/price >= ATR_MIN_PCT
-        atr_ok = (self._atr / close >= self.ATR_MIN_PCT)
+        # Оба фильтра должны быть выполнены
+        if not regime_ok or not vol_ok:
+            self._rsi_prev = rsi
+            return
 
-        # Макро-фильтр тренда через EMA200
-        price_above_ema = close > self._ema_slow
-        price_below_ema = close < self._ema_slow
+        if self._rsi_prev is not None:
+            if self._rsi_prev < self.OVERSOLD and rsi >= self.OVERSOLD:
+                # RSI вышел из зоны перепроданности → LONG
+                result = await self._open_position(
+                    close, "BUY",
+                    RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}",
+                    dist=f"{distance*100:.1f}%", vol=f"{vol_ratio:.2f}"
+                )
+                if result is not None:
+                    self._position_opened_candle = self._candle_count
 
-        # RSI crossover entry: prev < threshold, now >= threshold (или наоборот)
-        if (self._rsi_prev is not None
-                and self._rsi_prev < self.OVERSOLD
-                and rsi >= self.OVERSOLD
-                and price_above_ema
-                and atr_ok):
-            # RSI вышел из зоны перепроданности + цена выше EMA200 → LONG
-            result = await self._open_position(
-                close, "BUY",
-                RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}"
-            )
-            if result is not None:
-                self._position_opened_candle = self._candle_count
+            elif self._rsi_prev > self.OVERBOUGHT and rsi <= self.OVERBOUGHT:
+                # RSI вышел из зоны перекупленности → SHORT
+                result = await self._open_position(
+                    close, "SELL",
+                    RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}",
+                    dist=f"{distance*100:.1f}%", vol=f"{vol_ratio:.2f}"
+                )
+                if result is not None:
+                    self._position_opened_candle = self._candle_count
 
-        elif (self._rsi_prev is not None
-                and self._rsi_prev > self.OVERBOUGHT
-                and rsi <= self.OVERBOUGHT
-                and price_below_ema
-                and atr_ok):
-            # RSI вышел из зоны перекупленности + цена ниже EMA200 → SHORT
-            result = await self._open_position(
-                close, "SELL",
-                RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}"
-            )
-            if result is not None:
-                self._position_opened_candle = self._candle_count
-
-        # Сохраняем RSI для следующей свечи
         self._rsi_prev = rsi
 
     # ------------------------------------------------------------------
-    # EMA200 (макро-фильтр тренда)
+    # EMA200 (anchor для regime-фильтра)
     # ------------------------------------------------------------------
 
     def _update_ema_slow(self, close: float) -> None:
@@ -282,7 +301,6 @@ class RSIBot(BaseStrategy):
 
         if self._ema_slow is None:
             if n >= self.EMA_SLOW_PERIOD:
-                # Seed через SMA первых 200 свечей
                 self._ema_slow = sum(self._ema_warmup[:self.EMA_SLOW_PERIOD]) / self.EMA_SLOW_PERIOD
                 self._ema_warmup.clear()
                 self.logger.info(f"EMA{self.EMA_SLOW_PERIOD}={self._ema_slow:.2f} готов — торговля разрешена")
@@ -296,8 +314,8 @@ class RSIBot(BaseStrategy):
     def _update_atr(self, high: float, low: float, close: float) -> None:
         """
         True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
-        ATR = Wilder EMA of TR (alpha = 1/ATR_PERIOD).
-        Используется только для фильтра ATR_MIN_PCT.
+        ATR        = Wilder EMA of TR (alpha = 1/ATR_PERIOD)
+        EMA(ATR)   = стандартная EMA(ATR, EMA_ATR_PERIOD) — baseline для vol_ratio
         """
         prev_close = self._prev_close if self._prev_close is not None else close
 
@@ -313,16 +331,20 @@ class RSIBot(BaseStrategy):
             if len(self._warmup_tr) >= self.ATR_PERIOD:
                 self._atr = sum(self._warmup_tr) / self.ATR_PERIOD
                 self._warmup_tr.clear()
+                # Seed EMA(ATR) первым значением ATR
+                self._ema_atr = self._atr
         else:
             alpha = 1.0 / self.ATR_PERIOD
             self._atr = alpha * tr + (1 - alpha) * self._atr
+            # Обновляем EMA(ATR, 50) — baseline для vol_ratio = ATR / EMA(ATR)
+            k = 2.0 / (self.EMA_ATR_PERIOD + 1)
+            self._ema_atr = self._atr * k + self._ema_atr * (1 - k)
 
     # ------------------------------------------------------------------
     # Wilder RSI
     # ------------------------------------------------------------------
 
     def _update_rsi(self, close: float, prev_close: Optional[float] = None) -> None:
-        """Буферизует closes для warmup RSI; после инициализации — Wilder EMA на каждой свече."""
         if self._avg_gain is None:
             self._warmup_closes.append(close)
             if len(self._warmup_closes) > self.RSI_PERIOD:
