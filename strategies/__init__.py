@@ -6,7 +6,6 @@ Each module defines a subclass of BaseStrategy and exposes a
 
 Active strategies (5-minute candles):
     RSIBot            — Wilder RSI with trend filter
-    MACrossoverBot    — MACD crossover + histogram
 
 To add a new strategy:
     1. Create strategies/my_strategy.py subclassing BaseStrategy.
@@ -14,9 +13,7 @@ To add a new strategy:
 """
 
 from strategies.example_rsi_bot import RSIBot
-from strategies.example_ma_crossover import MACrossoverBot
 
 __all__ = [
     "RSIBot",
-    "MACrossoverBot",
 ]

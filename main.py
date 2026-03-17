@@ -20,9 +20,8 @@ Data flow:
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (2 strategies × 3 coins = 6 bots):
+Bot instances (1 strategy × 3 coins = 3 bots):
     rsi_btc, rsi_eth, rsi_sol       — Wilder RSI + trend filter
-    ma_btc, ma_eth, ma_sol          — MACD crossover + histogram
 """
 import asyncio
 import logging
@@ -46,16 +45,15 @@ from data.orderbook_feed import fetch_depth
 # Import strategy classes
 # ------------------------------------------------------------------
 from strategies.example_rsi_bot import RSIBot
-from strategies.example_ma_crossover import MACrossoverBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
 # ------------------------------------------------------------------
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-STRATEGY_CLASSES = [RSIBot, MACrossoverBot]
+STRATEGY_CLASSES = [RSIBot]
 
-# Build 6 bot classes: one per strategy × symbol combination (RSI + MA × 3 coins)
+# Build 3 bot classes: one per symbol combination (RSI × 3 coins)
 REGISTERED_BOTS = []
 for strategy_cls in STRATEGY_CLASSES:
     for sym in SYMBOLS:
