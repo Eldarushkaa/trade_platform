@@ -261,10 +261,11 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
     async def _run():
         try:
             import os
-            # Cap workers at 4 to avoid OOM on typical VPS (2–4 cores, 4–8 GB RAM).
-            # Each worker process loads the full candle list → ~150 MB each.
+            # On a 2-core VPS spawning more than 2 workers causes CPU thrashing
+            # and OOM (each worker loads full candle list ~150 MB).
+            # Hard-cap at 2 so uvicorn retains 1 core for HTTP serving.
             cpu_count = os.cpu_count() or 2
-            concurrency = min(4, max(2, cpu_count))
+            concurrency = min(2, max(1, cpu_count - 1))
 
             result = await optimize_params(
                 bot_id=req.bot_id,
@@ -354,7 +355,7 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
         try:
             import os
             cpu_count = os.cpu_count() or 2
-            concurrency = min(4, max(2, cpu_count))
+            concurrency = min(2, max(1, cpu_count - 1))
 
             result = await walk_forward_optimize(
                 bot_id=req.bot_id,
