@@ -587,9 +587,18 @@ async def optimize_params(
         return ind
 
     async def _evaluate_batch(individuals: list[_Individual]) -> None:
-        """Evaluate a batch of individuals in parallel."""
-        tasks = [_evaluate(ind, i) for i, ind in enumerate(individuals)]
-        await asyncio.gather(*tasks)
+        """Evaluate a batch of individuals in parallel, chunked by concurrency.
+
+        Each chunk is awaited before the next starts so the event loop stays
+        responsive (handles incoming HTTP requests) between chunks.
+        Yields to the event loop after every chunk via asyncio.sleep(0).
+        """
+        for chunk_start in range(0, len(individuals), concurrency):
+            chunk = individuals[chunk_start: chunk_start + concurrency]
+            tasks = [_evaluate(ind, chunk_start + i) for i, ind in enumerate(chunk)]
+            await asyncio.gather(*tasks)
+            # Yield to event loop so HTTP requests are not starved
+            await asyncio.sleep(0)
 
     def _record_trials(individuals: list[_Individual], label_override: str | None = None) -> None:
         for ind in individuals:
@@ -606,116 +615,124 @@ async def optimize_params(
                 "label": label_override or ind.label,
             })
 
-    # ------------------------------------------------------------------
-    # 0. Baseline evaluation (current params)
-    # ------------------------------------------------------------------
-    if current_params:
-        result.current_params = dict(current_params)
-        baseline = _Individual(params=dict(current_params), label="baseline")
-        await _evaluate(baseline, 0)
-        if baseline.evaluated and baseline.fitness > -1000:
-            result.current_sharpe = baseline.sharpe
-            result.current_return_pct = baseline.return_pct
-            _update_best(baseline)
-        _record_trials([baseline])
-
-    if progress_callback:
-        await progress_callback(2, f"Baseline done. Starting Random Search ({max_iterations} evals)...")
-
-    # ------------------------------------------------------------------
-    # Phase 1 — Random Search (80% of budget)
-    # ------------------------------------------------------------------
-    rs_budget = int(max_iterations * 0.80)
-    # Subtract baseline eval if we did one
-    rs_budget -= (1 if current_params else 0)
-    rs_budget = max(1, rs_budget)
-
-    # LHS for initial coverage, then pure random for remaining
-    lhs_count = min(rs_budget, max(top_k, n_dims * 4))
-    lhs_samples = _latin_hypercube_sample(schema, lhs_count)
-    rs_extra_count = max(0, rs_budget - lhs_count)
-    rs_extra_samples = [_sample_params(schema) for _ in range(rs_extra_count)]
-
-    all_rs_params = lhs_samples + rs_extra_samples
-
-    # Include current_params as a seed in the RS population
-    if current_params:
-        all_rs_params.insert(0, dict(current_params))
-
-    # Evaluate in parallel batches of `concurrency`
-    rs_individuals: list[_Individual] = []
-    batch_size = max(concurrency, 8)
-
-    for batch_start in range(0, len(all_rs_params), batch_size):
-        if evaluations_done >= int(max_iterations * 0.80) + (1 if current_params else 0):
-            break
-        batch_params = all_rs_params[batch_start: batch_start + batch_size]
-        batch_inds = [_Individual(params=p, label="rs_lhs" if batch_start == 0 else "rs_random") for p in batch_params]
-        await _evaluate_batch(batch_inds)
-        rs_individuals.extend(batch_inds)
-        for ind in batch_inds:
-            _update_best(ind)
-        _record_trials(batch_inds)
+    try:
+        # ------------------------------------------------------------------
+        # 0. Baseline evaluation (current params)
+        # ------------------------------------------------------------------
+        if current_params:
+            result.current_params = dict(current_params)
+            baseline = _Individual(params=dict(current_params), label="baseline")
+            await _evaluate(baseline, 0)
+            if baseline.evaluated and baseline.fitness > -1000:
+                result.current_sharpe = baseline.sharpe
+                result.current_return_pct = baseline.return_pct
+                _update_best(baseline)
+            _record_trials([baseline])
 
         if progress_callback:
-            pct = min(78, evaluations_done / max_iterations * 95)
-            await progress_callback(
-                pct,
-                f"RS: {evaluations_done}/{max_iterations} evals | "
-                f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
-            )
+            await progress_callback(2, f"Baseline done. Starting Random Search ({max_iterations} evals)...")
 
-    result.rs_evaluations = evaluations_done
+        # ------------------------------------------------------------------
+        # Phase 1 — Random Search (80% of budget)
+        # ------------------------------------------------------------------
+        rs_budget = int(max_iterations * 0.80)
+        # Subtract baseline eval if we did one
+        rs_budget -= (1 if current_params else 0)
+        rs_budget = max(1, rs_budget)
 
-    # ------------------------------------------------------------------
-    # Phase 2 — Local Refinement (remaining budget)
-    # ------------------------------------------------------------------
-    if progress_callback:
-        await progress_callback(80, f"Random Search done. Starting Local Refinement on Top-{top_k}...")
+        # LHS for initial coverage, then pure random for remaining
+        lhs_count = min(rs_budget, max(top_k, n_dims * 4))
+        lhs_samples = _latin_hypercube_sample(schema, lhs_count)
+        rs_extra_count = max(0, rs_budget - lhs_count)
+        rs_extra_samples = [_sample_params(schema) for _ in range(rs_extra_count)]
 
-    # Pick Top-K by fitness from all evaluated RS individuals
-    valid_rs = [ind for ind in rs_individuals if ind.evaluated and ind.fitness > -1000]
-    valid_rs.sort(key=lambda x: x.fitness, reverse=True)
-    top_candidates = valid_rs[:top_k]
+        all_rs_params = lhs_samples + rs_extra_samples
 
-    logger.info(
-        f"Optimizer [{bot_id}] RS done: {result.rs_evaluations} evals, "
-        f"best fitness={result.best_fitness:.3f}. "
-        f"Refining Top-{len(top_candidates)} candidates."
-    )
+        # Include current_params as a seed in the RS population
+        if current_params:
+            all_rs_params.insert(0, dict(current_params))
 
-    local_evals_start = evaluations_done
+        # Evaluate in parallel batches of `concurrency`
+        rs_individuals: list[_Individual] = []
+        batch_size = max(concurrency, 8)
 
-    for rank, candidate in enumerate(top_candidates):
-        if evaluations_done >= max_iterations:
-            break
-        neighbors_params = _local_neighbors(candidate.params, schema)
-        # Filter to remaining budget
-        budget_left = max_iterations - evaluations_done
-        neighbors_params = neighbors_params[:budget_left]
-        if not neighbors_params:
-            break
+        for batch_start in range(0, len(all_rs_params), batch_size):
+            if evaluations_done >= int(max_iterations * 0.80) + (1 if current_params else 0):
+                break
+            batch_params = all_rs_params[batch_start: batch_start + batch_size]
+            batch_inds = [_Individual(params=p, label="rs_lhs" if batch_start == 0 else "rs_random") for p in batch_params]
+            await _evaluate_batch(batch_inds)
+            rs_individuals.extend(batch_inds)
+            for ind in batch_inds:
+                _update_best(ind)
+            _record_trials(batch_inds)
 
-        neighbor_inds = [_Individual(params=p, label=f"local_r{rank+1}") for p in neighbors_params]
-        await _evaluate_batch(neighbor_inds)
-        for ind in neighbor_inds:
-            _update_best(ind)
-        _record_trials(neighbor_inds)
+            if progress_callback:
+                pct = min(78, evaluations_done / max_iterations * 95)
+                await progress_callback(
+                    pct,
+                    f"RS: {evaluations_done}/{max_iterations} evals | "
+                    f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
+                )
 
+        result.rs_evaluations = evaluations_done
+
+        # ------------------------------------------------------------------
+        # Phase 2 — Local Refinement (remaining budget)
+        # ------------------------------------------------------------------
         if progress_callback:
-            pct = min(95, 80 + (evaluations_done - local_evals_start) / max(1, max_iterations - local_evals_start) * 15)
-            await progress_callback(
-                pct,
-                f"Local [{rank+1}/{len(top_candidates)}]: {evaluations_done}/{max_iterations} evals | "
-                f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
-            )
+            await progress_callback(80, f"Random Search done. Starting Local Refinement on Top-{top_k}...")
 
-    result.local_evaluations = evaluations_done - result.rs_evaluations
+        # Pick Top-K by fitness from all evaluated RS individuals
+        valid_rs = [ind for ind in rs_individuals if ind.evaluated and ind.fitness > -1000]
+        valid_rs.sort(key=lambda x: x.fitness, reverse=True)
+        top_candidates = valid_rs[:top_k]
+
+        logger.info(
+            f"Optimizer [{bot_id}] RS done: {result.rs_evaluations} evals, "
+            f"best fitness={result.best_fitness:.3f}. "
+            f"Refining Top-{len(top_candidates)} candidates."
+        )
+
+        local_evals_start = evaluations_done
+
+        for rank, candidate in enumerate(top_candidates):
+            if evaluations_done >= max_iterations:
+                break
+            neighbors_params = _local_neighbors(candidate.params, schema)
+            # Filter to remaining budget
+            budget_left = max_iterations - evaluations_done
+            neighbors_params = neighbors_params[:budget_left]
+            if not neighbors_params:
+                break
+
+            neighbor_inds = [_Individual(params=p, label=f"local_r{rank+1}") for p in neighbors_params]
+            await _evaluate_batch(neighbor_inds)
+            for ind in neighbor_inds:
+                _update_best(ind)
+            _record_trials(neighbor_inds)
+
+            if progress_callback:
+                pct = min(95, 80 + (evaluations_done - local_evals_start) / max(1, max_iterations - local_evals_start) * 15)
+                await progress_callback(
+                    pct,
+                    f"Local [{rank+1}/{len(top_candidates)}]: {evaluations_done}/{max_iterations} evals | "
+                    f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
+                )
+
+        result.local_evaluations = evaluations_done - result.rs_evaluations
+
+    finally:
+        # Always shut down the process pool to release worker memory and OS processes.
+        # wait=True ensures workers exit before we return (prevents zombie accumulation).
+        try:
+            _pool.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
-    # Cleanup + final results
+    # Final results
     # ------------------------------------------------------------------
-    _pool.shutdown(wait=False)
     result.iterations_run = evaluations_done
     result.duration_seconds = time.monotonic() - start_time
 

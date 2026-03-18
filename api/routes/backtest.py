@@ -261,9 +261,10 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
     async def _run():
         try:
             import os
-            # Use CPU cores for parallel backtest eval (default 4, capped at 8)
-            cpu_count = os.cpu_count() or 4
-            concurrency = min(8, max(2, cpu_count))
+            # Cap workers at 4 to avoid OOM on typical VPS (2–4 cores, 4–8 GB RAM).
+            # Each worker process loads the full candle list → ~150 MB each.
+            cpu_count = os.cpu_count() or 2
+            concurrency = min(4, max(2, cpu_count))
 
             result = await optimize_params(
                 bot_id=req.bot_id,
@@ -352,8 +353,8 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
     async def _run():
         try:
             import os
-            cpu_count = os.cpu_count() or 4
-            concurrency = min(8, max(2, cpu_count))
+            cpu_count = os.cpu_count() or 2
+            concurrency = min(4, max(2, cpu_count))
 
             result = await walk_forward_optimize(
                 bot_id=req.bot_id,
