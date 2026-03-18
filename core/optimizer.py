@@ -1,25 +1,29 @@
 """
-Parameter Optimizer — evolutionary genetic algorithm for strategy tuning.
+Parameter Optimizer — Random Search + Local Refinement for strategy tuning.
 
-Uses a real population-based GA with:
-  - Tournament selection
-  - BLX-α crossover (blend crossover for continuous params)
-  - Adaptive mutation (wide early, narrow late; auto-widens on stagnation)
-  - Elitism (top-K always survive)
-  - Stagnation detection → inject fresh random individuals
-  - Parallel batch evaluation via asyncio.gather
-  - Multi-objective composite fitness (Return + Sharpe + ProfitFactor − drawdown penalty)
+Two-phase approach optimized for low-dimensional parameter spaces (2–5 params):
 
-Each evaluation runs a full backtest.  Compute budget:
-    iterations ≈ population_size × generations
+  Phase 1 — Random Search (80% of budget):
+    Latin Hypercube Sampling for uniform space coverage, evaluated in parallel
+    batches.  Tracks Top-K candidates by composite fitness.
+
+  Phase 2 — Local Refinement (20% of budget):
+    For each Top-K candidate, generates grid neighbors at ±5% and ±15% of
+    each parameter range.  Best neighbor replaces global best if it wins.
+
+Composite fitness:
+    Sharpe (40%) + ProfitFactor (30%) + Return (20%) − Drawdown (20%)
+    + log(trades) bonus (10%).
+    WFE-inner penalty: if IS/mini-OOS gap is large, fitness is penalised.
 
 Walk-Forward Optimization:
     Divides data into expanding train windows + fixed OOS test windows.
-    Runs GA on each train window, evaluates best_params on OOS window.
+    Each training window is further split (80/20) into train_inner / val_inner
+    so the optimizer itself penalises IS→OOS divergence during search.
     Produces a stitched OOS equity curve and WFE metric (OOS/IS return ratio).
 
 Usage:
-    result = await optimize_params("rsi_btc", "BTCUSDT", RSIBot, max_iterations=1000)
+    result = await optimize_params("rsi_btc", "BTCUSDT", RSIBot, max_iterations=200)
     wf_result = await walk_forward_optimize("rsi_btc", "BTCUSDT", RSIBot, n_folds=4)
 """
 import asyncio
@@ -53,11 +57,14 @@ def _worker_init(
     candle_rows: list,
     fee_rate,
     initial_balance: float,
+    val_candle_rows: list | None = None,
 ) -> None:
     """
     Called ONCE when a worker process starts.
     Reconstructs the strategy class and caches shared data in module globals.
     Avoids pickling thousands of candle rows for each individual evaluation.
+
+    val_candle_rows: optional mini-OOS validation window used for WFE-inner penalty.
     """
     import importlib
     module = importlib.import_module(strategy_module)
@@ -67,6 +74,7 @@ def _worker_init(
     _worker_state["fee_rate"] = fee_rate
     _worker_state["initial_balance"] = initial_balance
     _worker_state["symbol"] = symbol
+    _worker_state["val_candle_rows"] = val_candle_rows  # may be None
 
 
 def _worker_evaluate_params(params: dict) -> dict:
@@ -74,6 +82,9 @@ def _worker_evaluate_params(params: dict) -> dict:
     Evaluate one parameter set in a worker process.
     Creates a fresh asyncio event loop (worker processes have no running loop).
     Returns a plain dict (must be picklable for IPC).
+
+    If val_candle_rows are available in worker state, also runs a mini-OOS
+    backtest and returns wfe_inner = val_return / is_return for penalty.
     """
     import asyncio
     strategy_class = _worker_state["strategy_class"]
@@ -81,6 +92,7 @@ def _worker_evaluate_params(params: dict) -> dict:
     fee_rate = _worker_state["fee_rate"]
     initial_balance = _worker_state["initial_balance"]
     symbol = _worker_state["symbol"]
+    val_candle_rows = _worker_state.get("val_candle_rows")
 
     loop = asyncio.new_event_loop()
     try:
@@ -95,6 +107,30 @@ def _worker_evaluate_params(params: dict) -> dict:
             equity_interval=20,
             candle_data=candle_rows,
         ))
+
+        # Optional mini-OOS validation for WFE-inner penalty
+        wfe_inner = 1.0  # neutral: no penalty
+        if val_candle_rows:
+            try:
+                val_bt = loop.run_until_complete(run_backtest(
+                    bot_id="opt_worker_val",
+                    symbol=symbol,
+                    strategy_class=strategy_class,
+                    params=params,
+                    initial_balance=initial_balance,
+                    fee_rate=fee_rate,
+                    equity_interval=0,
+                    candle_data=val_candle_rows,
+                ))
+                is_ret = bt.return_pct
+                val_ret = val_bt.return_pct
+                if abs(is_ret) > 0.5:
+                    wfe_inner = val_ret / is_ret
+                else:
+                    wfe_inner = 1.0  # IS near-zero → skip penalty
+            except Exception:
+                wfe_inner = 1.0  # don't crash on val failure
+
         return {
             "ok": True,
             "sharpe": bt.sharpe_ratio,
@@ -103,6 +139,7 @@ def _worker_evaluate_params(params: dict) -> dict:
             "win_rate": bt.win_rate,
             "profit_factor": bt.profit_factor,
             "trade_count": bt.trade_count,
+            "wfe_inner": wfe_inner,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -144,10 +181,11 @@ class OptimizationResult:
         # All trials (for analysis)
         self.trials: list[dict] = []
 
-        # GA stats
-        self.generations_run: int = 0
-        self.population_size: int = 0
-        self.stagnation_restarts: int = 0
+        # Search stats (RS + Local)
+        self.phases_run: str = "random_search+local_refinement"
+        self.rs_evaluations: int = 0
+        self.local_evaluations: int = 0
+        self.top_k_size: int = 0
         self.concurrency: int = 1
 
     def _safe_trial(self, t: dict) -> dict:
@@ -188,10 +226,11 @@ class OptimizationResult:
                 "sharpe_delta": _delta(best_sharpe, current_sharpe),
                 "return_delta": _delta(best_return, current_return),
             },
-            "ga_stats": {
-                "generations": self.generations_run,
-                "population_size": self.population_size,
-                "stagnation_restarts": self.stagnation_restarts,
+            "search_stats": {
+                "phases": self.phases_run,
+                "rs_evaluations": self.rs_evaluations,
+                "local_evaluations": self.local_evaluations,
+                "top_k_size": self.top_k_size,
                 "concurrency": self.concurrency,
             },
             "top_trials": [
@@ -231,6 +270,7 @@ def _compute_fitness(
     max_dd: float,
     trade_count: int,
     profit_factor: float = 1.0,
+    wfe_inner: float = 1.0,
 ) -> float:
     """
     Composite fitness balancing profitability, risk, and statistical significance.
@@ -242,15 +282,15 @@ def _compute_fitness(
       - Max drawdown:   20% — risk penalty
       - log(trades):    10% — reward statistically significant sample sizes
 
-    Hard filter: < 120 trades → disqualified (target: 3 years of data).
-    This prevents the GA from finding high-return params that only trade 10 times
-    (classic overfitting pattern).
+    WFE-inner penalty (when val_candles provided to workers):
+      - wfe_inner = val_return / is_return  (inner fold mini-OOS ratio)
+      - if wfe_inner < 0.5 → penalise by up to −0.6 fitness points
+      - encourages params that generalize, not just overfit IS data
 
-    log(trades) bonus grows slowly: 120→4.8, 300→5.7, 500→6.2 — so it rewards
-    having enough trades without pushing towards infinite churning.
+    Hard filter: < 30 trades → disqualified (allows shorter OOS windows).
     """
-    # Hard filter: statistically meaningless with fewer than 120 trades on 3yr data
-    if trade_count < 120:
+    # Hard filter: statistically meaningless with too few trades
+    if trade_count < 30:
         return -1000.0 + trade_count
 
     s  = max(-5.0, min(5.0, sharpe))
@@ -265,6 +305,13 @@ def _compute_fitness(
         - dd * 0.20
         + math.log(max(1, trade_count)) * 0.10
     )
+
+    # WFE-inner penalty: penalise IS→OOS divergence
+    # wfe_inner < 0.5 → subtract up to 0.6 points; > 0.5 → no penalty
+    if wfe_inner < 0.5:
+        wfe_penalty = (0.5 - wfe_inner) * 1.2   # max penalty = 0.6 at wfe_inner=0
+        fitness -= wfe_penalty
+
     return fitness
 
 
@@ -327,63 +374,54 @@ def _latin_hypercube_sample(schema: dict, n: int) -> list[dict]:
     return samples
 
 
-def _mutate(params: dict, schema: dict, mutation_rate: float, mutation_strength: float) -> dict:
+def _local_neighbors(params: dict, schema: dict) -> list[dict]:
     """
-    Mutate a parameter set with adaptive rate and strength.
+    Generate local neighborhood around a parameter set for Local Refinement phase.
 
-    mutation_rate:     probability of mutating each gene [0, 1]
-    mutation_strength: fraction of param range for perturbation [0, 1]
+    For each optimizable dimension, produces candidates at ±5% and ±15% of the
+    parameter range (4 neighbors per dimension).  Non-optimizable params are
+    kept at their default values.
+
+    Returns a list of candidate parameter dicts (may include duplicates if
+    range is tiny — callers should tolerate that).
     """
-    result = dict(params)
-    for key, spec in schema.items():
-        if spec.get("optimize", True) is False:
-            result[key] = spec["default"]
-            continue
-        if random.random() < mutation_rate:
-            lo, hi = spec["min"], spec["max"]
-            current = result.get(key, spec["default"])
-            span = (hi - lo) * mutation_strength
-            new_val = current + random.gauss(0, span * 0.5)  # Gaussian perturbation
-            new_val = max(lo, min(hi, new_val))
-            if spec["type"] == "int":
-                new_val = int(round(new_val))
-            else:
-                new_val = round(new_val, 4)
-            result[key] = new_val
-    return result
+    neighbors = []
+    optimizable_keys = [k for k, v in schema.items() if v.get("optimize", True)]
 
-
-def _blx_crossover(parent_a: dict, parent_b: dict, schema: dict, alpha: float = 0.3) -> dict:
-    """
-    BLX-α crossover: for each gene, sample uniformly from
-    [min(a,b) - α*range, max(a,b) + α*range], clamped to bounds.
-
-    This naturally explores beyond the parents while staying in the feasible space.
-    """
-    child = {}
-    for key, spec in schema.items():
-        if spec.get("optimize", True) is False:
-            child[key] = spec["default"]
-            continue
+    for key in optimizable_keys:
+        spec = schema[key]
         lo, hi = spec["min"], spec["max"]
-        va = parent_a.get(key, spec["default"])
-        vb = parent_b.get(key, spec["default"])
-        gene_min = min(va, vb)
-        gene_max = max(va, vb)
-        gene_range = gene_max - gene_min
-        sample_lo = max(lo, gene_min - alpha * gene_range)
-        sample_hi = min(hi, gene_max + alpha * gene_range)
-        val = random.uniform(sample_lo, sample_hi)
-        if spec["type"] == "int":
-            val = int(round(val))
-        else:
-            val = round(val, 4)
-        child[key] = val
-    return child
+        span = hi - lo
+        current = params.get(key, spec["default"])
+
+        for step_frac in (0.05, 0.15):
+            step = span * step_frac
+            for direction in (+1, -1):
+                new_val = current + direction * step
+                new_val = max(lo, min(hi, new_val))
+                if spec["type"] == "int":
+                    new_val = int(round(new_val))
+                else:
+                    new_val = round(new_val, 4)
+                if new_val == current:
+                    continue  # skip if clamped to same value
+                # Build full param dict with non-optimizable at defaults
+                candidate = {}
+                for k, s in schema.items():
+                    if s.get("optimize", True) is False:
+                        candidate[k] = s["default"]
+                    elif k == key:
+                        candidate[k] = new_val
+                    else:
+                        candidate[k] = params.get(k, s["default"])
+                neighbors.append(candidate)
+
+    return neighbors
 
 
 def _tournament_select(population: list[_Individual], tournament_size: int = 3) -> _Individual:
-    """Select one individual via tournament selection (higher fitness wins)."""
+    """Select one individual via tournament selection (higher fitness wins).
+    Kept for potential future use; not used in the RS+Local flow."""
     contestants = random.sample(population, min(tournament_size, len(population)))
     return max(contestants, key=lambda ind: ind.fitness)
 
@@ -397,46 +435,54 @@ async def optimize_params(
     symbol: str,
     strategy_class: type,
     current_params: dict | None = None,
-    max_iterations: int = 500,
+    max_iterations: int = 200,
     initial_balance: float | None = None,
     fee_rate: float | None = None,
     progress_callback=None,
     concurrency: int = 4,
     _candle_override: list | None = None,
+    _val_candle_override: list | None = None,
 ) -> OptimizationResult:
     """
-    Find optimal parameters using a genetic algorithm with:
-      - Population-based evolution
-      - BLX-α crossover + adaptive Gaussian mutation
-      - Tournament selection with elitism
-      - Stagnation detection → random restart injection
-      - Parallel batch evaluation (asyncio.gather, up to `concurrency` tasks)
+    Find optimal parameters using Random Search + Local Refinement.
 
-    Budget: max_iterations total backtest evaluations (including initial population).
+    Two-phase approach ideal for low-dimensional spaces (2–5 optimizable params):
+
+      Phase 1 — Random Search (80% of budget):
+        Latin Hypercube Sampling for uniform initial coverage, then pure random
+        samples evaluated in parallel batches. Tracks Top-K candidates.
+
+      Phase 2 — Local Refinement (20% of budget):
+        For each Top-K candidate, generates grid neighbors at ±5% and ±15% of
+        each parameter range (4 neighbors per dim). Evaluates in parallel.
+        Best neighbor updates the global best.
+
+    Budget: max_iterations total backtest evaluations.
 
     Recommended iterations:
-      - 200:   Quick scan  — ~2 min for 7d data
-      - 500:   Balanced    — ~5 min, good coverage
-      - 1000:  Thorough    — ~10 min, deep exploration
-      - 2000:  Exhaustive  — ~20 min, maximum quality
+      - 50:   Lightning scan — ~1 min, good for WFO inner folds
+      - 100:  Quick scan    — ~2 min for short data windows
+      - 200:  Balanced      — ~4 min, good coverage for 3-dim space
+      - 500:  Thorough      — ~10 min, near-exhaustive for 3-dim space
 
     Args:
-        bot_id: Bot identifier
-        symbol: Trading pair
-        strategy_class: Strategy class (already for_symbol'd)
-        current_params: Current parameter values (evaluated as baseline)
-        max_iterations: Total backtest evaluations budget
-        initial_balance: Starting USDT for each backtest
-        fee_rate: Fee rate override for every backtest evaluation
-                  (e.g. 0.0007 = 0.07%). Defaults to settings.simulation_fee_rate.
-                  Set from UI when starting an optimization run.
-        progress_callback: Optional async callable(pct, msg)
-        concurrency: Max parallel backtests (match to CPU cores)
-        _candle_override: Internal — pre-loaded candle list to use instead of DB query.
-                          Used by walk_forward_optimize() to pass fold-specific windows.
+        bot_id:               Bot identifier
+        symbol:               Trading pair
+        strategy_class:       Strategy class (already for_symbol'd)
+        current_params:       Current parameter values (evaluated as baseline)
+        max_iterations:       Total backtest evaluations budget
+        initial_balance:      Starting USDT for each backtest
+        fee_rate:             Fee rate override (e.g. 0.0007 = 0.07%)
+        progress_callback:    Optional async callable(pct, msg)
+        concurrency:          Max parallel backtests (match to CPU cores)
+        _candle_override:     Internal — pre-loaded IS candle list (from walk-forward)
+        _val_candle_override: Internal — pre-loaded mini-OOS validation candles
+                              (from walk-forward inner split). When provided, workers
+                              compute wfe_inner = val_return / is_return and penalise
+                              overfitting candidates in the fitness function.
 
     Returns:
-        OptimizationResult with best params and comparison
+        OptimizationResult with best params and search statistics
     """
     start_time = time.monotonic()
 
@@ -455,38 +501,30 @@ async def optimize_params(
             raise ValueError(f"No historical data for {symbol}. Download it first.")
 
     # Resolve the original (non-for_symbol) base class for pickling in workers.
-    # for_symbol() creates a dynamic subclass; its __bases__[0] is the real class.
     _base_cls = strategy_class.__bases__[0] if strategy_class.__bases__ else strategy_class
     _strategy_module = _base_cls.__module__
     _strategy_cls_name = _base_cls.__name__
     _initial_balance = initial_balance or settings.initial_usdt_balance
 
     logger.info(
-        f"Optimizer: pre-loaded {len(_cached_candles)} candles for {symbol} "
-        f"(fill=candle close, fee={fee_rate if fee_rate is not None else 'default'}, "
-        f"workers={concurrency})"
+        f"Optimizer [{bot_id}]: {len(_cached_candles)} IS candles, "
+        f"{len(_val_candle_override) if _val_candle_override else 0} val candles, "
+        f"fee={fee_rate if fee_rate is not None else 'default'}, "
+        f"workers={concurrency}, budget={max_iterations}"
     )
 
     # Count optimizable dimensions
     n_dims = sum(1 for v in schema.values() if v.get("optimize", True))
 
-    # --- Population sizing ---
-    # Heuristic: pop_size = 5-8× number of dimensions, minimum 12, max 40
-    pop_size = max(12, min(40, n_dims * 6))
-    # But don't exceed 1/3 of budget (need at least 3 generations)
-    pop_size = min(pop_size, max(8, max_iterations // 3))
-
-    elite_count = max(2, pop_size // 5)          # top 20% survive unchanged
-    tournament_size = max(2, pop_size // 6)      # tournament pressure
-    stagnation_limit = 5                         # generations before restart
-    max_generations = max_iterations // pop_size  # rough budget
+    # Top-K for local refinement: 3 candidates per optimizable dimension, min 3 max 10
+    top_k = max(3, min(10, n_dims * 3))
 
     result = OptimizationResult()
     result.bot_id = bot_id
     result.symbol = symbol
     result.strategy_name = strategy_class.__name__
     result.max_iterations = max_iterations
-    result.population_size = pop_size
+    result.top_k_size = top_k
     result.concurrency = concurrency
 
     evaluations_done = 0
@@ -505,8 +543,21 @@ async def optimize_params(
             _cached_candles,
             fee_rate,
             _initial_balance,
+            _val_candle_override,   # NEW: mini-OOS for WFE-inner penalty
         ),
     )
+
+    def _update_best(ind: _Individual) -> None:
+        """Update result best-so-far from a successfully evaluated individual."""
+        if ind.evaluated and ind.fitness > result.best_fitness:
+            result.best_fitness = ind.fitness
+            result.best_sharpe = ind.sharpe
+            result.best_return_pct = ind.return_pct
+            result.best_max_drawdown = ind.max_dd
+            result.best_win_rate = ind.win_rate
+            result.best_profit_factor = ind.profit_factor
+            result.best_trade_count = ind.trade_count
+            result.best_params = dict(ind.params)
 
     async def _evaluate(ind: _Individual, idx: int) -> _Individual:
         nonlocal evaluations_done
@@ -522,25 +573,41 @@ async def optimize_params(
                 ind.fitness = _compute_fitness(
                     res["sharpe"], res["return_pct"], res["max_dd"],
                     res["trade_count"], res.get("profit_factor", 1.0),
+                    res.get("wfe_inner", 1.0),
                 )
             else:
-                logger.warning(f"Eval failed for individual: {res.get('error')}")
+                logger.warning(f"Eval failed: {res.get('error')}")
                 ind.fitness = -2000.0
             ind.evaluated = True
         except Exception as e:
-            logger.warning(f"Eval exception for individual: {e}")
+            logger.warning(f"Eval exception: {e}")
             ind.fitness = -2000.0
             ind.evaluated = True
         evaluations_done += 1
         return ind
 
     async def _evaluate_batch(individuals: list[_Individual]) -> None:
-        """Evaluate a batch of individuals in parallel across worker processes."""
+        """Evaluate a batch of individuals in parallel."""
         tasks = [_evaluate(ind, i) for i, ind in enumerate(individuals)]
         await asyncio.gather(*tasks)
 
+    def _record_trials(individuals: list[_Individual], label_override: str | None = None) -> None:
+        for ind in individuals:
+            result.trials.append({
+                "iteration": evaluations_done,
+                "params": ind.params,
+                "sharpe": round(ind.sharpe, 2),
+                "return_pct": round(ind.return_pct, 2),
+                "max_dd": round(ind.max_dd, 2),
+                "trades": ind.trade_count,
+                "fitness": round(ind.fitness, 3),
+                "win_rate": round(ind.win_rate, 1),
+                "profit_factor": round(ind.profit_factor, 2),
+                "label": label_override or ind.label,
+            })
+
     # ------------------------------------------------------------------
-    # 1. Baseline evaluation (current params)
+    # 0. Baseline evaluation (current params)
     # ------------------------------------------------------------------
     if current_params:
         result.current_params = dict(current_params)
@@ -549,260 +616,122 @@ async def optimize_params(
         if baseline.evaluated and baseline.fitness > -1000:
             result.current_sharpe = baseline.sharpe
             result.current_return_pct = baseline.return_pct
-            result.best_sharpe = baseline.sharpe
-            result.best_return_pct = baseline.return_pct
-            result.best_max_drawdown = baseline.max_dd
-            result.best_win_rate = baseline.win_rate
-            result.best_profit_factor = baseline.profit_factor
-            result.best_trade_count = baseline.trade_count
-            result.best_params = dict(current_params)
-            result.best_fitness = baseline.fitness
-
-            result.trials.append({
-                "iteration": 0,
-                "params": dict(current_params),
-                "sharpe": round(baseline.sharpe, 2),
-                "return_pct": round(baseline.return_pct, 2),
-                "max_dd": round(baseline.max_dd, 2),
-                "trades": baseline.trade_count,
-                "fitness": round(baseline.fitness, 3),
-                "label": "baseline",
-            })
+            _update_best(baseline)
+        _record_trials([baseline])
 
     if progress_callback:
-        await progress_callback(3, f"Baseline done. Building population of {pop_size}...")
+        await progress_callback(2, f"Baseline done. Starting Random Search ({max_iterations} evals)...")
 
     # ------------------------------------------------------------------
-    # 2. Initialize population via Latin Hypercube + current params
+    # Phase 1 — Random Search (80% of budget)
     # ------------------------------------------------------------------
-    lhs_samples = _latin_hypercube_sample(schema, pop_size - (1 if current_params else 0))
-    population: list[_Individual] = [
-        _Individual(params=p, label="lhs_init") for p in lhs_samples
-    ]
-    # Include current params as an elite seed
+    rs_budget = int(max_iterations * 0.80)
+    # Subtract baseline eval if we did one
+    rs_budget -= (1 if current_params else 0)
+    rs_budget = max(1, rs_budget)
+
+    # LHS for initial coverage, then pure random for remaining
+    lhs_count = min(rs_budget, max(top_k, n_dims * 4))
+    lhs_samples = _latin_hypercube_sample(schema, lhs_count)
+    rs_extra_count = max(0, rs_budget - lhs_count)
+    rs_extra_samples = [_sample_params(schema) for _ in range(rs_extra_count)]
+
+    all_rs_params = lhs_samples + rs_extra_samples
+
+    # Include current_params as a seed in the RS population
     if current_params:
-        population.insert(0, _Individual(params=dict(current_params), label="baseline_seed"))
+        all_rs_params.insert(0, dict(current_params))
 
-    # Evaluate initial population
-    await _evaluate_batch(population)
+    # Evaluate in parallel batches of `concurrency`
+    rs_individuals: list[_Individual] = []
+    batch_size = max(concurrency, 8)
 
-    # Record trials
-    for ind in population:
-        result.trials.append({
-            "iteration": evaluations_done,
-            "params": ind.params,
-            "sharpe": round(ind.sharpe, 2),
-            "return_pct": round(ind.return_pct, 2),
-            "max_dd": round(ind.max_dd, 2),
-            "trades": ind.trade_count,
-            "fitness": round(ind.fitness, 3),
-            "label": ind.label,
-        })
-
-    # Update global best from initial pop
-    for ind in population:
-        if ind.fitness > result.best_fitness:
-            result.best_fitness = ind.fitness
-            result.best_sharpe = ind.sharpe
-            result.best_return_pct = ind.return_pct
-            result.best_max_drawdown = ind.max_dd
-            result.best_win_rate = ind.win_rate
-            result.best_profit_factor = ind.profit_factor
-            result.best_trade_count = ind.trade_count
-            result.best_params = dict(ind.params)
-
-    if progress_callback:
-        pct = evaluations_done / max_iterations * 95
-        await progress_callback(min(pct, 15), f"Initial population evaluated. Best fitness: {result.best_fitness:.3f}")
-
-    # ------------------------------------------------------------------
-    # 3. Evolutionary loop
-    # ------------------------------------------------------------------
-    generations_without_improvement = 0
-    prev_best_fitness = result.best_fitness
-    generation = 0
-
-    while evaluations_done < max_iterations:
-        generation += 1
-        result.generations_run = generation
-
-        # How many offspring can we afford this generation?
-        budget_left = max_iterations - evaluations_done
-        if budget_left <= 0:
+    for batch_start in range(0, len(all_rs_params), batch_size):
+        if evaluations_done >= int(max_iterations * 0.80) + (1 if current_params else 0):
             break
-        offspring_count = min(pop_size, budget_left)
+        batch_params = all_rs_params[batch_start: batch_start + batch_size]
+        batch_inds = [_Individual(params=p, label="rs_lhs" if batch_start == 0 else "rs_random") for p in batch_params]
+        await _evaluate_batch(batch_inds)
+        rs_individuals.extend(batch_inds)
+        for ind in batch_inds:
+            _update_best(ind)
+        _record_trials(batch_inds)
 
-        # --- Adaptive mutation parameters ---
-        # progress: 0.0 → 1.0 over the optimization
-        progress_ratio = evaluations_done / max_iterations
-
-        # Base mutation: starts wide (0.6), narrows to 0.15
-        base_mutation_rate = 0.6 - 0.45 * progress_ratio
-        base_mutation_strength = 0.4 - 0.25 * progress_ratio  # 40% → 15% of range
-
-        # If stagnating, widen mutation
-        if generations_without_improvement >= 3:
-            stag_boost = min(2.0, 1.0 + 0.3 * generations_without_improvement)
-            mutation_rate = min(0.9, base_mutation_rate * stag_boost)
-            mutation_strength = min(0.6, base_mutation_strength * stag_boost)
-        else:
-            mutation_rate = base_mutation_rate
-            mutation_strength = base_mutation_strength
-
-        # --- Stagnation restart: inject fresh individuals ---
-        if generations_without_improvement >= stagnation_limit:
-            inject_count = pop_size // 2
-            logger.info(
-                f"Optimizer [{generation}] stagnation restart: "
-                f"injecting {inject_count} fresh individuals"
-            )
-            fresh = [_Individual(params=_sample_params(schema), label="restart") for _ in range(inject_count)]
-            # Replace worst individuals with fresh blood
-            population.sort(key=lambda ind: ind.fitness, reverse=True)
-            population = population[:pop_size - inject_count] + fresh
-            # Evaluate the fresh ones
-            unevaluated = [ind for ind in population if not ind.evaluated]
-            if unevaluated:
-                to_eval = unevaluated[:min(len(unevaluated), budget_left)]
-                await _evaluate_batch(to_eval)
-                evaluations_done_check = evaluations_done
-                for ind in to_eval:
-                    result.trials.append({
-                        "iteration": evaluations_done_check,
-                        "params": ind.params,
-                        "sharpe": round(ind.sharpe, 2),
-                        "return_pct": round(ind.return_pct, 2),
-                        "max_dd": round(ind.max_dd, 2),
-                        "trades": ind.trade_count,
-                        "fitness": round(ind.fitness, 3),
-                        "label": ind.label,
-                    })
-                budget_left = max_iterations - evaluations_done
-                offspring_count = min(pop_size, budget_left)
-                if offspring_count <= 0:
-                    break
-
-            generations_without_improvement = 0
-            result.stagnation_restarts += 1
-
-        # --- Selection + Crossover + Mutation → offspring ---
-        offspring: list[_Individual] = []
-
-        # Elitism: carry top individuals unchanged
-        population.sort(key=lambda ind: ind.fitness, reverse=True)
-        elites = population[:elite_count]
-        for e in elites:
-            # Clone elite (already evaluated, no need to re-evaluate)
-            offspring.append(_Individual(
-                params=dict(e.params), fitness=e.fitness, sharpe=e.sharpe,
-                return_pct=e.return_pct, max_dd=e.max_dd, win_rate=e.win_rate,
-                profit_factor=e.profit_factor, trade_count=e.trade_count,
-                evaluated=True, label="elite"
-            ))
-
-        # Generate remaining offspring
-        new_needed = offspring_count - len(offspring)
-        children_to_eval: list[_Individual] = []
-
-        for _ in range(max(0, new_needed)):
-            if random.random() < 0.85:
-                # Crossover + mutation
-                parent_a = _tournament_select(population, tournament_size)
-                parent_b = _tournament_select(population, tournament_size)
-                # Avoid identical parents
-                attempts = 0
-                while parent_b is parent_a and attempts < 3:
-                    parent_b = _tournament_select(population, tournament_size)
-                    attempts += 1
-                child_params = _blx_crossover(parent_a.params, parent_b.params, schema, alpha=0.3)
-                child_params = _mutate(child_params, schema, mutation_rate, mutation_strength)
-                child = _Individual(params=child_params, label="crossover")
-            else:
-                # Pure random exploration (15% of offspring)
-                child = _Individual(params=_sample_params(schema), label="random")
-
-            children_to_eval.append(child)
-            offspring.append(child)
-
-        # --- Evaluate new offspring in parallel ---
-        if children_to_eval:
-            remaining_budget = max_iterations - evaluations_done
-            batch = children_to_eval[:remaining_budget]
-            await _evaluate_batch(batch)
-
-            for ind in batch:
-                result.trials.append({
-                    "iteration": evaluations_done,
-                    "params": ind.params,
-                    "sharpe": round(ind.sharpe, 2),
-                    "return_pct": round(ind.return_pct, 2),
-                    "max_dd": round(ind.max_dd, 2),
-                    "trades": ind.trade_count,
-                    "fitness": round(ind.fitness, 3),
-                    "win_rate": round(ind.win_rate, 1),
-                    "profit_factor": round(ind.profit_factor, 2),
-                    "label": ind.label,
-                })
-
-        # --- Update population (only keep evaluated individuals) ---
-        evaluated_offspring = [ind for ind in offspring if ind.evaluated]
-        if evaluated_offspring:
-            population = sorted(evaluated_offspring, key=lambda ind: ind.fitness, reverse=True)[:pop_size]
-        # else keep previous population
-
-        # --- Update global best ---
-        gen_best = population[0] if population else None
-        if gen_best and gen_best.fitness > result.best_fitness:
-            result.best_fitness = gen_best.fitness
-            result.best_sharpe = gen_best.sharpe
-            result.best_return_pct = gen_best.return_pct
-            result.best_max_drawdown = gen_best.max_dd
-            result.best_win_rate = gen_best.win_rate
-            result.best_profit_factor = gen_best.profit_factor
-            result.best_trade_count = gen_best.trade_count
-            result.best_params = dict(gen_best.params)
-            logger.info(
-                f"Optimizer gen {generation} new best: "
-                f"fitness={gen_best.fitness:.3f} Sharpe={gen_best.sharpe:.2f} "
-                f"Return={gen_best.return_pct:+.2f}% DD={gen_best.max_dd:.1f}%"
-            )
-
-        # Track stagnation
-        if result.best_fitness > prev_best_fitness + 0.01:
-            generations_without_improvement = 0
-            prev_best_fitness = result.best_fitness
-        else:
-            generations_without_improvement += 1
-
-        result.iterations_run = evaluations_done
-
-        # --- Progress callback ---
         if progress_callback:
-            pct = min(95, evaluations_done / max_iterations * 95)
-            pop_diversity = _population_diversity(population, schema)
+            pct = min(78, evaluations_done / max_iterations * 95)
             await progress_callback(
                 pct,
-                f"Gen {generation} | {evaluations_done}/{max_iterations} evals | "
-                f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f}) | "
-                f"Diversity: {pop_diversity:.1f}%"
+                f"RS: {evaluations_done}/{max_iterations} evals | "
+                f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
             )
 
+    result.rs_evaluations = evaluations_done
+
     # ------------------------------------------------------------------
-    # 4. Cleanup + final results
+    # Phase 2 — Local Refinement (remaining budget)
     # ------------------------------------------------------------------
-    _pool.shutdown(wait=False)   # don't block — workers are done
+    if progress_callback:
+        await progress_callback(80, f"Random Search done. Starting Local Refinement on Top-{top_k}...")
+
+    # Pick Top-K by fitness from all evaluated RS individuals
+    valid_rs = [ind for ind in rs_individuals if ind.evaluated and ind.fitness > -1000]
+    valid_rs.sort(key=lambda x: x.fitness, reverse=True)
+    top_candidates = valid_rs[:top_k]
+
+    logger.info(
+        f"Optimizer [{bot_id}] RS done: {result.rs_evaluations} evals, "
+        f"best fitness={result.best_fitness:.3f}. "
+        f"Refining Top-{len(top_candidates)} candidates."
+    )
+
+    local_evals_start = evaluations_done
+
+    for rank, candidate in enumerate(top_candidates):
+        if evaluations_done >= max_iterations:
+            break
+        neighbors_params = _local_neighbors(candidate.params, schema)
+        # Filter to remaining budget
+        budget_left = max_iterations - evaluations_done
+        neighbors_params = neighbors_params[:budget_left]
+        if not neighbors_params:
+            break
+
+        neighbor_inds = [_Individual(params=p, label=f"local_r{rank+1}") for p in neighbors_params]
+        await _evaluate_batch(neighbor_inds)
+        for ind in neighbor_inds:
+            _update_best(ind)
+        _record_trials(neighbor_inds)
+
+        if progress_callback:
+            pct = min(95, 80 + (evaluations_done - local_evals_start) / max(1, max_iterations - local_evals_start) * 15)
+            await progress_callback(
+                pct,
+                f"Local [{rank+1}/{len(top_candidates)}]: {evaluations_done}/{max_iterations} evals | "
+                f"Best fitness: {result.best_fitness:.3f} (Sharpe {result.best_sharpe:.2f})"
+            )
+
+    result.local_evaluations = evaluations_done - result.rs_evaluations
+
+    # ------------------------------------------------------------------
+    # Cleanup + final results
+    # ------------------------------------------------------------------
+    _pool.shutdown(wait=False)
     result.iterations_run = evaluations_done
     result.duration_seconds = time.monotonic() - start_time
 
     if progress_callback:
-        await progress_callback(100, f"Done! Best Sharpe: {result.best_sharpe:.2f}, Fitness: {result.best_fitness:.3f}")
+        await progress_callback(
+            100,
+            f"Done! {evaluations_done} evals in {result.duration_seconds:.1f}s | "
+            f"Best Sharpe: {result.best_sharpe:.2f}, Fitness: {result.best_fitness:.3f}"
+        )
 
     logger.info(
-        f"Optimization {bot_id} complete: {evaluations_done} evaluations, "
-        f"{result.generations_run} generations in {result.duration_seconds:.1f}s | "
-        f"Best fitness: {result.best_fitness:.3f}, Sharpe: {result.best_sharpe:.2f} "
-        f"(was {result.current_sharpe:.2f}), Return: {result.best_return_pct:+.2f}% | "
-        f"Restarts: {result.stagnation_restarts}"
+        f"Optimizer [{bot_id}] complete: {evaluations_done} evals "
+        f"(RS={result.rs_evaluations}, Local={result.local_evaluations}) "
+        f"in {result.duration_seconds:.1f}s | "
+        f"Best fitness={result.best_fitness:.3f} Sharpe={result.best_sharpe:.2f} "
+        f"(was {result.current_sharpe:.2f}) Return={result.best_return_pct:+.2f}%"
     )
 
     return result
@@ -1190,6 +1119,19 @@ async def walk_forward_optimize(
         result.avg_oos_return_pct = sum(f.oos_return_pct for f in result.folds) / len(result.folds)
         result.avg_oos_sharpe = sum(f.oos_sharpe for f in result.folds) / len(result.folds)
         result.total_oos_trades = sum(f.oos_trade_count for f in result.folds)
+
+        # Prefer best-WFE fold params when avg_wfe is poor (< 0.35).
+        # The fold with highest WFE generalised best and is a safer live choice
+        # than the full-data optimized params which may be overfitting.
+        if not result.final_params or result.avg_wfe < 0.35:
+            best_wfe_fold = max(result.folds, key=lambda f: f.wfe)
+            if best_wfe_fold.wfe > 0.35:
+                logger.info(
+                    f"WFO [{bot_id}]: avg_wfe={result.avg_wfe:.2f} < 0.35, "
+                    f"using best-WFE fold {best_wfe_fold.fold} params "
+                    f"(fold WFE={best_wfe_fold.wfe:.2f})"
+                )
+                result.final_params = best_wfe_fold.best_params
 
     result.duration_seconds = time.monotonic() - start_time
 

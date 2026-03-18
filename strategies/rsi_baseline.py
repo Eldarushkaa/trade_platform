@@ -2,29 +2,30 @@
 RSI Baseline — минимальная эталонная стратегия для проверки edge RSI.
 
 Назначение:
-    Прежде чем оптимизировать что-либо, нужно убедиться что сама идея RSI
-    mean-reversion работает на данном инструменте. Эта стратегия является
-    НИЖНЕЙ ПЛАНКОЙ: если она не работает → более сложная тоже не будет.
+    Нижняя планка перед запуском сложных стратегий. Если эта не работает →
+    более сложная тоже не будет. Никаких фильтров тренда, никакой адаптации.
 
-Правила (классический RSI, crossover-вход):
-    Entry LONG:  RSI пересёк OVERSOLD снизу вверх (был ниже, стал выше)
-    Entry SHORT: RSI пересёк OVERBOUGHT сверху вниз (был выше, стал ниже)
+Правила (классический RSI, уровневый вход):
+    Entry LONG:  RSI < OVERSOLD   (каждую свечу пока RSI в зоне, cooldown ограничивает)
+    Entry SHORT: RSI > OVERBOUGHT
     Exit LONG:   RSI > 50
     Exit SHORT:  RSI < 50
 
-Crossover vs уровень:
-    Уровневый вход (rsi < 30) срабатывает КАЖДУЮ свечу пока RSI в зоне.
-    Crossover вход срабатывает ОДИН РАЗ — в момент выхода из экстремума.
-    Это уменьшает количество сделок и снижает съедание комиссией.
+Никаких дополнительных фильтров:
+    - Нет EMA тренда
+    - Нет ATR фильтра волатильности
+    - Нет динамических порогов
 
-Фиксированные параметры (не оптимизируются):
-    RSI_PERIOD      = 14    (стандарт Уайлдера)
-    OVERSOLD        = 30.0  (порог входа LONG)
-    OVERBOUGHT      = 70.0  (порог входа SHORT)
-    COOLDOWN_CANDLES = 5    (минимум свечей между сделками)
+Оптимизируемые параметры:
+    OVERSOLD         20–35   (чем ниже → реже и точнее LONG-сигналы)
+    OVERBOUGHT       65–80   (чем выше → реже и точнее SHORT-сигналы)
+    COOLDOWN_CANDLES 1–20    (свечей между сделками; 10 = 50 мин на 5м)
+
+Фиксированные параметры:
+    RSI_PERIOD = 14  (стандарт Уайлдера)
 
 Warmup:
-    Торговля начинается после свечи #RSI_PERIOD+1 (RSI инициализирован).
+    Торговля начинается после инициализации RSI (~RSI_PERIOD+1 свечей).
 
 Использование:
     from strategies.rsi_baseline import RSIBaseline
@@ -40,20 +41,34 @@ if TYPE_CHECKING:
 
 
 class RSIBaseline(BaseStrategy):
-    """RSI(14): crossover-вход при пересечении 30/70, EXIT at 50. Без фильтров тренда."""
+    """RSI(14): уровневый вход BUY<OVERSOLD / SELL>OVERBOUGHT, EXIT at 50."""
 
     name_prefix = "rsi_baseline"
     name = "rsi_baseline"
     symbol = "BTCUSDT"
 
-    # --- Фиксированные параметры (не оптимизируются) ---
-    RSI_PERIOD       = 14
-    OVERSOLD         = 30.0
-    OVERBOUGHT       = 70.0
-    COOLDOWN_CANDLES = 5     # минимум свечей между сделками (снижает частоту)
+    # --- Фиксированный параметр (не оптимизируется) ---
+    RSI_PERIOD = 14
 
-    # --- Нет оптимизируемых параметров ---
-    PARAM_SCHEMA: dict = {}
+    # --- Оптимизируемые параметры ---
+    OVERSOLD         = 25.0   # порог входа LONG
+    OVERBOUGHT       = 75.0   # порог входа SHORT
+    COOLDOWN_CANDLES = 10     # минимум свечей между сделками
+
+    PARAM_SCHEMA = {
+        "OVERSOLD": {
+            "type": "float", "default": 25.0, "min": 15.0, "max": 35.0,
+            "description": "RSI threshold for LONG entry (buy when RSI drops below this)",
+        },
+        "OVERBOUGHT": {
+            "type": "float", "default": 75.0, "min": 65.0, "max": 85.0,
+            "description": "RSI threshold for SHORT entry (sell when RSI rises above this)",
+        },
+        "COOLDOWN_CANDLES": {
+            "type": "int", "default": 10, "min": 1, "max": 20,
+            "description": "Minimum candles between entries (1 candle = 5 min)",
+        },
+    }
 
     # ------------------------------------------------------------------
     # Init
@@ -67,9 +82,6 @@ class RSIBaseline(BaseStrategy):
         self._avg_loss: Optional[float] = None
         self._prev_close: Optional[float] = None
         self._warmup_closes: list[float] = []
-
-        # RSI предыдущей свечи для crossover-детектора
-        self._rsi_prev: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Main candle handler
@@ -94,45 +106,44 @@ class RSIBaseline(BaseStrategy):
         # Текущая позиция
         position = await self.engine.get_balance(self.name, "POSITION")
 
-        self.logger.debug(f"close={close:.2f}  RSI={rsi:.1f}  pos={position:.6f}")
+        self.logger.debug(
+            f"close={close:.2f}  RSI={rsi:.1f}  "
+            f"OS={self.OVERSOLD}  OB={self.OVERBOUGHT}  pos={position:.6f}"
+        )
 
         # ------------------------------------------------------------------
         # EXIT LOGIC
         # ------------------------------------------------------------------
 
         if position > 0:
-            # LONG exit: RSI восстановился выше 50
             if rsi > 50.0:
                 await self._close_position(close, "SELL", f"RSI exit LONG ({rsi:.1f}>50)")
                 position = 0
 
         elif position < 0:
-            # SHORT exit: RSI восстановился ниже 50
             if rsi < 50.0:
                 await self._close_position(close, "BUY", f"RSI exit SHORT ({rsi:.1f}<50)")
                 position = 0
 
         # ------------------------------------------------------------------
-        # ENTRY LOGIC: crossover + cooldown (только если нет позиции)
+        # ENTRY LOGIC: уровневый вход + cooldown
         # ------------------------------------------------------------------
 
         cooldown_ok = (self._candle_count - self._last_trade_candle >= self.COOLDOWN_CANDLES)
+        if not cooldown_ok or position != 0:
+            return
 
-        if position == 0 and cooldown_ok and self._rsi_prev is not None:
-            if self._rsi_prev < self.OVERSOLD and rsi >= self.OVERSOLD:
-                # RSI пересёк OVERSOLD снизу вверх → конец перепроданности → LONG
-                result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}")
-                if result is not None:
-                    self.logger.info(f"LONG: RSI {self._rsi_prev:.1f} → {rsi:.1f} (пересёк {self.OVERSOLD})")
+        if rsi < self.OVERSOLD:
+            # RSI в зоне перепроданности → LONG
+            result = await self._open_position(close, "BUY", RSI=f"{rsi:.1f}")
+            if result is not None:
+                self.logger.info(f"LONG: RSI={rsi:.1f} < {self.OVERSOLD}")
 
-            elif self._rsi_prev > self.OVERBOUGHT and rsi <= self.OVERBOUGHT:
-                # RSI пересёк OVERBOUGHT сверху вниз → конец перекупленности → SHORT
-                result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}", RSIprev=f"{self._rsi_prev:.1f}")
-                if result is not None:
-                    self.logger.info(f"SHORT: RSI {self._rsi_prev:.1f} → {rsi:.1f} (пересёк {self.OVERBOUGHT})")
-
-        # Сохраняем RSI для следующей свечи
-        self._rsi_prev = rsi
+        elif rsi > self.OVERBOUGHT:
+            # RSI в зоне перекупленности → SHORT
+            result = await self._open_position(close, "SELL", RSI=f"{rsi:.1f}")
+            if result is not None:
+                self.logger.info(f"SHORT: RSI={rsi:.1f} > {self.OVERBOUGHT}")
 
     # ------------------------------------------------------------------
     # Wilder RSI
