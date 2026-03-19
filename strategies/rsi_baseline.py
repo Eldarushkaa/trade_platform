@@ -28,17 +28,17 @@ RSI Baseline — минимальная эталонная стратегия д
         Не торгуем пока ATR/EMA_ATR не прогреты.
 
 Оптимизируемые параметры:
-    OVERSOLD         20–35   (чем ниже → реже и точнее LONG-сигналы)
-    OVERBOUGHT       65–80   (чем выше → реже и точнее SHORT-сигналы)
-    COOLDOWN_CANDLES 1–20    (свечей между сделками; 10 = 50 мин на 5м)
+    OVERSOLD         15–35   (чем ниже → реже и точнее LONG-сигналы)
+    OVERBOUGHT       65–85   (чем выше → реже и точнее SHORT-сигналы)
+    COOLDOWN_CANDLES 1–20    (свечей между сделками; 10 = 50 мин на 15м)
+    EMA200_ATR_K     1.0–5.0 (порог расстояния от EMA200; ниже = строже)
+    VOL_RATIO_MIN    0.5–2.0 (мин. ATR/EMA_ATR; выше = только при высокой волатильности)
 
 Фиксированные параметры (не оптимизируются):
-    RSI_PERIOD          = 14     (стандарт Уайлдера)
-    EMA200_PERIOD       = 200    (тренд-фильтр)
-    ATR_PERIOD          = 14     (волатильность)
-    EMA_ATR_PERIOD      = 20     (базовая волатильность для vol_ratio)
-    EMA200_ATR_K        = 2.0    (порог расстояния от EMA200 в единицах ATR)
-    VOL_RATIO_MIN       = 1.0    (минимальный vol_ratio для входа)
+    RSI_PERIOD     = 14    (стандарт Уайлдера)
+    EMA200_PERIOD  = 200   (тренд-фильтр)
+    ATR_PERIOD     = 14    (волатильность)
+    EMA_ATR_PERIOD = 20    (базовая волатильность для vol_ratio)
 
 Warmup:
     RSI:     ~RSI_PERIOD+1 свечей
@@ -70,17 +70,17 @@ class RSIBaseline(BaseStrategy):
     symbol = "BTCUSDT"
 
     # --- Фиксированные параметры (не оптимизируются) ---
-    RSI_PERIOD          = 14
-    EMA200_PERIOD       = 200
-    ATR_PERIOD          = 14
-    EMA_ATR_PERIOD      = 20
-    EMA200_ATR_K        = 2.0    # порог: distance < k * ATR (k = 1.5–2.5)
-    VOL_RATIO_MIN       = 1.0    # минимальный ATR/EMA_ATR для входа
+    RSI_PERIOD     = 14
+    EMA200_PERIOD  = 200
+    ATR_PERIOD     = 14
+    EMA_ATR_PERIOD = 20
 
     # --- Оптимизируемые параметры ---
     OVERSOLD         = 25.0   # порог входа LONG
     OVERBOUGHT       = 75.0   # порог входа SHORT
     COOLDOWN_CANDLES = 10     # минимум свечей между сделками
+    EMA200_ATR_K     = 2.0    # порог: distance < k * ATR (1.5 = строго, 4.0 = мягко)
+    VOL_RATIO_MIN    = 1.0    # мин. ATR/EMA_ATR для входа (0.5 = почти всегда, 2.0 = только всплески)
 
     PARAM_SCHEMA = {
         "OVERSOLD": {
@@ -93,7 +93,15 @@ class RSIBaseline(BaseStrategy):
         },
         "COOLDOWN_CANDLES": {
             "type": "int", "default": 10, "min": 1, "max": 20,
-            "description": "Minimum candles between entries (1 candle = 5 min)",
+            "description": "Minimum candles between entries (1 candle = 15 min)",
+        },
+        "EMA200_ATR_K": {
+            "type": "float", "default": 2.0, "min": 1.5, "max": 2.5,
+            "description": "EMA200 proximity filter: entry blocked when abs(close-EMA200) > k*ATR",
+        },
+        "VOL_RATIO_MIN": {
+            "type": "float", "default": 1.0, "min": 0.5, "max": 2.0,
+            "description": "Volatility filter: entry blocked when ATR/EMA_ATR < this threshold",
         },
     }
 
