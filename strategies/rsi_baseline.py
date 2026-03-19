@@ -169,9 +169,10 @@ class RSIBaseline(BaseStrategy):
         else:
             vol_ok = False   # ждём прогрева ATR / EMA_ATR
 
+        _ema200_str = f"{ema200:.2f}" if ema200 is not None else "n/a"
         self.logger.debug(
             f"close={close:.2f}  RSI={rsi:.1f}  "
-            f"EMA200={ema200:.2f if ema200 is not None else 'n/a'}  "
+            f"EMA200={_ema200_str}  "
             f"dist_ok={distance_ok}  vol_ok={vol_ok}  pos={position:.6f}"
         )
 
