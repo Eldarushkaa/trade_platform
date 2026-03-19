@@ -435,14 +435,47 @@ async def get_historical_candles(
     symbol: str,
     start_ms: int | None = None,
     end_ms: int | None = None,
+    before_ms: int | None = None,
+    limit: int | None = None,
 ) -> list[dict]:
     """
     Fetch historical candles for a symbol, sorted by open_time ASC.
     Optionally filter by time range (epoch milliseconds).
+
+    Args:
+        symbol:    Trading pair, e.g. "BTCUSDT"
+        start_ms:  Only candles with open_time >= start_ms
+        end_ms:    Only candles with open_time <= end_ms
+        before_ms: Only candles with open_time < before_ms (for warmup: get N candles before window)
+        limit:     Return at most N candles. When combined with before_ms, returns the LAST N
+                   candles before before_ms (DESC LIMIT N, then reversed to ASC order).
     """
     db = get_db()
+
+    # Special case: "last N candles before X" — needs DESC order + limit, then reverse
+    if before_ms is not None and limit is not None:
+        query = "SELECT * FROM historical_candles WHERE symbol = ? AND open_time < ?"
+        params: list = [symbol, before_ms]
+        query += " ORDER BY open_time DESC LIMIT ?"
+        params.append(limit)
+        async with db.execute(query, params) as cursor:
+            rows = []
+            async for row in cursor:
+                rows.append({
+                    "symbol": row["symbol"],
+                    "open_time": row["open_time"],
+                    "open": row["open"],
+                    "high": row["high"],
+                    "low": row["low"],
+                    "close": row["close"],
+                    "volume": row["volume"],
+                    "close_time": row["close_time"],
+                })
+        rows.reverse()   # restore chronological order
+        return rows
+
     query = "SELECT * FROM historical_candles WHERE symbol = ?"
-    params: list = [symbol]
+    params = [symbol]
 
     if start_ms is not None:
         query += " AND open_time >= ?"
@@ -450,8 +483,14 @@ async def get_historical_candles(
     if end_ms is not None:
         query += " AND open_time <= ?"
         params.append(end_ms)
+    if before_ms is not None:
+        query += " AND open_time < ?"
+        params.append(before_ms)
 
     query += " ORDER BY open_time ASC"
+
+    if limit is not None:
+        query += f" LIMIT {int(limit)}"
 
     async with db.execute(query, params) as cursor:
         rows = []

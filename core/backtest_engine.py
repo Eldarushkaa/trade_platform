@@ -213,6 +213,8 @@ async def run_backtest(
     candle_data: list | None = None,
     start_ms: int | None = None,
     end_ms: int | None = None,
+    warmup_candle_data: list | None = None,
+    warmup_candles: int = 300,
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
@@ -234,6 +236,15 @@ async def run_backtest(
                      Used by the optimizer to avoid redundant DB queries.
         start_ms: Optional start filter (epoch ms) — only candles >= start_ms
         end_ms:   Optional end filter (epoch ms) — only candles <= end_ms
+        warmup_candle_data: Pre-loaded warmup candle rows fed to the strategy
+                            BEFORE the main loop (no trades/equity recorded).
+                            Used for pre-heating EMA200, ATR, etc.
+                            When None and candle_data is None (UI mode), the engine
+                            auto-fetches warmup_candles rows from DB before start_ms.
+                            When None and candle_data is provided (optimizer), the
+                            engine uses the last warmup_candles rows of candle_data.
+        warmup_candles: Number of warmup candles to auto-fetch/slice (default 300).
+                        300 × 15min = 75h — covers EMA200(200) + ATR(14) + EMA_ATR(20).
 
     Returns:
         BacktestResult with metrics, equity curve, and trades.
@@ -250,6 +261,29 @@ async def run_backtest(
         candle_rows = await repo.get_historical_candles(symbol, start_ms=start_ms, end_ms=end_ms)
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
+
+    # --- Resolve warmup rows ---
+    # Priority:
+    #   1. warmup_candle_data explicitly provided (WFO OOS path: train_candles[-N:])
+    #   2. candle_data provided (optimizer IS path): slice last warmup_candles rows
+    #   3. UI path (no candle_data): fetch from DB before start of candle_rows
+    if warmup_candle_data is not None:
+        warmup_rows = warmup_candle_data
+    elif candle_data is not None:
+        # Optimizer: candle_rows already loaded in-process — take the tail as warmup
+        warmup_rows = candle_rows[-warmup_candles:] if len(candle_rows) > warmup_candles else candle_rows
+        # Trim warmup from candle_rows so candles don't overlap
+        # (warmup rows are replayed first without trading, then candle_rows in full)
+        # We do NOT trim here — warmup is a separate pre-pass; main loop is unchanged.
+    else:
+        # UI / no candle_data: fetch the last warmup_candles rows before the first candle
+        first_open_time = candle_rows[0]["open_time"] if candle_rows else None
+        if first_open_time is not None and warmup_candles > 0:
+            warmup_rows = await repo.get_historical_candles(
+                symbol, before_ms=first_open_time, limit=warmup_candles
+            )
+        else:
+            warmup_rows = []
 
     # --- Create isolated engine + portfolio ---
     # skip_db=True: this engine is ephemeral — all trades stay in memory only.
@@ -316,7 +350,31 @@ async def run_backtest(
 
     engine.place_order = intercepting_place_order
 
-    # --- Replay candles ---
+    # --- Warmup phase: feed candles to strategy without recording trades/equity ---
+    if warmup_rows:
+        for row in warmup_rows:
+            candle = Candle(
+                symbol=symbol,
+                interval_seconds=900,
+                open=row["open"],
+                high=row["high"],
+                low=row["low"],
+                close=row["close"],
+                volume=row["volume"],
+                open_time=row["open_time"] / 1000.0,
+                close_time=row["close_time"] / 1000.0,
+            )
+            engine.update_price(symbol, candle.close)
+            try:
+                await bot.on_candle(candle)
+            except Exception:
+                pass   # warmup errors are silent — main loop logs its own errors
+
+        # Reset cooldown counter so warmup entries don't affect trading phase
+        bot._last_trade_candle = -999
+        logger.debug(f"Backtest {bot_id}: warmup complete ({len(warmup_rows)} candles)")
+
+    # --- Main replay loop ---
     error_count = [0]
     for i, row in enumerate(candle_rows):
         # Set before on_candle() so the intercepting_place_order closure

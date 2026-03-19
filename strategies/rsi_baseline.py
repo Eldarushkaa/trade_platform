@@ -198,15 +198,6 @@ class RSIBaseline(BaseStrategy):
         if not cooldown_ok or position != 0:
             return
 
-        # Диагностика фильтров при RSI-сигнале
-        if rsi < self.OVERSOLD or rsi > self.OVERBOUGHT:
-            _dist_val  = f"{abs(close - self._ema200):.2f} vs {self.EMA200_ATR_K * self._atr:.2f}×ATR" if (self._ema200 and self._atr) else "warmup"
-            _vol_val   = f"{self._atr / self._ema_atr:.3f} vs {self.VOL_RATIO_MIN}" if (self._atr and self._ema_atr) else "warmup"
-            self.logger.info(
-                f"SIGNAL RSI={rsi:.1f}  dist_ok={distance_ok}({_dist_val})  "
-                f"vol_ok={vol_ok}({_vol_val})"
-            )
-
         if not distance_ok or not vol_ok:
             return
 

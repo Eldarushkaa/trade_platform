@@ -58,13 +58,16 @@ def _worker_init(
     fee_rate,
     initial_balance: float,
     val_candle_rows: list | None = None,
+    warmup_candle_rows: list | None = None,
 ) -> None:
     """
     Called ONCE when a worker process starts.
     Reconstructs the strategy class and caches shared data in module globals.
     Avoids pickling thousands of candle rows for each individual evaluation.
 
-    val_candle_rows: optional mini-OOS validation window used for WFE-inner penalty.
+    val_candle_rows:    optional mini-OOS validation window used for WFE-inner penalty.
+    warmup_candle_rows: optional pre-warmup candles fed to the strategy before the main
+                        IS loop (no trades recorded). Pre-heats EMA200, ATR, etc.
     """
     import importlib
     module = importlib.import_module(strategy_module)
@@ -74,7 +77,8 @@ def _worker_init(
     _worker_state["fee_rate"] = fee_rate
     _worker_state["initial_balance"] = initial_balance
     _worker_state["symbol"] = symbol
-    _worker_state["val_candle_rows"] = val_candle_rows  # may be None
+    _worker_state["val_candle_rows"] = val_candle_rows      # may be None
+    _worker_state["warmup_candle_rows"] = warmup_candle_rows  # may be None
 
 
 def _worker_evaluate_params(params: dict) -> dict:
@@ -94,6 +98,8 @@ def _worker_evaluate_params(params: dict) -> dict:
     symbol = _worker_state["symbol"]
     val_candle_rows = _worker_state.get("val_candle_rows")
 
+    warmup_candle_rows = _worker_state.get("warmup_candle_rows")
+
     loop = asyncio.new_event_loop()
     try:
         from core.backtest_engine import run_backtest
@@ -106,6 +112,7 @@ def _worker_evaluate_params(params: dict) -> dict:
             fee_rate=fee_rate,
             equity_interval=20,
             candle_data=candle_rows,
+            warmup_candle_data=warmup_candle_rows,
         ))
 
         # Optional mini-OOS validation for WFE-inner penalty
@@ -121,6 +128,8 @@ def _worker_evaluate_params(params: dict) -> dict:
                     fee_rate=fee_rate,
                     equity_interval=0,
                     candle_data=val_candle_rows,
+                    # val uses IS candles tail as warmup (already in IS candle_rows)
+                    warmup_candle_data=warmup_candle_rows,
                 ))
                 is_ret = bt.return_pct
                 val_ret = val_bt.return_pct
@@ -500,6 +509,11 @@ async def optimize_params(
         if not _cached_candles:
             raise ValueError(f"No historical data for {symbol}. Download it first.")
 
+    # --- Warmup candles for workers: last 300 rows of IS data ---
+    # Workers use these to pre-heat EMA200, ATR, etc. before trading starts.
+    _warmup_count = 300
+    _warmup_for_workers = _cached_candles[-_warmup_count:] if len(_cached_candles) > _warmup_count else _cached_candles
+
     # Resolve the original (non-for_symbol) base class for pickling in workers.
     _base_cls = strategy_class.__bases__[0] if strategy_class.__bases__ else strategy_class
     _strategy_module = _base_cls.__module__
@@ -543,7 +557,8 @@ async def optimize_params(
             _cached_candles,
             fee_rate,
             _initial_balance,
-            _val_candle_override,   # NEW: mini-OOS for WFE-inner penalty
+            _val_candle_override,    # mini-OOS for WFE-inner penalty
+            _warmup_for_workers,     # warmup candles: last 300 IS rows
         ),
     )
 
@@ -1027,6 +1042,9 @@ async def walk_forward_optimize(
         # --- Evaluate best_params on OOS test data ---
         try:
             _initial_balance = initial_balance or settings.initial_usdt_balance
+            # Use last 300 train candles as warmup so EMA200/ATR are pre-heated
+            # at the start of the OOS window — no warmup burn-in needed in test.
+            _oos_warmup = train_candles[-300:] if len(train_candles) >= 300 else train_candles
             oos_bt = await run_backtest(
                 bot_id=f"{bot_id}_wf{fold_num}_oos",
                 symbol=symbol,
@@ -1036,6 +1054,7 @@ async def walk_forward_optimize(
                 fee_rate=fee_rate,
                 equity_interval=5,
                 candle_data=test_candles,
+                warmup_candle_data=_oos_warmup,
             )
         except Exception as e:
             logger.error(f"WFO fold {fold_num} OOS backtest failed: {e}", exc_info=True)
