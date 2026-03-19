@@ -83,7 +83,7 @@ _install_log_handler()
 # This is used only for live-mode order execution — not for UI display.
 simulation_engine = SimulationEngine(ob_fetcher=fetch_depth)
 bot_manager = BotManager(engine=simulation_engine)
-candle_aggregator = CandleAggregator(interval_seconds=300)  # 5-minute candles
+candle_aggregator = CandleAggregator(interval_seconds=900)  # 15-minute candles
 
 # ------------------------------------------------------------------
 # FastAPI lifespan: startup / shutdown
@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         f"Starting Trade Platform in [{settings.trading_mode.upper()}] mode | "
         f"Fee: {settings.simulation_fee_rate * 100:.3f}% | "
-        f"Candle interval: 5m | "
+        f"Candle interval: 15m | "
         f"Bots: {len(REGISTERED_BOTS)} ({len(STRATEGY_CLASSES)} strategies × {len(SYMBOLS)} coins)"
     )
 
@@ -199,7 +199,7 @@ async def health():
         "mode": settings.trading_mode,
         "leverage": settings.leverage,
         "fee_rate_pct": settings.simulation_fee_rate * 100,
-        "candle_interval": "5m",
+        "candle_interval": "15m",
         "symbols": SYMBOLS,
         "strategies": [cls.__name__ for cls in STRATEGY_CLASSES],
         "bots": bot_manager.list_bots(),

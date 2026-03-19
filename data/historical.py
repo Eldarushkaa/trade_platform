@@ -1,12 +1,12 @@
 """
 Historical candle data downloader from Binance Futures API.
 
-Downloads 5-minute klines and stores them in the historical_candles table.
+Downloads 15-minute klines and stores them in the historical_candles table.
 No API key required — klines are public data.
 
 Binance limits:
     - Max 1500 candles per request
-    - 1 day = 288 candles (5m interval), 1 year ≈ 105,120 candles
+    - 1 day = 96 candles (15m interval), 1 year ≈ 35,040 candles
     - Rate limit: ~1200 req/min (we stay well under)
     - Max supported download window: 3 years (1,095 days)
 """
@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 # Binance Futures klines endpoint (public, no auth needed)
 KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 MAX_CANDLES_PER_REQUEST = 1500
-INTERVAL = "5m"
-CANDLES_PER_DAY = 288          # 24h × 60min / 5 = 288 candles per day
-CANDLE_STEP_MS  = 5 * 60_000   # 5 minutes in milliseconds
+INTERVAL = "15m"
+CANDLES_PER_DAY = 96           # 24h × 60min / 15 = 96 candles per day
+CANDLE_STEP_MS  = 15 * 60_000  # 15 minutes in milliseconds
 
 
 async def download_klines(
@@ -35,7 +35,7 @@ async def download_klines(
     progress_callback=None,
 ) -> dict:
     """
-    Download historical 5-minute klines from Binance and store in DB.
+    Download historical 15-minute klines from Binance and store in DB.
 
     Args:
         symbol:     Trading pair, e.g. "BTCUSDT"
@@ -67,7 +67,7 @@ async def download_klines(
     current_start = start_ms
 
     logger.info(
-        f"Downloading {days}d of {symbol} 5m klines "
+        f"Downloading {days}d of {symbol} 15m klines "
         f"({total_expected} candles expected, "
         f"from {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')})"
     )

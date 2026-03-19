@@ -292,7 +292,7 @@ class BotManager:
                 try:
                     candle = await asyncio.wait_for(
                         bot._candle_queue.get(),
-                        timeout=90.0,   # 1.5× candle interval — warn if no candle
+                        timeout=1350.0,  # 1.5× candle interval (15m) — warn if no candle
                     )
                     await bot.on_candle(candle)
                 except asyncio.TimeoutError:

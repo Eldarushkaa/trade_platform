@@ -114,7 +114,7 @@ def _get_bot_info(request: Request, bot_id: str) -> tuple:
 
 @router.post("/download")
 async def download_historical(request: Request, req: DownloadRequest):
-    """Download historical 5m klines from Binance and store in DB.
+    """Download historical 15m klines from Binance and store in DB.
 
     - ``days=180`` with no ``start_date`` → 6 months ending now (training window)
     - ``days=14`` with ``start_date="YYYY-MM-DD"`` → 14d starting from that date (test window)
@@ -212,7 +212,7 @@ async def run_backtest_endpoint(request: Request, req: BacktestRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
 
-    # Run backtest (blocking for the request — typically < 10 seconds for 6m of 5m candles)
+    # Run backtest (blocking for the request — typically < 10 seconds for 6m of 15m candles)
     # Fill model: candle close price. Cost model: fee_rate only (no slippage).
     try:
         result = await run_backtest(

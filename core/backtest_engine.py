@@ -325,7 +325,7 @@ async def run_backtest(
 
         candle = Candle(
             symbol=symbol,
-            interval_seconds=300,   # 5-minute candles
+            interval_seconds=900,   # 15-minute candles
             open=row["open"],
             high=row["high"],
             low=row["low"],
