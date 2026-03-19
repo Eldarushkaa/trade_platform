@@ -12,11 +12,13 @@ RSI Baseline — минимальная эталонная стратегия д
     Exit SHORT:  RSI < 50
 
 Фильтры входа (не блокируют выход):
-    EMA200 proximity:
-        distance = abs(close - ema200) / ema200
-        distance_ok = distance < EMA200_DISTANCE_MAX  (default 0.02 = 2%)
-        Смысл: не входить в сильных трендах, когда цена далеко от EMA200.
-        Не торгуем пока EMA200 не прогрет (200 свечей).
+    EMA200 proximity (ATR-based):
+        distance  = abs(close - ema200)
+        threshold = EMA200_ATR_K * atr          (k ~ 1.5–2.5, default 2.0)
+        distance_ok = distance < threshold
+        Смысл: не входить когда цена сильно оторвалась от EMA200 в единицах
+        текущей волатильности (ATR). Порог адаптируется к режиму рынка.
+        Не торгуем пока EMA200 или ATR не прогреты.
 
     ATR volatility:
         vol_ratio = atr / ema_atr
@@ -35,7 +37,7 @@ RSI Baseline — минимальная эталонная стратегия д
     EMA200_PERIOD       = 200    (тренд-фильтр)
     ATR_PERIOD          = 14     (волатильность)
     EMA_ATR_PERIOD      = 20     (базовая волатильность для vol_ratio)
-    EMA200_DISTANCE_MAX = 0.02   (максимальное относительное расстояние от EMA200)
+    EMA200_ATR_K        = 2.0    (порог расстояния от EMA200 в единицах ATR)
     VOL_RATIO_MIN       = 1.0    (минимальный vol_ratio для входа)
 
 Warmup:
@@ -72,7 +74,7 @@ class RSIBaseline(BaseStrategy):
     EMA200_PERIOD       = 200
     ATR_PERIOD          = 14
     EMA_ATR_PERIOD      = 20
-    EMA200_DISTANCE_MAX = 0.02   # 2% — максимальное расстояние от EMA200
+    EMA200_ATR_K        = 2.0    # порог: distance < k * ATR (k = 1.5–2.5)
     VOL_RATIO_MIN       = 1.0    # минимальный ATR/EMA_ATR для входа
 
     # --- Оптимизируемые параметры ---
@@ -154,11 +156,12 @@ class RSIBaseline(BaseStrategy):
         atr    = self._atr
         ema_atr = self._ema_atr
 
-        if ema200 is not None:
-            distance    = abs(close - ema200) / ema200
-            distance_ok = distance < self.EMA200_DISTANCE_MAX
+        if ema200 is not None and atr is not None:
+            distance    = abs(close - ema200)
+            threshold   = self.EMA200_ATR_K * atr
+            distance_ok = distance < threshold
         else:
-            distance_ok = False   # ждём прогрева EMA200
+            distance_ok = False   # ждём прогрева EMA200 или ATR
 
         if atr is not None and ema_atr is not None and ema_atr > 0:
             vol_ratio = atr / ema_atr
@@ -168,7 +171,7 @@ class RSIBaseline(BaseStrategy):
 
         self.logger.debug(
             f"close={close:.2f}  RSI={rsi:.1f}  "
-            f"EMA200={ema200:.2f if ema200 else 'n/a'}  "
+            f"EMA200={ema200:.2f if ema200 is not None else 'n/a'}  "
             f"dist_ok={distance_ok}  vol_ok={vol_ok}  pos={position:.6f}"
         )
 
