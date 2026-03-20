@@ -58,10 +58,6 @@
         <button class="bt-btn bt-btn-dl" onclick="downloadHistory(1825)" style="font-size:11px;padding:4px 8px;flex:1" id="dl-btn-5y"  title="">5y</button>
         <span id="msk-clock" style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap" title="Moscow time (UTC+3)"></span>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;margin-bottom:5px">
-        <button class="bt-btn bt-btn-dl" id="bt-dl-test-btn" onclick="downloadTestData()" style="font-size:11px;padding:5px 8px;white-space:nowrap" title="">📥 14d Test from:</button>
-        <input type="date" id="bt-test-start-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px;flex:1" title="Start date for test data download" />
-      </div>
       <div style="display:flex;align-items:center;justify-content:space-between">
         <span class="data-info" id="bt-data-info" style="font-size:10px">No data</span>
       </div>
@@ -196,7 +192,6 @@
         <input type="date" id="bt-end-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:11px" title="End date for backtest (leave blank = all data)" />
       </label>
       <button onclick="clearBtDates()" style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer" title="Clear date filters">✕ Clear</button>
-      <button onclick="fillTestDates()" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer" title="Fill dates from last test download window">Use test window</button>
     </div>
 
     <!-- Backtest actions -->

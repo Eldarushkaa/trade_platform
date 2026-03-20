@@ -5,9 +5,9 @@ RSI Baseline — минимальная эталонная стратегия д
     Нижняя планка перед запуском сложных стратегий. Если эта не работает →
     более сложная тоже не будет.
 
-Правила (классический RSI, уровневый вход):
-    Entry LONG:  RSI < OVERSOLD   (каждую свечу пока RSI в зоне, cooldown ограничивает)
-    Entry SHORT: RSI > OVERBOUGHT
+Правила (классический RSI, crossover-вход):
+    Entry LONG:  prev_rsi < OVERSOLD  and rsi >= OVERSOLD  (выход из зоны перепроданности снизу вверх)
+    Entry SHORT: prev_rsi > OVERBOUGHT and rsi <= OVERBOUGHT (выход из зоны перекупленности сверху вниз)
     Exit LONG:   RSI > 50
     Exit SHORT:  RSI < 50
 
@@ -28,11 +28,13 @@ RSI Baseline — минимальная эталонная стратегия д
         Не торгуем пока ATR/EMA_ATR не прогреты.
 
 Оптимизируемые параметры:
-    OVERSOLD         15–35   (чем ниже → реже и точнее LONG-сигналы)
-    OVERBOUGHT       65–85   (чем выше → реже и точнее SHORT-сигналы)
-    COOLDOWN_CANDLES 1–20    (свечей между сделками; 10 = 50 мин на 15м)
-    EMA200_ATR_K     1.0–5.0 (порог расстояния от EMA200; ниже = строже)
-    VOL_RATIO_MIN    0.5–2.0 (мин. ATR/EMA_ATR; выше = только при высокой волатильности)
+    OVERSOLD     15–35   (чем ниже → реже и точнее LONG-сигналы)
+    OVERBOUGHT   65–85   (чем выше → реже и точнее SHORT-сигналы)
+    EMA200_ATR_K 1.0–5.0 (порог расстояния от EMA200; ниже = строже)
+
+Фиксированные параметры (задаются в UI, не оптимизируются):
+    COOLDOWN_CANDLES = 5    (свечей между сделками; 5 = 75 мин на 15м)
+    VOL_RATIO_MIN    = 1.0  (мин. ATR/EMA_ATR; выше = только при высокой волатильности)
 
 Фиксированные параметры (не оптимизируются):
     RSI_PERIOD     = 14    (стандарт Уайлдера)
@@ -78,7 +80,7 @@ class RSIBaseline(BaseStrategy):
     # --- Оптимизируемые параметры ---
     OVERSOLD         = 25.0   # порог входа LONG
     OVERBOUGHT       = 75.0   # порог входа SHORT
-    COOLDOWN_CANDLES = 10     # минимум свечей между сделками
+    COOLDOWN_CANDLES = 5      # минимум свечей между сделками
     EMA200_ATR_K     = 2.0    # порог: distance < k * ATR (1.5 = строго, 4.0 = мягко)
     VOL_RATIO_MIN    = 1.0    # мин. ATR/EMA_ATR для входа (0.5 = почти всегда, 2.0 = только всплески)
 
@@ -92,8 +94,9 @@ class RSIBaseline(BaseStrategy):
             "description": "RSI threshold for SHORT entry (sell when RSI rises above this)",
         },
         "COOLDOWN_CANDLES": {
-            "type": "int", "default": 10, "min": 1, "max": 20,
+            "type": "int", "default": 5, "min": 1, "max": 20,
             "description": "Minimum candles between entries (1 candle = 15 min)",
+            "optimize": False,
         },
         "EMA200_ATR_K": {
             "type": "float", "default": 2.0, "min": 1.5, "max": 2.5,
@@ -102,6 +105,7 @@ class RSIBaseline(BaseStrategy):
         "VOL_RATIO_MIN": {
             "type": "float", "default": 1.0, "min": 0.5, "max": 2.0,
             "description": "Volatility filter: entry blocked when ATR/EMA_ATR < this threshold",
+            "optimize": False,
         },
     }
 
@@ -117,6 +121,7 @@ class RSIBaseline(BaseStrategy):
         self._avg_loss: Optional[float] = None
         self._prev_close: Optional[float] = None
         self._warmup_closes: list[float] = []
+        self._rsi_prev: Optional[float] = None   # RSI предыдущей свечи для crossover
 
         # --- EMA200 state ---
         self._ema200: Optional[float] = None
@@ -155,6 +160,10 @@ class RSIBaseline(BaseStrategy):
         rsi = self._compute_rsi()
         if rsi is None:
             return
+
+        # Запоминаем RSI до любых ранних return (для crossover на следующей свечe)
+        rsi_prev_snapshot = self._rsi_prev
+        self._rsi_prev = rsi
 
         # Текущая позиция
         position = await self.engine.get_balance(self.name, "POSITION")
@@ -209,25 +218,29 @@ class RSIBaseline(BaseStrategy):
         if not distance_ok or not vol_ok:
             return
 
-        if rsi < self.OVERSOLD:
-            result = await self._open_position(
-                close, "BUY",
-                RSI=f"{rsi:.1f}",
-                dist=f"{distance:.4f}" if ema200 else "n/a",
-                vol=f"{vol_ratio:.2f}" if (atr and ema_atr) else "n/a",
-            )
-            if result is not None:
-                self.logger.info(f"LONG: RSI={rsi:.1f} < {self.OVERSOLD}")
+        # Crossover entry: входим когда RSI пересекает уровень, а не пока он за ним
+        if rsi_prev_snapshot is not None:
+            if rsi_prev_snapshot < self.OVERSOLD and rsi >= self.OVERSOLD:
+                # RSI вышел из зоны перепроданности снизу вверх → LONG
+                result = await self._open_position(
+                    close, "BUY",
+                    RSI=f"{rsi:.1f}", RSIprev=f"{rsi_prev_snapshot:.1f}",
+                    dist=f"{distance:.4f}" if ema200 else "n/a",
+                    vol=f"{vol_ratio:.2f}" if (atr and ema_atr) else "n/a",
+                )
+                if result is not None:
+                    self.logger.info(f"LONG crossover: RSI {rsi_prev_snapshot:.1f} → {rsi:.1f} (crossed {self.OVERSOLD})")
 
-        elif rsi > self.OVERBOUGHT:
-            result = await self._open_position(
-                close, "SELL",
-                RSI=f"{rsi:.1f}",
-                dist=f"{distance:.4f}" if ema200 else "n/a",
-                vol=f"{vol_ratio:.2f}" if (atr and ema_atr) else "n/a",
-            )
-            if result is not None:
-                self.logger.info(f"SHORT: RSI={rsi:.1f} > {self.OVERBOUGHT}")
+            elif rsi_prev_snapshot > self.OVERBOUGHT and rsi <= self.OVERBOUGHT:
+                # RSI вышел из зоны перекупленности сверху вниз → SHORT
+                result = await self._open_position(
+                    close, "SELL",
+                    RSI=f"{rsi:.1f}", RSIprev=f"{rsi_prev_snapshot:.1f}",
+                    dist=f"{distance:.4f}" if ema200 else "n/a",
+                    vol=f"{vol_ratio:.2f}" if (atr and ema_atr) else "n/a",
+                )
+                if result is not None:
+                    self.logger.info(f"SHORT crossover: RSI {rsi_prev_snapshot:.1f} → {rsi:.1f} (crossed {self.OVERBOUGHT})")
 
     # ------------------------------------------------------------------
     # Wilder RSI

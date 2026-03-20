@@ -14,13 +14,13 @@ Two-phase approach optimized for low-dimensional parameter spaces (2–5 params)
 Composite fitness:
     Sharpe (40%) + ProfitFactor (30%) + Return (20%) − Drawdown (20%)
     + log(trades) bonus (10%).
-    WFE-inner penalty: if IS/mini-OOS gap is large, fitness is penalised.
 
 Walk-Forward Optimization:
-    Divides data into expanding train windows + fixed OOS test windows.
-    Each training window is further split (80/20) into train_inner / val_inner
-    so the optimizer itself penalises IS→OOS divergence during search.
-    Produces a stitched OOS equity curve and WFE metric (OOS/IS return ratio).
+    Divides data into n_folds sequential OOS windows of size test_pct each.
+    For each fold: optimize on all data before the OOS window (expanding IS),
+    then evaluate best_params on the held-out OOS window.
+    WFE = OOS_return / IS_return — a diagnostic metric computed AFTER the fact,
+    not an optimization target.  Produces a stitched OOS equity curve.
 
 Usage:
     result = await optimize_params("rsi_btc", "BTCUSDT", RSIBot, max_iterations=200)
@@ -57,7 +57,6 @@ def _worker_init(
     candle_rows: list,
     fee_rate,
     initial_balance: float,
-    val_candle_rows: list | None = None,
     warmup_candle_rows: list | None = None,
 ) -> None:
     """
@@ -65,7 +64,6 @@ def _worker_init(
     Reconstructs the strategy class and caches shared data in module globals.
     Avoids pickling thousands of candle rows for each individual evaluation.
 
-    val_candle_rows:    optional mini-OOS validation window used for WFE-inner penalty.
     warmup_candle_rows: optional pre-warmup candles fed to the strategy before the main
                         IS loop (no trades recorded). Pre-heats EMA200, ATR, etc.
     """
@@ -77,7 +75,6 @@ def _worker_init(
     _worker_state["fee_rate"] = fee_rate
     _worker_state["initial_balance"] = initial_balance
     _worker_state["symbol"] = symbol
-    _worker_state["val_candle_rows"] = val_candle_rows      # may be None
     _worker_state["warmup_candle_rows"] = warmup_candle_rows  # may be None
 
 
@@ -86,9 +83,6 @@ def _worker_evaluate_params(params: dict) -> dict:
     Evaluate one parameter set in a worker process.
     Creates a fresh asyncio event loop (worker processes have no running loop).
     Returns a plain dict (must be picklable for IPC).
-
-    If val_candle_rows are available in worker state, also runs a mini-OOS
-    backtest and returns wfe_inner = val_return / is_return for penalty.
     """
     import asyncio
     strategy_class = _worker_state["strategy_class"]
@@ -96,8 +90,6 @@ def _worker_evaluate_params(params: dict) -> dict:
     fee_rate = _worker_state["fee_rate"]
     initial_balance = _worker_state["initial_balance"]
     symbol = _worker_state["symbol"]
-    val_candle_rows = _worker_state.get("val_candle_rows")
-
     warmup_candle_rows = _worker_state.get("warmup_candle_rows")
 
     loop = asyncio.new_event_loop()
@@ -115,31 +107,6 @@ def _worker_evaluate_params(params: dict) -> dict:
             warmup_candle_data=warmup_candle_rows,
         ))
 
-        # Optional mini-OOS validation for WFE-inner penalty
-        wfe_inner = 1.0  # neutral: no penalty
-        if val_candle_rows:
-            try:
-                val_bt = loop.run_until_complete(run_backtest(
-                    bot_id="opt_worker_val",
-                    symbol=symbol,
-                    strategy_class=strategy_class,
-                    params=params,
-                    initial_balance=initial_balance,
-                    fee_rate=fee_rate,
-                    equity_interval=0,
-                    candle_data=val_candle_rows,
-                    # val uses IS candles tail as warmup (already in IS candle_rows)
-                    warmup_candle_data=warmup_candle_rows,
-                ))
-                is_ret = bt.return_pct
-                val_ret = val_bt.return_pct
-                if abs(is_ret) > 0.5:
-                    wfe_inner = val_ret / is_ret
-                else:
-                    wfe_inner = 1.0  # IS near-zero → skip penalty
-            except Exception:
-                wfe_inner = 1.0  # don't crash on val failure
-
         return {
             "ok": True,
             "sharpe": bt.sharpe_ratio,
@@ -148,7 +115,6 @@ def _worker_evaluate_params(params: dict) -> dict:
             "win_rate": bt.win_rate,
             "profit_factor": bt.profit_factor,
             "trade_count": bt.trade_count,
-            "wfe_inner": wfe_inner,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -279,7 +245,6 @@ def _compute_fitness(
     max_dd: float,
     trade_count: int,
     profit_factor: float = 1.0,
-    wfe_inner: float = 1.0,
 ) -> float:
     """
     Composite fitness balancing profitability, risk, and statistical significance.
@@ -291,10 +256,9 @@ def _compute_fitness(
       - Max drawdown:   20% — risk penalty
       - log(trades):    10% — reward statistically significant sample sizes
 
-    WFE-inner penalty (when val_candles provided to workers):
-      - wfe_inner = val_return / is_return  (inner fold mini-OOS ratio)
-      - if wfe_inner < 0.5 → penalise by up to −0.6 fitness points
-      - encourages params that generalize, not just overfit IS data
+    WFE (Walk-Forward Efficiency) is intentionally NOT part of fitness.
+    It is a diagnostic metric computed after walk-forward folds complete,
+    not an optimization target — optimizing for WFE is circular and misleading.
 
     Hard filter: < 30 trades → disqualified (allows shorter OOS windows).
     """
@@ -314,12 +278,6 @@ def _compute_fitness(
         - dd * 0.20
         + math.log(max(1, trade_count)) * 0.10
     )
-
-    # WFE-inner penalty: penalise IS→OOS divergence
-    # wfe_inner < 0.5 → subtract up to 0.6 points; > 0.5 → no penalty
-    if wfe_inner < 0.5:
-        wfe_penalty = (0.5 - wfe_inner) * 1.2   # max penalty = 0.6 at wfe_inner=0
-        fitness -= wfe_penalty
 
     return fitness
 
@@ -451,7 +409,6 @@ async def optimize_params(
     concurrency: int = 4,
     interval: str = "15m",
     _candle_override: list | None = None,
-    _val_candle_override: list | None = None,
 ) -> OptimizationResult:
     """
     Find optimal parameters using Random Search + Local Refinement.
@@ -476,20 +433,16 @@ async def optimize_params(
       - 500:  Thorough      — ~10 min, near-exhaustive for 3-dim space
 
     Args:
-        bot_id:               Bot identifier
-        symbol:               Trading pair
-        strategy_class:       Strategy class (already for_symbol'd)
-        current_params:       Current parameter values (evaluated as baseline)
-        max_iterations:       Total backtest evaluations budget
-        initial_balance:      Starting USDT for each backtest
-        fee_rate:             Fee rate override (e.g. 0.0007 = 0.07%)
-        progress_callback:    Optional async callable(pct, msg)
-        concurrency:          Max parallel backtests (match to CPU cores)
-        _candle_override:     Internal — pre-loaded IS candle list (from walk-forward)
-        _val_candle_override: Internal — pre-loaded mini-OOS validation candles
-                              (from walk-forward inner split). When provided, workers
-                              compute wfe_inner = val_return / is_return and penalise
-                              overfitting candidates in the fitness function.
+        bot_id:            Bot identifier
+        symbol:            Trading pair
+        strategy_class:    Strategy class (already for_symbol'd)
+        current_params:    Current parameter values (evaluated as baseline)
+        max_iterations:    Total backtest evaluations budget
+        initial_balance:   Starting USDT for each backtest
+        fee_rate:          Fee rate override (e.g. 0.0007 = 0.07%)
+        progress_callback: Optional async callable(pct, msg)
+        concurrency:       Max parallel backtests (match to CPU cores)
+        _candle_override:  Internal — pre-loaded IS candle list (from walk-forward)
 
     Returns:
         OptimizationResult with best params and search statistics
@@ -523,7 +476,6 @@ async def optimize_params(
 
     logger.info(
         f"Optimizer [{bot_id}]: {len(_cached_candles)} IS candles, "
-        f"{len(_val_candle_override) if _val_candle_override else 0} val candles, "
         f"fee={fee_rate if fee_rate is not None else 'default'}, "
         f"workers={concurrency}, budget={max_iterations}"
     )
@@ -558,7 +510,6 @@ async def optimize_params(
             _cached_candles,
             fee_rate,
             _initial_balance,
-            _val_candle_override,    # mini-OOS for WFE-inner penalty
             _warmup_for_workers,     # warmup candles: last 300 IS rows
         ),
     )
@@ -589,7 +540,6 @@ async def optimize_params(
                 ind.fitness = _compute_fitness(
                     res["sharpe"], res["return_pct"], res["max_dd"],
                     res["trade_count"], res.get("profit_factor", 1.0),
-                    res.get("wfe_inner", 1.0),
                 )
             else:
                 logger.warning(f"Eval failed: {res.get('error')}")

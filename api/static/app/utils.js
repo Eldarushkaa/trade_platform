@@ -15,9 +15,6 @@ let _historyData = null;       // cached {snaps, trades} for chart re-render on 
 let _globalStatsData = null;   // cached {portfolios, bots, coinData, obStatus, periodStats}
                                // periodStats: { botId: {h24: {...}, h3: {...}} }
 
-// Tracks the last test-window download so "Use test window" can pre-fill backtest dates
-let _lastTestWindow = null;    // { start: "YYYY-MM-DD", end: "YYYY-MM-DD" }
-
 let _llmEnabled = false;
 let _logPanelOpen = false;
 let _logErrorCount = 0;

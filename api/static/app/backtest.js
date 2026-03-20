@@ -132,37 +132,12 @@ async function downloadHistory(days, startDate = null) {
   await loadDataStatus();
 }
 
-async function downloadTestData() {
-  const dateInput = document.getElementById('bt-test-start-date');
-  const startDate = dateInput ? dateInput.value : '';
-  if (!startDate) {
-    alert('Please pick a start date for the 14-day test window.');
-    return;
-  }
-  const start = new Date(startDate + 'T00:00:00Z');
-  const end   = new Date(start.getTime() + 14 * 86400_000);
-  const endDate = end.toISOString().slice(0, 10);
-  _lastTestWindow = { start: startDate, end: endDate };
-  await downloadHistory(14, startDate);
-}
-
 // ── Date range helpers ─────────────────────────────────────────
 function clearBtDates() {
   const s = document.getElementById('bt-start-date');
   const e = document.getElementById('bt-end-date');
   if (s) s.value = '';
   if (e) e.value = '';
-}
-
-function fillTestDates() {
-  if (!_lastTestWindow) {
-    alert('No test window downloaded yet. Use "📥 14d Test from:" first.');
-    return;
-  }
-  const s = document.getElementById('bt-start-date');
-  const e = document.getElementById('bt-end-date');
-  if (s) s.value = _lastTestWindow.start;
-  if (e) e.value = _lastTestWindow.end;
 }
 
 function _btFeeRate() {

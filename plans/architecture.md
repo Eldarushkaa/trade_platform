@@ -9,11 +9,13 @@
 
 A Python async crypto futures trading simulation platform that:
 - Connects to **Binance Futures WebSocket** for live price data
-- Runs **6 trading bots** (2 strategies × 3 coins) simultaneously in simulation
+- Runs trading bots (multiple strategies × coins) simultaneously in simulation
 - Simulates **USDT-M perpetual futures** with 3× leverage, margin, and liquidation
 - Provides a **FastAPI web dashboard** to monitor bots, trades, and portfolio in real-time
 - Supports **backtesting**, **genetic parameter optimization**, and **Walk-Forward Optimization (WFO)** for each strategy
 - Uses **on-demand OB depth fetching** (Binance REST) for realistic VWAP fill prices on live orders
+- Supports **configurable candle timeframes** (1m / 5m / 15m / 1h) — each stored as a separate dataset
+- Bots have a **persistent live-enabled flag** — all bots default to paused on restart; must be explicitly enabled per bot
 
 ---
 
@@ -30,40 +32,43 @@ trade_platform/
 │   ├── bot_manager.py             # Bot lifecycle, candle dispatch, snapshot loop
 │   ├── simulation_engine.py       # BaseOrderEngine + SimulationEngine (fake exchange)
 │   ├── virtual_portfolio.py       # FuturesPosition, margin, liquidation, P&L
-│   ├── backtest_engine.py         # Historical candle replay + metrics
-│   ├── optimizer.py               # Genetic algorithm param optimizer
+│   ├── backtest_engine.py         # Historical candle replay + metrics (interval-aware)
+│   ├── optimizer.py               # Genetic algorithm param optimizer (interval-aware)
 │   └── utils.py                   # safe_float / safe_round helpers
 │
 ├── data/                          # Market data ingestion
 │   ├── binance_feed.py            # Binance Futures WebSocket aggTrade stream
 │   ├── price_cache.py             # In-memory latest price + pub/sub
-│   ├── candle_aggregator.py       # Builds 5-min OHLCV candles from ticks
+│   ├── candle_aggregator.py       # Builds OHLCV candles from ticks (configurable interval)
 │   ├── orderbook_feed.py          # fetch_depth() — on-demand OB REST call for VWAP fills
-│   └── historical.py              # REST download of historical klines
+│   └── historical.py              # REST download of historical klines (multi-interval)
 │
 ├── strategies/                    # Signal logic only — no DB, no HTTP
 │   ├── __init__.py                # Exports active strategy classes
-│   ├── example_rsi_bot.py         # Wilder RSI + EMA trend filter
-│   └── example_ma_crossover.py    # MACD crossover + histogram filter
+│   ├── rsi_baseline.py            # Wilder RSI + EMA200 trend filter + ATR volatility filter
+│   └── example_rsi_bot.py         # Example: simple RSI strategy
 │
 ├── db/                            # Persistence layer
-│   ├── database.py                # aiosqlite connection, WAL mode, migrations
+│   ├── database.py                # aiosqlite connection, WAL mode, schema + migrations
 │   ├── models.py                  # Dataclasses: BotRecord, TradeRecord, PortfolioSnapshot
 │   └── repository.py              # All SQL queries (no raw SQL outside this file)
 │
 ├── api/                           # HTTP layer
 │   ├── routes/
-│   │   ├── bots.py                # GET/POST /api/bots — list, start, stop, params
+│   │   ├── bots.py                # GET/POST/PATCH /api/bots — list, start, stop, live toggle, params
 │   │   ├── portfolio.py           # GET /api/portfolio — balances, history
 │   │   ├── trades.py              # GET /api/trades — trade history
-│   │   ├── backtest.py            # POST /api/backtest/run, /optimize
+│   │   ├── backtest.py            # POST /api/backtest/run, /optimize, /walk-forward; GET /candle-config
 │   │   └── logs.py                # GET /api/logs — in-memory WARNING+ buffer
 │   └── static/
 │       ├── index.html             # Dashboard SPA shell
 │       ├── style.css              # All CSS
 │       └── app/                   # JS modules (7 files, plain globals)
-│           ├── utils.js, bots.js, portfolio.js, settings.js
-│           ├── backtest.js, logs.js, main.js
+│           ├── utils.js           # Shared state, fetch helpers, interval helpers
+│           ├── bots.js            # Bot list, live toggle, global stats bar
+│           ├── portfolio.js, settings.js
+│           ├── backtest.js        # Backtest/optimize/WFO panel (interval-aware)
+│           ├── logs.js, main.js
 │
 └── plans/
     ├── architecture.md            # This file
@@ -78,12 +83,11 @@ trade_platform/
 graph TD
     WS[Binance Futures WebSocket\nfstream.binance.com] --> Feed[BinanceFeed]
     Feed --> PC[PriceCache\nlatest price + pub/sub]
-    PC -->|on_tick| CA[CandleAggregator\n5-min OHLCV builder]
+    PC -->|on_tick| CA[CandleAggregator\nconfigurable OHLCV builder]
     PC -->|dispatch_price| BM[BotManager\nupdate_price + liquidation check]
     CA -->|on_candle| BM
-    BM -->|candle per symbol| Bot1[rsi_btc / rsi_eth / rsi_sol]
-    BM -->|candle per symbol| Bot2[ma_btc / ma_eth / ma_sol]
-    Bot1 & Bot2 -->|place_order| SE[SimulationEngine]
+    BM -->|candle per symbol| Bots[Strategy Bots\n(live_enabled only)]
+    Bots -->|place_order| SE[SimulationEngine]
     SE -->|ob_fetcher: fetch_depth| Binance[Binance REST\nfapi depth]
     SE --> VP[VirtualPortfolio\nmargin / PnL / liquidation]
     SE -->|insert_trade| DB[(SQLite — aiosqlite\nWAL mode)]
@@ -94,17 +98,36 @@ graph TD
 
 ---
 
-## Bots (2 strategies × 3 coins = 6 instances)
+## Bots — Live-Enabled Flag
 
-| Bot name pattern | Strategy file | Signal type |
+Each bot has a `live_enabled` flag persisted in the `bots` DB table:
+
+- **Default: `false`** — on every server restart, all bots start paused (no trading)
+- The UI sidebar shows a toggle switch per bot card to enable/disable live trading
+- `PATCH /api/bots/{name}/live` — persists the flag and immediately starts/stops the bot
+- `main.py` startup: reads `live_enabled` from DB, only calls `manager.start_bot()` for bots with `live_enabled=True`
+- Manual `Start`/`Stop` buttons still work for session-only control (don't persist `live_enabled`)
+
+---
+
+## Multi-Timeframe Candle Support
+
+Historical candle storage and all backtest operations are **interval-aware**:
+
+| Interval | Minutes | Candles/day |
 |---|---|---|
-| `rsi_btc/eth/sol` | `example_rsi_bot.py` | Wilder RSI + EMA(50/200) trend filter + ATR volatility filter |
-| `ma_btc/eth/sol` | `example_ma_crossover.py` | MACD crossover + histogram momentum |
+| `1m` | 1 | 1440 |
+| `5m` | 5 | 288 |
+| `15m` | 15 | 96 |
+| `1h` | 60 | 24 |
 
-Each bot is a dynamically-created subclass via `BaseStrategy.for_symbol(symbol)`:
-```python
-RSIBot.for_symbol("BTCUSDT")  # → class RSIBot_BTC with name="rsi_btc", symbol="BTCUSDT"
-```
+Key design decisions:
+- `historical_candles` table PK is `(symbol, interval, open_time)` — each timeframe is a fully independent dataset
+- All candle functions in `repository.py` accept `interval: str = "15m"` — datasets are never mixed
+- `data/historical.py` exposes `SUPPORTED_INTERVALS` dict and computes step/page size dynamically per interval
+- Max download cap: **5 years (1825 days)**
+- `interval` flows through: API request body → `run_backtest()` → `get_historical_candles()` → optimizer folds
+- UI persists the selected interval in `localStorage`; `setActiveInterval()` syncs button states + download button tooltips
 
 ---
 
@@ -138,8 +161,6 @@ Implements `BaseOrderEngine` (the fake exchange). Responsibilities:
 
 **OB-aware fill price:** In live mode (`ob_fetcher=fetch_depth`), each order walks Binance bid/ask levels for true VWAP impact. In backtest mode (`ob_fetcher=None`), a fixed `base_slippage_pct` fallback is used.
 
-**Future:** Swap `SimulationEngine` → `LiveBinanceEngine` (same interface) to go live. Strategies never change.
-
 ---
 
 ### `VirtualPortfolio` — `core/virtual_portfolio.py`
@@ -150,8 +171,6 @@ Tracks per-bot futures state:
 - `check_liquidation(price)` — called on every price tick; forced close + margin loss on trigger
 - `deduct_fee(fee_usdt)` — guarded to prevent negative balance
 - `get_state(current_price)` — full snapshot dict for API/DB
-
-**Note:** Liquidation uses tick prices (not mark price). This is more aggressive than a real exchange but simpler to implement — documented in code.
 
 ---
 
@@ -170,10 +189,20 @@ Orchestrates all bots:
 
 ### `CandleAggregator` — `data/candle_aggregator.py`
 
-Converts raw price ticks → 5-minute OHLCV candles:
-- `on_tick(symbol, price)` — updates in-progress candle; emits completed candle at 5-min boundary
+Converts raw price ticks → OHLCV candles:
+- `on_tick(symbol, price)` — updates in-progress candle; emits completed candle at interval boundary
 - `flush()` — emits any partial in-progress candle (called on shutdown)
 - `subscribe / unsubscribe` — pub/sub for candle callbacks
+- `interval_seconds` constructor param controls candle duration
+
+---
+
+### `historical.py` — `data/historical.py`
+
+Downloads and stores kline history from Binance:
+- `SUPPORTED_INTERVALS` dict: `{'1m': {minutes:1, candles_per_day:1440}, ...}` — single source of truth
+- `download_klines(symbol, days, interval, start_date, progress_callback)` — streams klines page-by-page, saves to DB via `repo.save_historical_candles(rows, interval=interval)`; step size computed dynamically per interval
+- `get_data_status(symbols, interval)` — returns count + date range of stored candles per symbol for the given interval
 
 ---
 
@@ -189,9 +218,9 @@ On-demand Binance Futures REST call for live VWAP fill pricing:
 
 ### Backtest & Optimizer — `core/backtest_engine.py`, `core/optimizer.py`
 
-- `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms)` — replays DB historical 5m candles through a fresh `SimulationEngine(skip_db=True)` instance; optional `start_ms`/`end_ms` filter enables running on a held-out test window vs the full training set; Sharpe annualized using 105,120 candles/year (288 × 365); each equity curve point includes `trend` field (`"bull"/"bear"/"warmup"`) derived from bot's EMA50 vs EMA200
-- `optimize_params(...)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; accepts `_candle_override` list for fold-specific windows (used by WFO); fitness function: `Sharpe×0.40 + ProfitFactor×0.30 + Return×0.20 - Drawdown×0.20 + log(trades)×0.10`; hard gate: `if trade_count < 120: return -1000 + trade_count`
-- `walk_forward_optimize(...)` — expanding-window WFO: divides candles into N folds, GA-optimizes each IS window, evaluates on OOS window; produces `WalkForwardResult` with per-fold metrics, WFE score, stitched OOS equity curve (chain-scaled, not reset to initial balance), and final params optimized on full dataset
+- `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms, interval="15m")` — replays DB historical candles through a fresh `SimulationEngine(skip_db=True)` instance; fetches warmup candles before `start_ms` for indicator seeding; passes `interval` to `get_historical_candles()`; Sharpe annualized using interval-appropriate candles/year; each equity curve point includes `trend` field (`"bull"/"bear"/"warmup"`)
+- `optimize_params(..., interval="15m")` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; passes `interval` to all `run_backtest()` calls; fitness = `Sharpe×0.40 + ProfitFactor×0.30 + Return×0.20 - Drawdown×0.20 + log(trades)×0.10`; hard gate: `if trade_count < 120: return -1000 + trade_count`
+- `walk_forward_optimize(..., interval="15m")` — expanding-window WFO: divides candles into N folds, GA-optimizes each IS window, evaluates on OOS window; `interval` propagated to all nested optimize_params() and run_backtest() calls; produces `WalkForwardResult` with per-fold metrics, WFE score, stitched OOS equity curve
 - **Walk-Forward Efficiency (WFE)** = OOS return / IS return: >0.6 good generalisation, 0.3–0.6 moderate, <0.3 overfit
 
 ---
@@ -218,14 +247,16 @@ No module-level globals with `set_xxx()` injection.
 ## Database Schema
 
 **SQLite** via `aiosqlite`, WAL mode. All timestamps stored as `ISO 8601 UTC` with `+00:00` suffix.
+Additive migrations run on every startup (`PRAGMA table_info` check + `ALTER TABLE`).
 
 | Table | Key columns | Purpose |
 |---|---|---|
-| `bots` | `id TEXT PK, symbol, status, initial_balance` | Bot registry |
+| `bots` | `id TEXT PK, symbol, status, initial_balance, live_enabled INTEGER DEFAULT 0` | Bot registry + live state |
 | `trades` | `bot_id FK, side, symbol, quantity, price, realized_pnl, fee_usdt, position_side, timestamp` | Trade history |
 | `portfolio_snapshots` | `bot_id FK, usdt_balance, asset_balance, total_value_usdt, asset_price, timestamp` | Historical equity curve |
 | `bot_params` | `bot_id PK, params_json, updated_at` | Persisted parameter overrides |
-| `historical_candles` | `symbol, open_time PK, open/high/low/close/volume, close_time` | Klines for backtest |
+| `historical_candles` | `(symbol, interval, open_time) PK, open/high/low/close/volume, close_time` | Klines per interval; indexed by `(symbol, interval)` |
+| `platform_settings` | `key TEXT PK, value TEXT` | Key/value store for platform-wide settings |
 
 ---
 
@@ -233,10 +264,11 @@ No module-level globals with `set_xxx()` injection.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/bots` | List all bots with status and stats |
+| `GET` | `/api/bots` | List all bots with status, stats, and `live_enabled` |
 | `GET` | `/api/bots/{name}` | Single bot detail |
-| `POST` | `/api/bots/{name}/start` | Start a bot |
+| `POST` | `/api/bots/{name}/start` | Start a bot (session only, doesn't persist `live_enabled`) |
 | `POST` | `/api/bots/{name}/stop` | Stop a bot |
+| `PATCH` | `/api/bots/{name}/live` | Set `live_enabled` flag (persisted); starts/stops bot immediately |
 | `POST` | `/api/bots/{name}/reset` | Reset portfolio to initial balance |
 | `POST` | `/api/bots/reset-all` | Reset all bots |
 | `GET` | `/api/bots/{name}/params` | Get param schema + current values |
@@ -246,15 +278,35 @@ No module-level globals with `set_xxx()` injection.
 | `GET` | `/api/portfolio/{name}/history` | Portfolio snapshot history (for charting) |
 | `GET` | `/api/trades/{bot_name}` | Paginated trade history for a bot |
 | `GET` | `/api/trades/{bot_name}/stats` | Aggregated trade stats for a time window |
-| `POST` | `/api/backtest/download` | Download 5m klines from Binance (`days` up to 1095, optional `start_date` for test window) |
-| `GET` | `/api/backtest/data-status` | Available historical candle counts per symbol |
-| `POST` | `/api/backtest/run` | Run a backtest (optional `start_date`/`end_date` for training vs test split) |
-| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background task) |
-| `POST` | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async, background task) |
+| `GET` | `/api/backtest/candle-config` | Returns `SUPPORTED_INTERVALS` dict |
+| `POST` | `/api/backtest/download` | Download klines from Binance (`days` up to 1825, `interval`) |
+| `GET` | `/api/backtest/data-status?interval=15m` | Available candle counts per symbol for given interval |
+| `POST` | `/api/backtest/run` | Run a backtest (`interval`, optional `start_date`/`end_date`) |
+| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background task; `interval`) |
+| `POST` | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async, background task; `interval`) |
 | `GET` | `/api/backtest/status` | Poll status of all or specific backtest/optimization tasks (TTL=1h) |
 | `GET` | `/api/logs` | Recent WARNING+ log lines |
 | `GET` | `/health` | Liveness check + mode/market info |
 | `GET` | `/` | Dashboard HTML |
+
+---
+
+## UI Architecture
+
+The frontend is a single-page app (plain JS, no framework). Key state globals in `utils.js`:
+
+| Variable | Purpose |
+|---|---|
+| `_activeInterval` | Currently selected timeframe (`localStorage`-persisted, default `'15m'`) |
+| `_SUPPORTED_INTERVALS` | `['1m','5m','15m','1h']` |
+| `_INTERVAL_CANDLES_PER_DAY` | `{1m:1440, 5m:288, 15m:96, 1h:24}` |
+| `selectedBot` | Currently viewed bot name |
+| `_statsMode` | Period for stats bar: `'all'/'24h'/'3h'` |
+
+Key UI functions:
+- `setActiveInterval(iv)` — sets `_activeInterval`, syncs `.iv-btn.active` states, updates download button tooltips with `candleCountLabel()`, calls `loadDataStatus()`
+- `candleCountLabel(days, interval)` — returns `"365d × 15m = 35k candles"` for button tooltips
+- `toggleBotLive(name, enabled)` — calls `PATCH /api/bots/{name}/live`, updates label/toggle immediately
 
 ---
 
@@ -283,12 +335,13 @@ Everything runs in a single `asyncio` event loop managed by `uvicorn`:
 asyncio event loop
   ├── uvicorn (FastAPI HTTP)
   ├── binance-feed task (WebSocket)
-  └── per-bot tasks (12×):
+  └── per-bot tasks (only live_enabled bots):
         ├── candle_loop
         └── snapshot_loop (jittered start)
 ```
 
 App startup/shutdown is managed by FastAPI `lifespan` context manager in `main.py`.
+On startup, `live_enabled` is read from DB per bot — only bots with `live_enabled=True` are started automatically.
 
 ---
 
