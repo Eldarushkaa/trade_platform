@@ -84,6 +84,12 @@ class BacktestResult:
     longest_win_streak: int = 0
     longest_loss_streak: int = 0
 
+    # Long / Short breakdown
+    long_return_pct: float = 0.0    # cumulative PnL from LONG trades / initial_balance * 100
+    short_return_pct: float = 0.0   # cumulative PnL from SHORT trades / initial_balance * 100
+    long_trade_count: int = 0       # number of closed LONG trades
+    short_trade_count: int = 0      # number of closed SHORT trades
+
     def to_dict(self) -> dict:
         return {
             "bot_id": self.bot_id,
@@ -110,6 +116,10 @@ class BacktestResult:
             "liquidations": self.liquidations,
             "longest_win_streak": self.longest_win_streak,
             "longest_loss_streak": self.longest_loss_streak,
+            "long_return_pct": _sr(self.long_return_pct, 2),
+            "short_return_pct": _sr(self.short_return_pct, 2),
+            "long_trade_count": self.long_trade_count,
+            "short_trade_count": self.short_trade_count,
             "equity_curve": self.equity_curve,
             "trades": self.trades,
         }
@@ -131,6 +141,16 @@ def _compute_metrics(result: BacktestResult) -> None:
     result.total_trades = len(result.trades)
     closing_trades = [t for t in result.trades if t.get("realized_pnl") is not None]
     result.trade_count = len(closing_trades)
+
+    # --- Long / Short breakdown ---
+    # action field: CLOSE_LONG (was a LONG position), CLOSE_SHORT (was a SHORT position)
+    long_trades  = [t for t in closing_trades if t.get("action") == "CLOSE_LONG"]
+    short_trades = [t for t in closing_trades if t.get("action") == "CLOSE_SHORT"]
+    result.long_trade_count  = len(long_trades)
+    result.short_trade_count = len(short_trades)
+    if result.initial_balance > 0:
+        result.long_return_pct  = sum(t["realized_pnl"] for t in long_trades)  / result.initial_balance * 100
+        result.short_return_pct = sum(t["realized_pnl"] for t in short_trades) / result.initial_balance * 100
 
     wins = [t["realized_pnl"] for t in closing_trades if t["realized_pnl"] > 0]
     losses = [t["realized_pnl"] for t in closing_trades if t["realized_pnl"] <= 0]

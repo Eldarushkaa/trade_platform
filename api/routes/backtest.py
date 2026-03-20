@@ -450,6 +450,10 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
             cpu_count = os.cpu_count() or 2
             concurrency = min(2, max(1, cpu_count - 1))
 
+            async def on_fold(fold_dict: dict):
+                """Called after each fold completes — appends to partial_folds list."""
+                _running_tasks[task_id]["partial_folds"].append(fold_dict)
+
             result = await walk_forward_optimize(
                 bot_id=req.bot_id,
                 symbol=symbol,
@@ -460,6 +464,7 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
                 max_iterations=iterations,
                 fee_rate=req.fee_rate,
                 progress_callback=on_progress,
+                fold_callback=on_fold,
                 concurrency=concurrency,
                 interval=req.interval,
             )
@@ -485,6 +490,7 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
         "done": False,
         "status": "running",
         "progress": progress_state,
+        "partial_folds": [],   # populated by fold_callback as each fold completes
         "result": None,
         "error": None,
     }
@@ -525,6 +531,7 @@ async def get_status(task_id: str | None = None):
             "status": info["status"],
             "interval": info.get("interval", "15m"),
             "progress": info.get("progress", {}),
+            "partial_folds": info.get("partial_folds", []),
             "result": info.get("result"),
             "error": info.get("error"),
         }

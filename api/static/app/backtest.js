@@ -484,12 +484,21 @@ async function runWalkForward() {
     _saveBtTask('wfo', taskId, botId);
 
     let done = false;
+    let lastFoldCount = 0;
     while (!done) {
       await new Promise(r => setTimeout(r, 3000));
       await loadLogs();
       try {
         const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
         status.textContent = `⏳ ${poll.progress?.msg || 'Running...'}`;
+
+        // Render partial folds as they arrive (before completion)
+        const partialFolds = poll.partial_folds || [];
+        if (partialFolds.length > lastFoldCount) {
+          lastFoldCount = partialFolds.length;
+          renderPartialFolds(partialFolds, folds, iters);
+        }
+
         if (poll.status === 'completed') {
           done = true;
           renderWFOResults(poll.result);
@@ -641,12 +650,23 @@ async function _resumePoll(type, taskId) {
   const isBt  = type === 'bt';
   const status = document.getElementById('bt-status');
   let done = false;
+  let lastFoldCount = 0;
   while (!done) {
     await new Promise(r => setTimeout(r, isWfo ? 3000 : 1500));
     await loadLogs();
     try {
       const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
       status.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
+
+      // Live partial fold rendering for WFO resume
+      if (isWfo) {
+        const partialFolds = poll.partial_folds || [];
+        if (partialFolds.length > lastFoldCount) {
+          lastFoldCount = partialFolds.length;
+          renderPartialFolds(partialFolds, poll.n_folds || partialFolds.length, poll.iterations_per_fold || 0);
+        }
+      }
+
       if (poll.status === 'completed') {
         done = true;
         if (isWfo) {
@@ -670,6 +690,77 @@ async function _resumePoll(type, taskId) {
       console.warn('resume poll error', e);
     }
   }
+}
+
+// ── WFO partial folds live render (during run) ─────────────────
+function renderPartialFolds(folds, n_folds, iterations_per_fold) {
+  let wrap = document.getElementById('bt-wfo-results');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+
+  const _n = (v, dec = 2, fallback = '—') => {
+    const n = parseFloat(v);
+    if (isNaN(n)) return fallback;
+    if (!isFinite(n)) return n > 0 ? '∞' : '-∞';
+    return n.toFixed(dec);
+  };
+  const _v = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const sign = v => _v(v) >= 0 ? 'positive' : 'negative';
+  const wfeClass = wfe => { const w = _v(wfe); return w >= 0.6 ? 'positive' : w >= 0.3 ? 'neutral' : 'negative'; };
+  const wfeLabel = wfe => { const w = _v(wfe); return w >= 0.6 ? '✅' : w >= 0.3 ? '⚠️' : '❌'; };
+  const fmtMs = ms => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '—';
+
+  let foldRows = '';
+  folds.forEach(f => {
+    foldRows += `
+      <tr>
+        <td style="color:var(--muted)">#${f.fold}</td>
+        <td style="font-size:10px;color:var(--muted)">${fmtMs(f.train_start_ms)}–${fmtMs(f.train_end_ms)}</td>
+        <td style="font-size:10px;color:var(--muted)">${fmtMs(f.test_start_ms)}–${fmtMs(f.test_end_ms)}</td>
+        <td class="${sign(f.is_return_pct)}">${_v(f.is_return_pct) >= 0 ? '+' : ''}${_n(f.is_return_pct)}%</td>
+        <td class="${sign(f.oos_return_pct)}">${_v(f.oos_return_pct) >= 0 ? '+' : ''}${_n(f.oos_return_pct)}%</td>
+        <td class="${sign(f.oos_long_return_pct)}" title="${f.oos_long_trade_count || 0} trades">${_v(f.oos_long_return_pct) >= 0 ? '+' : ''}${_n(f.oos_long_return_pct)}% <span style="font-size:9px;color:var(--muted)">(${f.oos_long_trade_count || 0})</span></td>
+        <td class="${sign(f.oos_short_return_pct)}" title="${f.oos_short_trade_count || 0} trades">${_v(f.oos_short_return_pct) >= 0 ? '+' : ''}${_n(f.oos_short_return_pct)}% <span style="font-size:9px;color:var(--muted)">(${f.oos_short_trade_count || 0})</span></td>
+        <td class="${sign(f.oos_sharpe)}">${_n(f.oos_sharpe)}</td>
+        <td class="${sign(f.oos_profit_factor - 1)}">${_n(f.oos_profit_factor)}</td>
+        <td style="color:var(--muted)">${f.oos_trade_count || 0}</td>
+        <td class="${wfeClass(f.wfe)}">${_n(f.wfe, 2)} ${wfeLabel(f.wfe)}</td>
+      </tr>`;
+  });
+
+  // Add placeholder rows for pending folds
+  for (let i = folds.length + 1; i <= n_folds; i++) {
+    foldRows += `
+      <tr style="opacity:0.4">
+        <td style="color:var(--muted)">#${i}</td>
+        <td colspan="10" style="color:var(--muted);font-size:10px">⏳ optimizing…</td>
+      </tr>`;
+  }
+
+  wrap.innerHTML = `
+    <div class="bt-opt-results">
+      <h4>📊 Walk-Forward — <span style="color:var(--muted)">${folds.length}/${n_folds} folds complete</span></h4>
+      <div style="overflow-x:auto;margin-bottom:14px">
+        <table style="width:100%;font-size:11px;border-collapse:collapse">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid #2a2d3a">
+              <th style="text-align:left;padding:4px 8px">Fold</th>
+              <th style="text-align:left;padding:4px 8px">Train</th>
+              <th style="text-align:left;padding:4px 8px">Test</th>
+              <th style="text-align:right;padding:4px 8px">IS Ret</th>
+              <th style="text-align:right;padding:4px 8px">OOS Ret</th>
+              <th style="text-align:right;padding:4px 8px">Long Ret</th>
+              <th style="text-align:right;padding:4px 8px">Short Ret</th>
+              <th style="text-align:right;padding:4px 8px">Sharpe</th>
+              <th style="text-align:right;padding:4px 8px">PF</th>
+              <th style="text-align:right;padding:4px 8px">Trades</th>
+              <th style="text-align:right;padding:4px 8px">WFE</th>
+            </tr>
+          </thead>
+          <tbody>${foldRows}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 // ── WFO render ─────────────────────────────────────────────────
@@ -714,6 +805,8 @@ function renderWFOResults(r) {
         <td style="font-size:10px;color:var(--muted)">${fmtMs(f.test_start_ms)}–${fmtMs(f.test_end_ms)}</td>
         <td class="${sign(f.is_return_pct)}">${_v(f.is_return_pct) >= 0 ? '+' : ''}${_n(f.is_return_pct)}%</td>
         <td class="${sign(f.oos_return_pct)}">${_v(f.oos_return_pct) >= 0 ? '+' : ''}${_n(f.oos_return_pct)}%</td>
+        <td class="${sign(f.oos_long_return_pct)}" title="${f.oos_long_trade_count || 0} trades">${_v(f.oos_long_return_pct) >= 0 ? '+' : ''}${_n(f.oos_long_return_pct)}% <span style="font-size:9px;color:var(--muted)">(${f.oos_long_trade_count || 0})</span></td>
+        <td class="${sign(f.oos_short_return_pct)}" title="${f.oos_short_trade_count || 0} trades">${_v(f.oos_short_return_pct) >= 0 ? '+' : ''}${_n(f.oos_short_return_pct)}% <span style="font-size:9px;color:var(--muted)">(${f.oos_short_trade_count || 0})</span></td>
         <td class="${sign(f.oos_sharpe)}">${_n(f.oos_sharpe)}</td>
         <td class="${sign(f.oos_profit_factor - 1)}">${_n(f.oos_profit_factor)}</td>
         <td style="color:var(--muted)">${f.oos_trade_count || 0}</td>
@@ -789,6 +882,8 @@ function renderWFOResults(r) {
               <th style="text-align:left;padding:4px 8px">Test period</th>
               <th style="text-align:right;padding:4px 8px">IS Ret</th>
               <th style="text-align:right;padding:4px 8px">OOS Ret</th>
+              <th style="text-align:right;padding:4px 8px">Long Ret</th>
+              <th style="text-align:right;padding:4px 8px">Short Ret</th>
               <th style="text-align:right;padding:4px 8px">OOS Sharpe</th>
               <th style="text-align:right;padding:4px 8px">OOS PF</th>
               <th style="text-align:right;padding:4px 8px">Trades</th>

@@ -868,6 +868,7 @@ async def walk_forward_optimize(
     initial_balance: float | None = None,
     fee_rate: float | None = None,
     progress_callback=None,
+    fold_callback=None,
     concurrency: int = 4,
     interval: str = "15m",
 ) -> "WalkForwardResult":
@@ -1042,9 +1043,20 @@ async def walk_forward_optimize(
             oos_trade_count=oos_bt.trade_count,
             oos_profit_factor=oos_bt.profit_factor,
             oos_equity_curve=oos_bt.equity_curve,
+            oos_long_return_pct=oos_bt.long_return_pct,
+            oos_short_return_pct=oos_bt.short_return_pct,
+            oos_long_trade_count=oos_bt.long_trade_count,
+            oos_short_trade_count=oos_bt.short_trade_count,
             wfe=wfe,
         )
         result.folds.append(fold_result)
+
+        # Stream completed fold to API layer immediately (before stitching equity curve)
+        if fold_callback:
+            try:
+                await fold_callback(fold_result.to_dict())
+            except Exception:
+                pass
 
         # Stitch OOS equity curve with chain-scaling so folds connect smoothly.
         # Each fold's backtest starts from initial_balance → we rescale every point
