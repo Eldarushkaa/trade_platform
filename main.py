@@ -20,9 +20,8 @@ Data flow:
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (2 strategies × 3 coins = 6 bots):
-    rsi_btc, rsi_eth, rsi_sol           — Wilder RSI + trend filter
-    rsi_baseline_btc, ...               — RSI baseline (no filters)
+Bot instances (1 strategy × 3 coins = 3 bots):
+    rsi_btc, rsi_eth, rsi_sol  — RSI crossover + EMA proximity + vol + slope filters
 """
 import asyncio
 import logging
@@ -45,21 +44,17 @@ from data.orderbook_feed import fetch_depth
 # ------------------------------------------------------------------
 # Import strategy classes
 # ------------------------------------------------------------------
-from strategies.example_rsi_bot import RSIBot
-from strategies.rsi_baseline import RSIBaseline
+from strategies.rsi import RSIBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
 # ------------------------------------------------------------------
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-STRATEGY_CLASSES = [RSIBot, RSIBaseline]
+STRATEGY_CLASSES = [RSIBot]
 
-# Build 6 bot classes: one per strategy × symbol combination (RSI + RSIBaseline × 3 coins)
-REGISTERED_BOTS = []
-for strategy_cls in STRATEGY_CLASSES:
-    for sym in SYMBOLS:
-        REGISTERED_BOTS.append(strategy_cls.for_symbol(sym))
+# Build 3 bot classes: one per symbol
+REGISTERED_BOTS = [RSIBot.for_symbol(sym) for sym in SYMBOLS]
 
 # ------------------------------------------------------------------
 # Configure logging
@@ -95,7 +90,7 @@ async def lifespan(app: FastAPI):
         f"Starting Trade Platform in [{settings.trading_mode.upper()}] mode | "
         f"Fee: {settings.simulation_fee_rate * 100:.3f}% | "
         f"Candle interval: 15m | "
-        f"Bots: {len(REGISTERED_BOTS)} ({len(STRATEGY_CLASSES)} strategies × {len(SYMBOLS)} coins)"
+        f"Bots: {len(REGISTERED_BOTS)} ({len(SYMBOLS)} coins)"
     )
 
     # 1. Initialize database (runs migrations automatically)
