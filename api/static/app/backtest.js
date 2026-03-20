@@ -725,6 +725,7 @@ function renderPartialFolds(folds, n_folds, iterations_per_fold) {
         <td class="${sign(f.oos_profit_factor - 1)}">${_n(f.oos_profit_factor)}</td>
         <td style="color:var(--muted)">${f.oos_trade_count || 0}</td>
         <td class="${wfeClass(f.wfe)}">${_n(f.wfe, 2)} ${wfeLabel(f.wfe)}</td>
+        <td style="color:var(--muted);font-size:10px" title="train_candles / test_candles">${f.train_candles || 0}/${f.test_candles || 0} <span style="font-size:9px">(${f.test_candles ? (f.train_candles / f.test_candles).toFixed(1) : '—'}x)</span></td>
       </tr>`;
   });
 
@@ -733,7 +734,7 @@ function renderPartialFolds(folds, n_folds, iterations_per_fold) {
     foldRows += `
       <tr style="opacity:0.4">
         <td style="color:var(--muted)">#${i}</td>
-        <td colspan="10" style="color:var(--muted);font-size:10px">⏳ optimizing…</td>
+        <td colspan="11" style="color:var(--muted);font-size:10px">⏳ optimizing…</td>
       </tr>`;
   }
 
@@ -755,6 +756,7 @@ function renderPartialFolds(folds, n_folds, iterations_per_fold) {
               <th style="text-align:right;padding:4px 8px">PF</th>
               <th style="text-align:right;padding:4px 8px">Trades</th>
               <th style="text-align:right;padding:4px 8px">WFE</th>
+              <th style="text-align:right;padding:4px 8px" title="Train candles / Test candles">Train/Test</th>
             </tr>
           </thead>
           <tbody>${foldRows}</tbody>
@@ -811,6 +813,7 @@ function renderWFOResults(r) {
         <td class="${sign(f.oos_profit_factor - 1)}">${_n(f.oos_profit_factor)}</td>
         <td style="color:var(--muted)">${f.oos_trade_count || 0}</td>
         <td class="${wfeClass(f.wfe)}">${_n(f.wfe, 2)} <span style="font-size:9px">${wfeLabel(f.wfe)}</span></td>
+        <td style="color:var(--muted);font-size:10px" title="train_candles / test_candles">${f.train_candles || 0}/${f.test_candles || 0} <span style="font-size:9px">(${f.test_candles ? (f.train_candles / f.test_candles).toFixed(1) : '—'}x)</span></td>
       </tr>`;
   });
 
@@ -869,7 +872,7 @@ function renderWFOResults(r) {
         background:${avgWfe >= 0.6 ? 'rgba(0,200,120,0.08)' : avgWfe >= 0.3 ? 'rgba(245,166,35,0.08)' : 'rgba(255,80,80,0.08)'};
         border-left:3px solid ${avgWfe >= 0.6 ? 'var(--green)' : avgWfe >= 0.3 ? 'var(--yellow)' : 'var(--red)'}">
         <b>Walk-Forward Efficiency:</b> ${avgWfeTip}
-        <br><span style="color:var(--muted);font-size:10px">WFE = OOS return / IS return. &gt;0.6 good, 0.3–0.6 moderate, &lt;0.3 overfit</span>
+        <br><span style="color:var(--muted);font-size:10px">WFE = (OOS return/candle) / (IS return/candle) — size-normalized. &gt;0.6 good, 0.3–0.6 moderate, &lt;0.3 overfit</span>
       </div>
 
       <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:var(--muted)">FOLD-BY-FOLD RESULTS</div>
@@ -888,6 +891,7 @@ function renderWFOResults(r) {
               <th style="text-align:right;padding:4px 8px">OOS PF</th>
               <th style="text-align:right;padding:4px 8px">Trades</th>
               <th style="text-align:right;padding:4px 8px">WFE</th>
+              <th style="text-align:right;padding:4px 8px" title="Train candles / Test candles">Train/Test</th>
             </tr>
           </thead>
           <tbody>${foldRows}</tbody>
