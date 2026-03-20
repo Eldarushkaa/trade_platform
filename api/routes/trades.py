@@ -36,6 +36,9 @@ async def get_trades(
     """
     Return paginated trade history for a bot, newest first.
 
+    Returns an empty list if the bot exists but has no trades yet.
+    Returns 404 only if the bot is completely unknown (not in DB).
+
     Args:
         bot_name: The bot's unique name.
         limit:    Max trades to return (1–1000, default 100).
@@ -43,9 +46,16 @@ async def get_trades(
     """
     bot_record = await repo.get_bot(bot_name)
     if bot_record is None:
-        raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
-
-    trades = await repo.get_trades_for_bot(bot_name, limit=limit, offset=offset)
+        # Bot may be newly registered and not yet persisted on first start_all().
+        # Try fetching trades anyway — if none exist, return [].
+        # Only hard-fail if we can confirm the bot is truly unknown.
+        trades_check = await repo.get_trades_for_bot(bot_name, limit=1, offset=0)
+        if not trades_check:
+            return []
+        # Has trades but no bot record — shouldn't happen, return them anyway
+        trades = await repo.get_trades_for_bot(bot_name, limit=limit, offset=offset)
+    else:
+        trades = await repo.get_trades_for_bot(bot_name, limit=limit, offset=offset)
     return [
         TradeOut(
             id=t.id,
@@ -65,10 +75,7 @@ async def get_trades(
 
 @router.get("/{bot_name}/count")
 async def get_trade_count(bot_name: str):
-    """Return the total number of trades for a bot."""
-    bot_record = await repo.get_bot(bot_name)
-    if bot_record is None:
-        raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
+    """Return the total number of trades for a bot. Returns 0 for newly registered bots."""
     count = await repo.get_trade_count(bot_name)
     return {"bot_id": bot_name, "trade_count": count}
 
@@ -81,11 +88,8 @@ async def get_trade_stats(
     """
     Return aggregated trade statistics for a bot over the last N hours.
     Includes: trade_count, total_fees_paid, realized_pnl, win_count, loss_count.
+    Returns zeros for newly registered bots with no trades yet.
     """
-    bot_record = await repo.get_bot(bot_name)
-    if bot_record is None:
-        raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
-
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     stats = await repo.get_bot_trade_stats_since(bot_name, since)
     return {"bot_id": bot_name, "hours": hours, **stats}

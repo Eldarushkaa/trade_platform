@@ -100,8 +100,11 @@ async def set_live_enabled(request: Request, name: str, body: dict):
 
     Body: {"enabled": true|false}
 
-    When enabled=true:  the bot will receive candle/price updates from the live feed.
-    When enabled=false: the bot is paused (no new signals); existing positions are kept.
+    live_enabled controls ONLY whether the bot auto-starts on server restart.
+    It does NOT start/stop the bot immediately — use POST /{name}/start or /stop for that.
+
+    When enabled=true:  bot will auto-start on next server restart.
+    When enabled=false: bot stays paused on next restart (existing run is unaffected).
     """
     manager = _get_manager(request)
     bot = manager.get_bot(name)
@@ -111,10 +114,7 @@ async def set_live_enabled(request: Request, name: str, body: dict):
     enabled = bool(body.get("enabled", False))
     try:
         await repo.set_bot_live_enabled(name, enabled)
-        if enabled:
-            await manager.start_bot(name)
-        else:
-            await manager.stop_bot(name)
+        logger.info(f"Bot '{name}' live_enabled set to {enabled} (no immediate start/stop)")
         return {"bot_id": name, "live_enabled": enabled, "message": f"Bot '{name}' live_enabled set to {enabled}"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
