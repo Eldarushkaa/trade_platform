@@ -19,25 +19,35 @@ Donchian Breakout Bot — классическая трендовая систе
     exit_low  = min(low[i-M  : i])   # выход из LONG когда close < exit_low
     exit_high = max(high[i-M : i])   # выход из SHORT когда close > exit_high
 
-Фильтр:
-    Volatility: vol_ratio = ATR / EMA(ATR) > VOL_RATIO_MIN
-    Смысл: не входить на «мёртвом» рынке.
+Фильтры (вход):
+  1. Volatility: vol_ratio = ATR / EMA(ATR) > VOL_RATIO_MIN
+     Смысл: не входить на «мёртвом» рынке.
+
+  2. EMA200 proximity (ATR-based):
+     distance  = abs(close - EMA200)
+     threshold = EMA200_ATR_K * ATR
+     distance_ok = distance < threshold
+     Смысл: breakout работает лучше когда цена недалеко от долгосрочного тренда
+     (фильтр подтверждает что пробой — это действительно начало движения, а не
+     возврат после экстремального отклонения).
 
 Оптимизируемые параметры:
-    N_PERIOD  20–60  Период канала входа (breakout lookback)
-    M_PERIOD  10–30  Период канала выхода (exit lookback)
+    N_PERIOD     20–60   Период канала входа (breakout lookback)
+    M_PERIOD     10–30   Период канала выхода (exit lookback)
+    EMA200_ATR_K 1.0–4.0 Порог расстояния от EMA200 в единицах ATR
 
 Настраиваемые в UI (не оптимизируются):
     VOL_RATIO_MIN  = 1.0   Мин. ATR/EMA_ATR для входа
     TRADE_FRACTION = 1.0   Доля баланса на сделку
 
 Фиксированные:
-    ATR_PERIOD     = 14    Wilder ATR
-    EMA_ATR_PERIOD = 20    EMA(ATR) для baseline волатильности
-    HISTORY_MAX    = 80    Размер буфера OHLC истории (≥ max N + запас)
+    EMA_SLOW_PERIOD = 200  EMA200 как тренд-якорь и proximity-фильтр
+    ATR_PERIOD      = 14   Wilder ATR
+    EMA_ATR_PERIOD  = 20   EMA(ATR) для baseline волатильности
+    HISTORY_MAX     = 80   Размер буфера OHLC истории (≥ max N + запас)
 
 Warmup:
-    Торговля начинается когда накоплено ≥ N_PERIOD свечей истории + ATR готов.
+    Торговля начинается когда EMA200 готова (200 свечей) + ATR готов + накоплена история.
 
 Использование:
     from strategies.donchian import DonchianBot
@@ -63,13 +73,15 @@ class DonchianBot(BaseStrategy):
     symbol = "BTCUSDT"
 
     # --- Фиксированные периоды индикаторов ---
-    ATR_PERIOD     = 14   # Wilder ATR
-    EMA_ATR_PERIOD = 20   # EMA(ATR) — baseline для vol_ratio
-    HISTORY_MAX    = 80   # Глубина буфера OHLC истории (≥ max N_PERIOD)
+    EMA_SLOW_PERIOD = 200  # EMA200 как тренд-якорь (proximity-фильтр)
+    ATR_PERIOD      = 14   # Wilder ATR
+    EMA_ATR_PERIOD  = 20   # EMA(ATR) — baseline для vol_ratio
+    HISTORY_MAX     = 80   # Глубина буфера OHLC истории (≥ max N_PERIOD)
 
     # --- Оптимизируемые параметры ---
-    N_PERIOD = 20   # Breakout lookback (вход)
-    M_PERIOD = 10   # Exit lookback (выход)
+    N_PERIOD     = 20   # Breakout lookback (вход)
+    M_PERIOD     = 10   # Exit lookback (выход)
+    EMA200_ATR_K = 2.0  # Proximity filter: entry blocked when abs(close-EMA200) > k*ATR
 
     # --- Настраиваемые в UI (не оптимизируются) ---
     VOL_RATIO_MIN  = 1.0   # Мин. ATR/EMA_ATR для входа
@@ -123,10 +135,13 @@ class DonchianBot(BaseStrategy):
             "type": "int", "default": 10, "min": 10, "max": 30,
             "description": "Donchian exit channel period (Turtle exit lookback, excl. current candle)",
         },
+        "EMA200_ATR_K": {
+            "type": "float", "default": 2.0, "min": 1.0, "max": 4.0,
+            "description": "EMA200 proximity filter: entry blocked when abs(close-EMA200) > k*ATR",
+        },
         "VOL_RATIO_MIN": {
             "type": "float", "default": 1.0, "min": 0.5, "max": 2.0,
             "description": "Volatility filter: entry blocked when ATR/EMA_ATR < threshold",
-            "optimize": False,
         },
         "TRADE_FRACTION": {
             "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
@@ -147,10 +162,14 @@ class DonchianBot(BaseStrategy):
         self._high_buf: list[float] = []
         self._low_buf:  list[float] = []
 
+        # EMA200 state (proximity filter)
+        self._ema_slow:   Optional[float] = None
+        self._ema_warmup: list[float] = []
+
         # ATR + EMA(ATR) state
-        self._atr:      Optional[float] = None
-        self._ema_atr:  Optional[float] = None
-        self._warmup_tr: list[float] = []
+        self._atr:        Optional[float] = None
+        self._ema_atr:    Optional[float] = None
+        self._warmup_tr:  list[float] = []
         self._prev_close: Optional[float] = None
 
     # ------------------------------------------------------------------
@@ -163,15 +182,14 @@ class DonchianBot(BaseStrategy):
         high  = candle.high
         low   = candle.low
 
-        # --- 1. Snapshot prev_close before ATR update ---
-        prev_close_snapshot = self._prev_close
+        # --- 1. Update EMA200 ---
+        self._update_ema_slow(close)
 
         # --- 2. Update ATR (sets self._prev_close = close) ---
         self._update_atr(high, low, close)
 
-        # --- 3. Warmup guard ---
-        if self._atr is None or self._ema_atr is None:
-            # Still accumulating ATR warmup; append to history regardless
+        # --- 3. Warmup guard: wait for EMA200, ATR, and channel history ---
+        if self._ema_slow is None or self._atr is None or self._ema_atr is None:
             self._append_history(high, low)
             return
 
@@ -195,14 +213,20 @@ class DonchianBot(BaseStrategy):
         exit_high = max(self._high_buf[-m:])
         exit_low  = min(self._low_buf[-m:])
 
-        # --- 5. Volatility filter ---
+        # --- 5. Filters ---
+        # Volatility: trade only when ATR > EMA(ATR) * VOL_RATIO_MIN
         vol_ratio = self._atr / self._ema_atr if self._ema_atr > 0 else 0.0
         vol_ok    = vol_ratio > self.VOL_RATIO_MIN
 
+        # EMA200 proximity: entry blocked when price too far from EMA200
+        distance     = abs(close - self._ema_slow)
+        distance_ok  = distance < self.EMA200_ATR_K * self._atr
+
         self.logger.debug(
-            f"close={close:.2f}  high_N={high_N:.2f}  low_N={low_N:.2f}  "
+            f"close={close:.2f}  EMA200={self._ema_slow:.2f}  "
+            f"high_N={high_N:.2f}  low_N={low_N:.2f}  "
             f"exit_high={exit_high:.2f}  exit_low={exit_low:.2f}  "
-            f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}"
+            f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}  dist_ok={distance_ok}"
         )
 
         # --- 6. Position state ---
@@ -225,17 +249,20 @@ class DonchianBot(BaseStrategy):
                 )
                 position = 0
 
-        # --- 8. ENTRY LOGIC: breakout + vol filter ---
-        if position == 0 and vol_ok:
+        # --- 8. ENTRY LOGIC: breakout + vol filter + EMA200 proximity ---
+        if position == 0 and vol_ok and distance_ok:
             if close > high_N:
                 result = await self._open_position(
                     close, "BUY",
                     N=n, high_N=f"{high_N:.2f}",
+                    EMA200=f"{self._ema_slow:.2f}",
+                    dist=f"{distance:.4f}",
                     vol=f"{vol_ratio:.2f}"
                 )
                 if result is not None:
                     self.logger.info(
                         f"LONG breakout: close={close:.2f} > high_N={high_N:.2f}  "
+                        f"EMA200={self._ema_slow:.2f}  dist={distance:.2f}  "
                         f"(N={n}, vol={vol_ratio:.2f})"
                     )
 
@@ -243,16 +270,41 @@ class DonchianBot(BaseStrategy):
                 result = await self._open_position(
                     close, "SELL",
                     N=n, low_N=f"{low_N:.2f}",
+                    EMA200=f"{self._ema_slow:.2f}",
+                    dist=f"{distance:.4f}",
                     vol=f"{vol_ratio:.2f}"
                 )
                 if result is not None:
                     self.logger.info(
                         f"SHORT breakout: close={close:.2f} < low_N={low_N:.2f}  "
+                        f"EMA200={self._ema_slow:.2f}  dist={distance:.2f}  "
                         f"(N={n}, vol={vol_ratio:.2f})"
                     )
 
         # --- 9. Append current candle to history AFTER all logic ---
         self._append_history(high, low)
+
+    # ------------------------------------------------------------------
+    # EMA200 (proximity filter — trend anchor)
+    # ------------------------------------------------------------------
+
+    def _update_ema_slow(self, close: float) -> None:
+        """
+        EMA200 инициализируется SMA первых 200 свечей,
+        затем обновляется по стандартной формуле EMA (k = 2/201).
+        Торговля заблокирована пока EMA200 не готова.
+        """
+        self._ema_warmup.append(close)
+        n = len(self._ema_warmup)
+        k = 2.0 / (self.EMA_SLOW_PERIOD + 1)
+
+        if self._ema_slow is None:
+            if n >= self.EMA_SLOW_PERIOD:
+                self._ema_slow = sum(self._ema_warmup[:self.EMA_SLOW_PERIOD]) / self.EMA_SLOW_PERIOD
+                self._ema_warmup.clear()
+                self.logger.info(f"EMA{self.EMA_SLOW_PERIOD}={self._ema_slow:.2f} готов — торговля разрешена")
+        else:
+            self._ema_slow = close * k + self._ema_slow * (1 - k)
 
     # ------------------------------------------------------------------
     # History buffer
