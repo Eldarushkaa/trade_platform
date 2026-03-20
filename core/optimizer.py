@@ -985,11 +985,22 @@ async def walk_forward_optimize(
             logger.error(f"WFO fold {fold_num} OOS backtest failed: {e}", exc_info=True)
             continue
 
-        # --- WFE calculation ---
-        is_return = opt.best_return_pct
+        # --- WFE calculation (size-normalized) ---
+        # Raw WFE = oos_return / is_return would be biased because IS window is
+        # always much larger than OOS (expanding window → IS ≈ 70-90% of data).
+        # A perfectly generalizing strategy would show WFE ≈ 0.1 just due to
+        # window size difference.
+        # Fix: normalize both returns by their window length first, then divide.
+        #   wfe = (oos_return / oos_candles) / (is_return / is_candles)
+        # This gives WFE ≈ 1.0 for a strategy that generalizes perfectly.
+        is_return  = opt.best_return_pct
         oos_return = oos_bt.return_pct
-        if abs(is_return) > 0.01:
-            wfe = oos_return / is_return
+        is_candles_count  = len(train_candles)
+        oos_candles_count = len(test_candles)
+        if abs(is_return) > 0.01 and is_candles_count > 0 and oos_candles_count > 0:
+            is_rate  = is_return  / is_candles_count
+            oos_rate = oos_return / oos_candles_count
+            wfe = oos_rate / is_rate
         else:
             wfe = 0.0  # avoid division by near-zero
 
