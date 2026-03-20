@@ -239,48 +239,6 @@ class _Individual:
 # Fitness function  (composite, not just Sharpe)
 # ------------------------------------------------------------------
 
-def _compute_fitness(
-    sharpe: float,
-    return_pct: float,
-    max_dd: float,
-    trade_count: int,
-    profit_factor: float = 1.0,
-) -> float:
-    """
-    Composite fitness balancing profitability, risk, and statistical significance.
-
-    Components:
-      - Sharpe ratio:   40% — risk-adjusted stability
-      - Profit factor:  30% — gross_profit / gross_loss quality
-      - Return %:       20% — absolute profitability
-      - Max drawdown:   20% — risk penalty
-      - log(trades):    10% — reward statistically significant sample sizes
-
-    WFE (Walk-Forward Efficiency) is intentionally NOT part of fitness.
-    It is a diagnostic metric computed after walk-forward folds complete,
-    not an optimization target — optimizing for WFE is circular and misleading.
-
-    Hard filter: < 30 trades → disqualified (allows shorter OOS windows).
-    """
-    # Hard filter: statistically meaningless with too few trades
-    if trade_count < 30:
-        return -1000.0 + trade_count
-
-    s  = max(-5.0, min(5.0, sharpe))
-    pf = min(3.0,  max(0.0, profit_factor))          # raw pf, 0..3
-    r  = max(-2.0, min(2.0, return_pct / 100.0))
-    dd = abs(max_dd) / 100.0                          # 0..1+
-
-    fitness = (
-        s  * 0.40
-        + pf * 0.30
-        + r  * 0.20
-        - dd * 0.20
-        + math.log(max(1, trade_count)) * 0.10
-    )
-
-    return fitness
-
 
 # ------------------------------------------------------------------
 # Parameter manipulation helpers
@@ -537,7 +495,7 @@ async def optimize_params(
                 ind.win_rate = res["win_rate"]
                 ind.profit_factor = res["profit_factor"]
                 ind.trade_count = res["trade_count"]
-                ind.fitness = _compute_fitness(
+                ind.fitness = strategy_class.compute_fitness(
                     res["sharpe"], res["return_pct"], res["max_dd"],
                     res["trade_count"], res.get("profit_factor", 1.0),
                 )
@@ -838,6 +796,7 @@ class WalkForwardResult:
         self.avg_oos_sharpe: float = 0.0
         self.total_oos_trades: int = 0
         self.oos_equity_curve: list = []   # stitched across all folds
+        self.wfo_score: float = 0.0        # strategy-specific aggregate score
 
         # Final params: optimized on full dataset
         self.final_params: dict = {}
@@ -858,6 +817,7 @@ class WalkForwardResult:
             "avg_oos_return_pct": _sr(self.avg_oos_return_pct, 2),
             "avg_oos_sharpe": _sr(self.avg_oos_sharpe, 2),
             "total_oos_trades": self.total_oos_trades,
+            "wfo_score": _sr(self.wfo_score, 3),
             "oos_equity_curve": self.oos_equity_curve,
             "final_params": self.final_params,
             "final_is_return_pct": _sr(self.final_is_return_pct, 2),
@@ -1132,6 +1092,7 @@ async def walk_forward_optimize(
         result.avg_oos_return_pct = sum(f.oos_return_pct for f in result.folds) / len(result.folds)
         result.avg_oos_sharpe = sum(f.oos_sharpe for f in result.folds) / len(result.folds)
         result.total_oos_trades = sum(f.oos_trade_count for f in result.folds)
+        result.wfo_score = strategy_class.wfo_score([f.to_dict() for f in result.folds])
 
         # Prefer best-WFE fold params when avg_wfe is poor (< 0.35).
         # The fold with highest WFE generalised best and is a safer live choice

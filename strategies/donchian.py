@@ -1,5 +1,5 @@
 """
-Donchian Breakout Bot — классическая трендовая система (Turtle Trading).
+Donchian Breakout Bot — классическая трендовая система (Turtle Trading), trend-following.
 
 Работает на 15-МИНУТНЫХ СВЕЧАХ. USDT-маржинальные бессрочные фьючерсы с плечом.
 
@@ -47,6 +47,7 @@ Warmup:
         DonchianBot.for_symbol("SOLUSDT"),
     ]
 """
+import math
 from typing import Optional, TYPE_CHECKING
 
 from core.base_strategy import BaseStrategy
@@ -73,6 +74,45 @@ class DonchianBot(BaseStrategy):
     # --- Настраиваемые в UI (не оптимизируются) ---
     VOL_RATIO_MIN  = 1.0   # Мин. ATR/EMA_ATR для входа
     TRADE_FRACTION = 1.0   # Доля баланса на сделку
+
+    # ------------------------------------------------------------------
+    # Fitness overrides — trend-following objectives differ from RSI
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def compute_fitness(
+        cls,
+        sharpe: float,
+        return_pct: float,
+        max_dd: float,
+        trade_count: int,
+        profit_factor: float = 1.0,
+    ) -> float:
+        """
+        Trend-following IS fitness for Donchian breakout.
+
+        Breakout systems produce fewer but bigger trades.
+        Weights vs default:
+          - Return:       40% (need actual profit — rare large wins)
+          - Drawdown:     35% (deep DDs kill trend systems)
+          - Profit Factor: 20% (directional quality)
+          - log(trades):  15% (harder significance floor — breakouts are infrequent)
+
+        Hard filter: < 20 trades → disqualified (lower than RSI since breakout has fewer entries).
+        """
+        if trade_count < 20:
+            return -1000.0 + trade_count
+
+        pf = min(5.0,  max(0.0, profit_factor))
+        r  = max(-2.0, min(2.0, return_pct / 100.0))
+        dd = abs(max_dd) / 100.0
+
+        return (
+            r  * 0.40
+            - dd * 0.35
+            + pf * 0.20
+            + math.log(max(1, trade_count)) * 0.15
+        )
 
     PARAM_SCHEMA = {
         "N_PERIOD": {

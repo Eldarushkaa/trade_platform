@@ -21,6 +21,8 @@ The strategy NEVER interacts with an exchange directly.
 It only calls self.engine.place_order() — which routes to either
 SimulationEngine or LiveBinanceEngine depending on config.
 """
+import math
+import statistics
 from abc import ABC
 from typing import TYPE_CHECKING, Optional
 import logging
@@ -62,6 +64,59 @@ class BaseStrategy(ABC):
     # Format: { "PARAM_NAME": { "type": "int"|"float", "default": N,
     #           "min": N, "max": N, "description": "..." }, ... }
     PARAM_SCHEMA: dict[str, dict] = {}
+
+    # ------------------------------------------------------------------
+    # Fitness functions — override in subclasses for strategy-specific
+    # optimization targets
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def compute_fitness(
+        cls,
+        sharpe: float,
+        return_pct: float,
+        max_dd: float,
+        trade_count: int,
+        profit_factor: float = 1.0,
+    ) -> float:
+        """
+        Per-candidate fitness used during IS optimization.
+
+        Default (mean-reversion oriented):
+            Sharpe 40% + PF 30% + Return 20% - Drawdown 20% + log(trades) 10%
+
+        Override in subclasses for strategy-specific objectives.
+        Hard filter: < 30 trades → disqualified.
+        """
+        if trade_count < 30:
+            return -1000.0 + trade_count
+
+        s  = max(-5.0, min(5.0, sharpe))
+        pf = min(3.0,  max(0.0, profit_factor))
+        r  = max(-2.0, min(2.0, return_pct / 100.0))
+        dd = abs(max_dd) / 100.0
+
+        return (
+            s  * 0.40
+            + pf * 0.30
+            + r  * 0.20
+            - dd * 0.20
+            + math.log(max(1, trade_count)) * 0.10
+        )
+
+    @classmethod
+    def wfo_score(cls, folds: list[dict]) -> float:
+        """
+        Aggregate score across all WFO folds — diagnostic metric shown in UI.
+
+        Default: average OOS return across folds.
+
+        Override in subclasses for strategy-specific robustness scoring.
+        `folds` is a list of fold dicts as returned by `WalkForwardFold.to_dict()`.
+        """
+        if not folds:
+            return 0.0
+        return sum(f.get("oos_return_pct", 0.0) for f in folds) / len(folds)
 
     # ------------------------------------------------------------------
     # Factory — creates a per-symbol subclass at runtime
