@@ -778,11 +778,17 @@ class WalkForwardFold:
     oos_profit_factor: float
     oos_equity_curve: list
 
+    # Long / Short OOS breakdown (fields with defaults must come after fields without)
+    oos_long_return_pct: float = 0.0
+    oos_short_return_pct: float = 0.0
+    oos_long_trade_count: int = 0
+    oos_short_trade_count: int = 0
+
     # Walk-Forward Efficiency = OOS_return / IS_return
     # > 0.6 → strategy generalises well
     # 0.3–0.6 → moderate overfitting
     # < 0.3 → heavy curve-fitting
-    wfe: float
+    wfe: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -804,6 +810,10 @@ class WalkForwardFold:
             "oos_max_dd": _sr(self.oos_max_dd, 2),
             "oos_trade_count": self.oos_trade_count,
             "oos_profit_factor": _sr(self.oos_profit_factor, 2),
+            "oos_long_return_pct": _sr(self.oos_long_return_pct, 2),
+            "oos_short_return_pct": _sr(self.oos_short_return_pct, 2),
+            "oos_long_trade_count": self.oos_long_trade_count,
+            "oos_short_trade_count": self.oos_short_trade_count,
             "wfe": _sr(self.wfe, 3),
             "oos_equity_curve": self.oos_equity_curve,
         }
