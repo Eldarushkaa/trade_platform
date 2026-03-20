@@ -311,11 +311,11 @@ class SimulationEngine(BaseOrderEngine):
                 f"(max {max_slip * 100:.3f}%)"
             )
 
-        logger.debug(
-            f"VWAP fill {symbol} {side}: qty={quantity:.6f} "
-            f"desired={desired_price:.4f} fill={fill_price:.4f} "
-            f"slippage={slippage * 100:.4f}%"
-        )
+        # logger.debug(
+        #     f"VWAP fill {symbol} {side}: qty={quantity:.6f} "
+        #     f"desired={desired_price:.4f} fill={fill_price:.4f} "
+        #     f"slippage={slippage * 100:.4f}%"
+        # )
         return fill_price, "vwap"
 
     # ------------------------------------------------------------------
@@ -370,7 +370,7 @@ class SimulationEngine(BaseOrderEngine):
         if quantity == 0 and position.is_open:
             quantity = position.quantity
 
-        logger.debug(f"[{bot_id}] {side} fill={fill_price:.4f} ({fill_method})")
+        # logger.debug(f"[{bot_id}] {side} fill={fill_price:.4f} ({fill_method})")
 
         # --- Route order based on side + current position ---
         if side == "BUY":
@@ -430,10 +430,10 @@ class SimulationEngine(BaseOrderEngine):
         portfolio.deduct_fee(fee_usdt)
         result["fee_usdt"] = fee_usdt
 
-        logger.debug(
-            f"[{bot_id}] {side} fee: {fee_usdt:.4f} USDT "
-            f"({fee_rate * 100:.3f}% of {quantity * price:.2f})"
-        )
+        # logger.debug(
+        #     f"[{bot_id}] {side} fee: {fee_usdt:.4f} USDT "
+        #     f"({fee_rate * 100:.3f}% of {quantity * price:.2f})"
+        # )
 
         # --- Persist trade to database (skip during backtest) ---
         if not self._skip_db:

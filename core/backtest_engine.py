@@ -393,7 +393,7 @@ async def run_backtest(
 
         # Reset cooldown counter so warmup entries don't affect trading phase
         bot._last_trade_candle = -999
-        logger.debug(f"Backtest {bot_id}: warmup complete ({len(warmup_rows)} candles)")
+        # logger.debug(f"Backtest {bot_id}: warmup complete ({len(warmup_rows)} candles)")
 
     # --- Main replay loop ---
     error_count = [0]

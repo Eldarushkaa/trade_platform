@@ -215,7 +215,7 @@ class BaseStrategy(ABC):
         for key, value in coerced.items():
             setattr(self, key, value)
             applied[key] = value
-            self.logger.info(f"Parameter {key} updated to {value}")
+            # self.logger.info(f"Parameter {key} updated to {value}")
 
         return applied
 
@@ -323,13 +323,13 @@ class BaseStrategy(ABC):
                 price=price,
             )
             self._last_trade_candle = self._candle_count
-            extra_str = "  ".join(f"{k}={v}" for k, v in log_extra.items())
-            self.logger.info(
-                f"OPEN {direction} {quantity:.6f} @ {price:.4f}"
-                + (f"  {extra_str}" if extra_str else "")
-                + f"  fee={result.get('fee_usdt', 0):.4f}"
-                + f"  (trade_id={result.get('trade_id')})"
-            )
+            # extra_str = "  ".join(f"{k}={v}" for k, v in log_extra.items())
+            # self.logger.info(
+            #     f"OPEN {direction} {quantity:.6f} @ {price:.4f}"
+            #     + (f"  {extra_str}" if extra_str else "")
+            #     + f"  fee={result.get('fee_usdt', 0):.4f}"
+            #     + f"  (trade_id={result.get('trade_id')})"
+            # )
             return result
         except ValueError as exc:
             self.logger.error(f"OPEN {direction} failed: {exc}")
@@ -352,12 +352,12 @@ class BaseStrategy(ABC):
                 price=price,
             )
             self._last_trade_candle = self._candle_count
-            pnl = result.get("realized_pnl", 0)
-            self.logger.info(
-                f"{reason} @ {price:.4f}  P&L={pnl:+.4f}"
-                f"  fee={result.get('fee_usdt', 0):.4f}"
-                f"  (trade_id={result.get('trade_id')})"
-            )
+            # pnl = result.get("realized_pnl", 0)
+            # self.logger.info(
+            #     f"{reason} @ {price:.4f}  P&L={pnl:+.4f}"
+            #     f"  fee={result.get('fee_usdt', 0):.4f}"
+            #     f"  (trade_id={result.get('trade_id')})"
+            # )
             return result
         except ValueError as exc:
             self.logger.error(f"Close failed: {exc}")
