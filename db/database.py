@@ -59,6 +59,7 @@ async def _create_tables() -> None:
             symbol          TEXT NOT NULL,
             status          TEXT NOT NULL DEFAULT 'stopped',
             initial_balance REAL NOT NULL DEFAULT 10000.0,
+            live_enabled    INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL,
             updated_at      TEXT NOT NULL
         );
@@ -101,6 +102,7 @@ async def _create_tables() -> None:
 
         CREATE TABLE IF NOT EXISTS historical_candles (
             symbol          TEXT NOT NULL,
+            interval        TEXT NOT NULL DEFAULT '15m',  -- '1m','5m','15m','1h'
             open_time       INTEGER NOT NULL,     -- UTC epoch milliseconds
             open            REAL NOT NULL,
             high            REAL NOT NULL,
@@ -108,10 +110,15 @@ async def _create_tables() -> None:
             close           REAL NOT NULL,
             volume          REAL NOT NULL,
             close_time      INTEGER NOT NULL,     -- UTC epoch milliseconds
-            PRIMARY KEY (symbol, open_time)
+            PRIMARY KEY (symbol, interval, open_time)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_hist_symbol ON historical_candles(symbol);
+        CREATE INDEX IF NOT EXISTS idx_hist_symbol_interval ON historical_candles(symbol, interval);
+
+        CREATE TABLE IF NOT EXISTS platform_settings (
+            key     TEXT PRIMARY KEY,
+            value   TEXT NOT NULL
+        );
     """)
 
     # --- Additive migrations (safe to run on existing DBs) ---
@@ -129,5 +136,24 @@ async def _create_tables() -> None:
     if "asset_price" not in snap_cols:
         await db.execute("ALTER TABLE portfolio_snapshots ADD COLUMN asset_price REAL")
         logger.info("Migration applied: added 'asset_price' column to portfolio_snapshots table")
+
+    async with db.execute("PRAGMA table_info(bots)") as cursor:
+        bot_cols = {row["name"] async for row in cursor}
+    if "live_enabled" not in bot_cols:
+        await db.execute("ALTER TABLE bots ADD COLUMN live_enabled INTEGER NOT NULL DEFAULT 0")
+        logger.info("Migration applied: added 'live_enabled' column to bots table")
+
+    # historical_candles: add 'interval' column and rebuild unique index if needed
+    async with db.execute("PRAGMA table_info(historical_candles)") as cursor:
+        hc_cols = {row["name"] async for row in cursor}
+    if "interval" not in hc_cols:
+        await db.execute("ALTER TABLE historical_candles ADD COLUMN interval TEXT NOT NULL DEFAULT '15m'")
+        logger.info("Migration applied: added 'interval' column to historical_candles table")
+        # Rebuild the composite index (old idx_hist_symbol may still exist)
+        await db.execute("DROP INDEX IF EXISTS idx_hist_symbol")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hist_symbol_interval ON historical_candles(symbol, interval)"
+        )
+        logger.info("Migration applied: rebuilt historical_candles index with interval")
 
     await db.commit()

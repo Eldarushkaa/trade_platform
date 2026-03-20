@@ -1,12 +1,13 @@
 """
 API routes for bot management.
 
-GET  /api/bots                — list all registered bots
-GET  /api/bots/{name}         — get a single bot's status + portfolio
-POST /api/bots/{name}/start   — start a bot
-POST /api/bots/{name}/stop    — stop a bot
-GET  /api/bots/{name}/params  — get current parameters + schema
-PUT  /api/bots/{name}/params  — update strategy parameters
+GET   /api/bots                    — list all registered bots
+GET   /api/bots/{name}             — get a single bot's status + portfolio
+POST  /api/bots/{name}/start       — start a bot
+POST  /api/bots/{name}/stop        — stop a bot
+PATCH /api/bots/{name}/live        — toggle live_enabled (persisted to DB)
+GET   /api/bots/{name}/params      — get current parameters + schema
+PUT   /api/bots/{name}/params      — update strategy parameters
 """
 import logging
 
@@ -88,6 +89,33 @@ async def stop_bot(request: Request, name: str):
     try:
         await manager.stop_bot(name)
         return {"message": f"Bot '{name}' stopped"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.patch("/{name}/live")
+async def set_live_enabled(request: Request, name: str, body: dict):
+    """
+    Toggle live_enabled for a bot (persisted to DB, survives restarts).
+
+    Body: {"enabled": true|false}
+
+    When enabled=true:  the bot will receive candle/price updates from the live feed.
+    When enabled=false: the bot is paused (no new signals); existing positions are kept.
+    """
+    manager = _get_manager(request)
+    bot = manager.get_bot(name)
+    if bot is None:
+        raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
+
+    enabled = bool(body.get("enabled", False))
+    try:
+        await repo.set_bot_live_enabled(name, enabled)
+        if enabled:
+            await manager.start_bot(name)
+        else:
+            await manager.stop_bot(name)
+        return {"bot_id": name, "live_enabled": enabled, "message": f"Bot '{name}' live_enabled set to {enabled}"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

@@ -215,6 +215,7 @@ async def run_backtest(
     end_ms: int | None = None,
     warmup_candle_data: list | None = None,
     warmup_candles: int = 300,
+    interval: str = "15m",
 ) -> BacktestResult:
     """
     Run a full backtest for one strategy on historical data.
@@ -258,7 +259,7 @@ async def run_backtest(
     if candle_data is not None:
         candle_rows = candle_data
     else:
-        candle_rows = await repo.get_historical_candles(symbol, start_ms=start_ms, end_ms=end_ms)
+        candle_rows = await repo.get_historical_candles(symbol, interval=interval, start_ms=start_ms, end_ms=end_ms)
     if not candle_rows:
         raise ValueError(f"No historical data for {symbol}. Download it first.")
 
@@ -280,7 +281,7 @@ async def run_backtest(
         first_open_time = candle_rows[0]["open_time"] if candle_rows else None
         if first_open_time is not None and warmup_candles > 0:
             warmup_rows = await repo.get_historical_candles(
-                symbol, before_ms=first_open_time, limit=warmup_candles
+                symbol, interval=interval, before_ms=first_open_time, limit=warmup_candles
             )
         else:
             warmup_rows = []

@@ -1,14 +1,14 @@
 """
 Historical candle data downloader from Binance Futures API.
 
-Downloads 15-minute klines and stores them in the historical_candles table.
+Downloads klines at a configurable interval (1m, 5m, 15m, 1h) and stores
+them in the historical_candles table (keyed by symbol + interval + open_time).
 No API key required — klines are public data.
 
 Binance limits:
     - Max 1500 candles per request
-    - 1 day = 96 candles (15m interval), 1 year ≈ 35,040 candles
     - Rate limit: ~1200 req/min (we stay well under)
-    - Max supported download window: 3 years (1,095 days)
+    - Max supported download window: 5 years (1,825 days)
 """
 import asyncio
 import logging
@@ -23,32 +23,63 @@ logger = logging.getLogger(__name__)
 # Binance Futures klines endpoint (public, no auth needed)
 KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 MAX_CANDLES_PER_REQUEST = 1500
+
+# Supported intervals and their properties
+SUPPORTED_INTERVALS: dict[str, dict] = {
+    "1m":  {"minutes": 1,   "candles_per_day": 1440},
+    "5m":  {"minutes": 5,   "candles_per_day": 288},
+    "15m": {"minutes": 15,  "candles_per_day": 96},
+    "1h":  {"minutes": 60,  "candles_per_day": 24},
+}
+
+# Legacy constants kept for backward compatibility
 INTERVAL = "15m"
-CANDLES_PER_DAY = 96           # 24h × 60min / 15 = 96 candles per day
-CANDLE_STEP_MS  = 15 * 60_000  # 15 minutes in milliseconds
+CANDLES_PER_DAY = 96
+CANDLE_STEP_MS  = 15 * 60_000
+
+
+def _interval_step_ms(interval: str) -> int:
+    """Return candle step in milliseconds for the given interval string."""
+    info = SUPPORTED_INTERVALS.get(interval)
+    if info is None:
+        raise ValueError(f"Unsupported interval '{interval}'. Use one of: {list(SUPPORTED_INTERVALS)}")
+    return info["minutes"] * 60_000
+
+
+def _candles_per_day(interval: str) -> int:
+    """Return number of candles per day for the given interval."""
+    info = SUPPORTED_INTERVALS.get(interval)
+    if info is None:
+        raise ValueError(f"Unsupported interval '{interval}'.")
+    return info["candles_per_day"]
 
 
 async def download_klines(
     symbol: str,
     days: int = 14,
     start_date: str | None = None,
+    interval: str = "15m",
     progress_callback=None,
 ) -> dict:
     """
-    Download historical 15-minute klines from Binance and store in DB.
+    Download historical klines from Binance and store in DB.
 
     Args:
         symbol:     Trading pair, e.g. "BTCUSDT"
-        days:       Number of days of history to download (max 1095 = ~3 years)
+        days:       Number of days of history to download (max 1825 = ~5 years)
         start_date: Optional ISO date string "YYYY-MM-DD" (UTC).
                     When given, the download window is [start_date, start_date + days].
                     When omitted, the window is [now - days, now].
+        interval:   Candle timeframe: "1m", "5m", "15m" (default), "1h"
         progress_callback: Optional async callable(pct: float, msg: str)
 
     Returns:
-        Dict with {symbol, days, candles_downloaded, time_range}
+        Dict with {symbol, interval, days, candles_downloaded, time_range}
     """
-    days = min(days, 1095)  # Safety cap — 3 years
+    if interval not in SUPPORTED_INTERVALS:
+        raise ValueError(f"Unsupported interval '{interval}'. Use one of: {list(SUPPORTED_INTERVALS)}")
+
+    days = min(days, 1825)  # Safety cap — 5 years
 
     if start_date:
         start_time = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -62,12 +93,14 @@ async def download_klines(
     start_ms = int(start_time.timestamp() * 1000)
     end_ms   = int(end_time.timestamp() * 1000)
 
-    total_expected = days * CANDLES_PER_DAY  # approximate
+    candle_step_ms   = _interval_step_ms(interval)
+    candles_per_day  = _candles_per_day(interval)
+    total_expected   = days * candles_per_day  # approximate
     all_rows: list[tuple] = []
     current_start = start_ms
 
     logger.info(
-        f"Downloading {days}d of {symbol} 15m klines "
+        f"Downloading {days}d of {symbol} {interval} klines "
         f"({total_expected} candles expected, "
         f"from {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')})"
     )
@@ -76,7 +109,7 @@ async def download_klines(
         while current_start < end_ms:
             params = {
                 "symbol": symbol,
-                "interval": INTERVAL,
+                "interval": interval,
                 "startTime": current_start,
                 "endTime": end_ms,
                 "limit": MAX_CANDLES_PER_REQUEST,
@@ -109,9 +142,9 @@ async def download_klines(
                 )
                 all_rows.append(row)
 
-            # Move to next batch (advance by 5-minute step)
+            # Move to next batch
             last_open_time = int(klines[-1][0])
-            current_start = last_open_time + CANDLE_STEP_MS
+            current_start = last_open_time + candle_step_ms
 
             # Report progress
             progress = min(len(all_rows) / max(total_expected, 1) * 100, 99)
@@ -127,20 +160,21 @@ async def download_klines(
     if not all_rows:
         return {
             "symbol": symbol,
+            "interval": interval,
             "days": days,
             "start_date": start_date,
             "candles_downloaded": 0,
             "time_range": None,
         }
 
-    # Bulk insert into DB
-    saved = await repo.save_historical_candles(all_rows)
+    # Bulk insert into DB (with interval)
+    saved = await repo.save_historical_candles(all_rows, interval=interval)
 
     first_time = datetime.fromtimestamp(all_rows[0][1] / 1000, tz=timezone.utc)
     last_time  = datetime.fromtimestamp(all_rows[-1][1] / 1000, tz=timezone.utc)
 
     logger.info(
-        f"Downloaded {saved} 5m candles for {symbol}: "
+        f"Downloaded {saved} {interval} candles for {symbol}: "
         f"{first_time.strftime('%Y-%m-%d %H:%M')} → {last_time.strftime('%Y-%m-%d %H:%M')}"
     )
 
@@ -149,6 +183,7 @@ async def download_klines(
 
     return {
         "symbol": symbol,
+        "interval": interval,
         "days": days,
         "start_date": start_date,
         "candles_downloaded": saved,
@@ -163,20 +198,21 @@ async def download_all_symbols(
     symbols: list[str],
     days: int = 14,
     start_date: str | None = None,
+    interval: str = "15m",
 ) -> list[dict]:
     """Download klines for multiple symbols sequentially."""
     results = []
     for sym in symbols:
-        result = await download_klines(sym, days=days, start_date=start_date)
+        result = await download_klines(sym, days=days, start_date=start_date, interval=interval)
         results.append(result)
     return results
 
 
-async def get_data_status(symbols: list[str]) -> dict:
-    """Check what historical data is available for given symbols."""
+async def get_data_status(symbols: list[str], interval: str = "15m") -> dict:
+    """Check what historical data is available for given symbols at the given interval."""
     status = {}
     for sym in symbols:
-        info = await repo.get_historical_range(sym)
+        info = await repo.get_historical_range(sym, interval=interval)
         if info:
             status[sym] = {
                 "count": info["count"],

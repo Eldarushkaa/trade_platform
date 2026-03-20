@@ -449,6 +449,7 @@ async def optimize_params(
     fee_rate: float | None = None,
     progress_callback=None,
     concurrency: int = 4,
+    interval: str = "15m",
     _candle_override: list | None = None,
     _val_candle_override: list | None = None,
 ) -> OptimizationResult:
@@ -505,9 +506,9 @@ async def optimize_params(
         if not _cached_candles:
             raise ValueError(f"Empty candle override provided for {symbol}.")
     else:
-        _cached_candles = await repo.get_historical_candles(symbol)
+        _cached_candles = await repo.get_historical_candles(symbol, interval=interval)
         if not _cached_candles:
-            raise ValueError(f"No historical data for {symbol}. Download it first.")
+            raise ValueError(f"No historical data for {symbol} ({interval}). Download it first.")
 
     # --- Warmup candles for workers: last 300 rows of IS data ---
     # Workers use these to pre-heat EMA200, ATR, etc. before trading starts.
@@ -918,6 +919,7 @@ async def walk_forward_optimize(
     fee_rate: float | None = None,
     progress_callback=None,
     concurrency: int = 4,
+    interval: str = "15m",
 ) -> "WalkForwardResult":
     """
     Walk-Forward Optimization with expanding training windows.
@@ -957,9 +959,9 @@ async def walk_forward_optimize(
     start_time = time.monotonic()
 
     # --- Load all candles once ---
-    all_candles = await repo.get_historical_candles(symbol)
+    all_candles = await repo.get_historical_candles(symbol, interval=interval)
     if not all_candles:
-        raise ValueError(f"No historical data for {symbol}. Download it first.")
+        raise ValueError(f"No historical data for {symbol} ({interval}). Download it first.")
 
     total = len(all_candles)
     fold_size = int(total * test_pct)
@@ -1031,6 +1033,7 @@ async def walk_forward_optimize(
                 fee_rate=fee_rate,
                 progress_callback=_fold_progress,
                 concurrency=concurrency,
+                interval=interval,
                 _candle_override=train_candles,  # internal: skip DB, use these candles
             )
         except Exception as e:
@@ -1055,6 +1058,7 @@ async def walk_forward_optimize(
                 equity_interval=5,
                 candle_data=test_candles,
                 warmup_candle_data=_oos_warmup,
+                interval=interval,
             )
         except Exception as e:
             logger.error(f"WFO fold {fold_num} OOS backtest failed: {e}", exc_info=True)
@@ -1134,6 +1138,7 @@ async def walk_forward_optimize(
             fee_rate=fee_rate,
             progress_callback=_final_progress,
             concurrency=concurrency,
+            interval=interval,
             _candle_override=all_candles,
         )
         result.final_params = final_opt.best_params

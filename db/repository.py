@@ -89,6 +89,7 @@ async def get_all_bots() -> list[BotRecord]:
             symbol=row["symbol"],
             status=row["status"],
             initial_balance=row["initial_balance"],
+            live_enabled=bool(row["live_enabled"]) if "live_enabled" in row.keys() else False,
             created_at=_str_to_dt(row["created_at"]),
             updated_at=_str_to_dt(row["updated_at"]),
         )
@@ -108,9 +109,20 @@ async def get_bot(bot_id: str) -> Optional[BotRecord]:
         symbol=row["symbol"],
         status=row["status"],
         initial_balance=row["initial_balance"],
+        live_enabled=bool(row["live_enabled"]) if "live_enabled" in row.keys() else False,
         created_at=_str_to_dt(row["created_at"]),
         updated_at=_str_to_dt(row["updated_at"]),
     )
+
+
+async def set_bot_live_enabled(bot_id: str, enabled: bool) -> None:
+    """Set the live_enabled flag for a bot (persists across restarts)."""
+    db = get_db()
+    await db.execute(
+        "UPDATE bots SET live_enabled = ?, updated_at = ? WHERE id = ?",
+        (1 if enabled else 0, _dt_to_str(datetime.now(timezone.utc)), bot_id),
+    )
+    await db.commit()
 
 
 # ------------------------------------------------------------------
@@ -413,19 +425,25 @@ async def save_bot_params(bot_id: str, params: dict) -> None:
 # Historical candles
 # ------------------------------------------------------------------
 
-async def save_historical_candles(rows: list[tuple]) -> int:
+async def save_historical_candles(rows: list[tuple], interval: str = "15m") -> int:
     """
     Bulk-insert historical candles. Each row is a tuple:
         (symbol, open_time_ms, open, high, low, close, volume, close_time_ms)
+    The interval column is set to the provided interval string for all rows.
     Uses INSERT OR REPLACE so re-downloads overwrite cleanly.
     Returns number of rows inserted.
     """
     db = get_db()
+    # Inject the interval into each row: (symbol, interval, open_time, open, high, low, close, volume, close_time)
+    rows_with_interval = [
+        (r[0], interval, r[1], r[2], r[3], r[4], r[5], r[6], r[7])
+        for r in rows
+    ]
     await db.executemany(
         """INSERT OR REPLACE INTO historical_candles
-           (symbol, open_time, open, high, low, close, volume, close_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        rows,
+           (symbol, interval, open_time, open, high, low, close, volume, close_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows_with_interval,
     )
     await db.commit()
     return len(rows)
@@ -433,17 +451,19 @@ async def save_historical_candles(rows: list[tuple]) -> int:
 
 async def get_historical_candles(
     symbol: str,
+    interval: str = "15m",
     start_ms: int | None = None,
     end_ms: int | None = None,
     before_ms: int | None = None,
     limit: int | None = None,
 ) -> list[dict]:
     """
-    Fetch historical candles for a symbol, sorted by open_time ASC.
+    Fetch historical candles for a symbol+interval, sorted by open_time ASC.
     Optionally filter by time range (epoch milliseconds).
 
     Args:
         symbol:    Trading pair, e.g. "BTCUSDT"
+        interval:  Candle timeframe, e.g. "15m" (default), "1m", "5m", "1h"
         start_ms:  Only candles with open_time >= start_ms
         end_ms:    Only candles with open_time <= end_ms
         before_ms: Only candles with open_time < before_ms (for warmup: get N candles before window)
@@ -454,8 +474,8 @@ async def get_historical_candles(
 
     # Special case: "last N candles before X" — needs DESC order + limit, then reverse
     if before_ms is not None and limit is not None:
-        query = "SELECT * FROM historical_candles WHERE symbol = ? AND open_time < ?"
-        params: list = [symbol, before_ms]
+        query = "SELECT * FROM historical_candles WHERE symbol = ? AND interval = ? AND open_time < ?"
+        params: list = [symbol, interval, before_ms]
         query += " ORDER BY open_time DESC LIMIT ?"
         params.append(limit)
         async with db.execute(query, params) as cursor:
@@ -463,6 +483,7 @@ async def get_historical_candles(
             async for row in cursor:
                 rows.append({
                     "symbol": row["symbol"],
+                    "interval": row["interval"],
                     "open_time": row["open_time"],
                     "open": row["open"],
                     "high": row["high"],
@@ -474,8 +495,8 @@ async def get_historical_candles(
         rows.reverse()   # restore chronological order
         return rows
 
-    query = "SELECT * FROM historical_candles WHERE symbol = ?"
-    params = [symbol]
+    query = "SELECT * FROM historical_candles WHERE symbol = ? AND interval = ?"
+    params = [symbol, interval]
 
     if start_ms is not None:
         query += " AND open_time >= ?"
@@ -497,6 +518,7 @@ async def get_historical_candles(
         async for row in cursor:
             rows.append({
                 "symbol": row["symbol"],
+                "interval": row["interval"],
                 "open_time": row["open_time"],
                 "open": row["open"],
                 "high": row["high"],
@@ -508,27 +530,27 @@ async def get_historical_candles(
     return rows
 
 
-async def count_historical_candles(symbol: str) -> int:
-    """Return the number of stored historical candles for a symbol."""
+async def count_historical_candles(symbol: str, interval: str = "15m") -> int:
+    """Return the number of stored historical candles for a symbol+interval."""
     db = get_db()
     async with db.execute(
-        "SELECT COUNT(*) as cnt FROM historical_candles WHERE symbol = ?",
-        (symbol,),
+        "SELECT COUNT(*) as cnt FROM historical_candles WHERE symbol = ? AND interval = ?",
+        (symbol, interval),
     ) as cursor:
         row = await cursor.fetchone()
     return row["cnt"] if row else 0
 
 
-async def get_historical_range(symbol: str) -> dict | None:
+async def get_historical_range(symbol: str, interval: str = "15m") -> dict | None:
     """
-    Return the time range of stored candles for a symbol.
+    Return the time range of stored candles for a symbol+interval.
     Returns {min_time, max_time, count} or None.
     """
     db = get_db()
     async with db.execute(
         """SELECT MIN(open_time) as min_t, MAX(open_time) as max_t, COUNT(*) as cnt
-           FROM historical_candles WHERE symbol = ?""",
-        (symbol,),
+           FROM historical_candles WHERE symbol = ? AND interval = ?""",
+        (symbol, interval),
     ) as cursor:
         row = await cursor.fetchone()
     if not row or row["cnt"] == 0:
@@ -540,13 +562,52 @@ async def get_historical_range(symbol: str) -> dict | None:
     }
 
 
-async def delete_historical_candles(symbol: str) -> int:
-    """Delete all historical candles for a symbol. Returns deleted count."""
+async def delete_historical_candles(symbol: str, interval: str | None = None) -> int:
+    """
+    Delete historical candles for a symbol (and optionally a specific interval).
+    Returns deleted count.
+    """
     db = get_db()
-    count = await count_historical_candles(symbol)
-    await db.execute("DELETE FROM historical_candles WHERE symbol = ?", (symbol,))
+    if interval is not None:
+        count = await count_historical_candles(symbol, interval)
+        await db.execute(
+            "DELETE FROM historical_candles WHERE symbol = ? AND interval = ?",
+            (symbol, interval),
+        )
+    else:
+        async with db.execute(
+            "SELECT COUNT(*) as cnt FROM historical_candles WHERE symbol = ?", (symbol,)
+        ) as cur:
+            row = await cur.fetchone()
+        count = row["cnt"] if row else 0
+        await db.execute("DELETE FROM historical_candles WHERE symbol = ?", (symbol,))
     await db.commit()
     return count
+
+
+# ------------------------------------------------------------------
+# Platform settings (key/value store)
+# ------------------------------------------------------------------
+
+async def get_platform_setting(key: str, default: str | None = None) -> str | None:
+    """Get a platform-wide setting by key. Returns default if not set."""
+    db = get_db()
+    async with db.execute(
+        "SELECT value FROM platform_settings WHERE key = ?", (key,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row["value"] if row else default
+
+
+async def set_platform_setting(key: str, value: str) -> None:
+    """Persist a platform-wide setting (upsert)."""
+    db = get_db()
+    await db.execute(
+        "INSERT INTO platform_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    await db.commit()
 
 
 async def reset_bot_trading_data(bot_id: str) -> dict:

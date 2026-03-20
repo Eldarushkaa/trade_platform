@@ -50,6 +50,9 @@ _tickMskClock();
 setInterval(_tickMskClock, 1000);
 
 // ── Bootstrap ──────────────────────────────────────────────────
+// Sync interval button active states + download tooltips from localStorage
+setActiveInterval(_activeInterval);
+
 // First refresh populates bots list + bt-bot-select, then we init the bt panel
 // (which reads localStorage + restores any in-progress/completed task from server)
 refresh().then(() => {

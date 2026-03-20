@@ -65,7 +65,8 @@ function toggleBacktest() {
 
 async function loadDataStatus() {
   try {
-    const d = await get(`${API}/backtest/data-status`);
+    const iv = _activeInterval || '15m';
+    const d = await get(`${API}/backtest/data-status?interval=${iv}`);
 
     const info = document.getElementById('bt-data-info');
     const badge = document.getElementById('bt-data-badge');
@@ -75,24 +76,27 @@ async function loadDataStatus() {
       const syms = Object.entries(d.symbols).filter(([,v]) => v.count > 0);
       const coinCount = syms.length;
       let latestEnd = null;
+      let maxDays = 0;
       syms.forEach(([, v]) => {
         if (v.end) {
-          const d = new Date(v.end);
-          if (!latestEnd || d > latestEnd) latestEnd = d;
+          const dt = new Date(v.end);
+          if (!latestEnd || dt > latestEnd) latestEnd = dt;
         }
+        if (v.days > maxDays) maxDays = v.days;
       });
       const perCoin = coinCount > 0 ? Math.round(total / coinCount) : total;
       const dateStr = latestEnd
         ? `${latestEnd.toLocaleDateString('en-US', {month:'short', day:'numeric'})} ${String(latestEnd.getHours()).padStart(2,'0')}:${String(latestEnd.getMinutes()).padStart(2,'0')}`
         : '';
-      if (info) info.innerHTML = `${perCoin} candles/coin · ${coinCount} coin${coinCount > 1 ? 's' : ''}<br><span style="color:var(--muted);font-size:9px">Last: ${dateStr}</span>`;
-      if (badge) badge.textContent = `(${perCoin}/coin, ${dateStr})`;
+      const daysStr = maxDays >= 365 ? `${(maxDays/365).toFixed(1)}y` : `${Math.round(maxDays)}d`;
+      if (info) info.innerHTML = `${perCoin.toLocaleString()} ${iv} candles/coin · ${daysStr}<br><span style="color:var(--muted);font-size:9px">Last: ${dateStr}</span>`;
+      if (badge) badge.textContent = `(${perCoin.toLocaleString()} ${iv}/coin, ${dateStr})`;
       const hasBot = !!getBtBot();
       document.getElementById('bt-run-btn').disabled = !hasBot;
       document.getElementById('bt-opt-btn').disabled = !hasBot;
       document.getElementById('bt-wfo-btn').disabled = !hasBot;
     } else {
-      if (info) info.innerHTML = 'No data — download first';
+      if (info) info.innerHTML = `No ${iv} data — download first`;
       if (badge) badge.textContent = '';
       document.getElementById('bt-run-btn').disabled = true;
       document.getElementById('bt-opt-btn').disabled = true;
@@ -105,17 +109,18 @@ async function loadDataStatus() {
 async function downloadHistory(days, startDate = null) {
   const btns = document.querySelectorAll('.bt-btn-dl');
   btns.forEach(b => { b.disabled = true; });
+  const iv = _activeInterval || '15m';
   const label = startDate ? `${days}d from ${startDate}` : `${days}d`;
   const info = document.getElementById('bt-data-info');
-  if (info) info.textContent = `Downloading ${label} of 5m data...`;
+  if (info) info.textContent = `Downloading ${label} of ${iv} data...`;
 
   try {
-    const body = { days };
+    const body = { days, interval: iv };
     if (startDate) body.start_date = startDate;
     const resp = await postJson(`${API}/backtest/download`, body);
     if (resp.ok) {
       const total = resp.data.results.reduce((s, r) => s + (r.candles_downloaded || 0), 0);
-      if (info) info.textContent = `✓ Downloaded ${total} candles`;
+      if (info) info.textContent = `✓ Downloaded ${total.toLocaleString()} ${iv} candles`;
     } else {
       if (info) info.textContent = `✗ ${resp.data.detail || 'Error'}`;
     }
@@ -175,35 +180,58 @@ async function runBacktest() {
   const btn = document.getElementById('bt-run-btn');
   const status = document.getElementById('bt-status');
   btn.disabled = true;
+  btn.textContent = '⏳ Running...';
   status.textContent = '⏳ Running backtest...';
   document.getElementById('bt-results').style.display = 'none';
   document.getElementById('bt-opt-results').style.display = 'none';
 
   const feeRate = _btFeeRate();
-  const body = { bot_id: botId, fee_rate: feeRate };
+  const body = { bot_id: botId, fee_rate: feeRate, interval: _activeInterval || '15m' };
 
   const startDate = (document.getElementById('bt-start-date') || {}).value;
   const endDate   = (document.getElementById('bt-end-date')   || {}).value;
   if (startDate) body.start_date = startDate;
   if (endDate)   body.end_date   = endDate;
 
+  const rangeLabel = (startDate || endDate)
+    ? ` [${startDate || '…'} → ${endDate || '…'}]`
+    : '';
+
   try {
-    const resp = await postJson(`${API}/backtest/run`, body);
-    if (!resp.ok) {
-      status.textContent = `✗ ${resp.data.detail || 'Error'}`;
+    const startResp = await postJson(`${API}/backtest/run`, body);
+    if (!startResp.ok) {
+      status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
+      btn.textContent = '▶ Backtest';
       return;
     }
-    const r = resp.data;
-    const rangeLabel = (startDate || endDate)
-      ? ` [${startDate || '…'} → ${endDate || '…'}]`
-      : '';
-    status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s${rangeLabel}`;
-    renderBacktestResults(r);
+
+    const taskId = startResp.data.task_id;
+
+    let done = false;
+    while (!done) {
+      await new Promise(r => setTimeout(r, 1500));
+      await loadLogs();
+      try {
+        const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
+        if (poll.status === 'completed') {
+          done = true;
+          const r = poll.result;
+          status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s${rangeLabel}`;
+          renderBacktestResults(r);
+        } else if (poll.status === 'error') {
+          done = true;
+          status.textContent = `✗ ${poll.error}`;
+        }
+      } catch (e) {
+        console.warn('backtest poll error', e);
+      }
+    }
   } catch (e) {
     status.textContent = `✗ ${e.message}`;
   }
   btn.disabled = false;
+  btn.textContent = '▶ Backtest';
 }
 
 // ── Render backtest results ────────────────────────────────────
@@ -402,7 +430,7 @@ async function runOptimize() {
   document.getElementById('bt-wfo-results').style.display = 'none';
 
   try {
-    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: botId, iterations: iters, fee_rate: feeRate });
+    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: botId, iterations: iters, fee_rate: feeRate, interval: _activeInterval || '15m' });
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
@@ -417,6 +445,7 @@ async function runOptimize() {
     let done = false;
     while (!done) {
       await new Promise(r => setTimeout(r, 2000));
+      await loadLogs();
       try {
         const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
         status.textContent = `⏳ ${poll.progress?.msg || 'Running...'}`;
@@ -466,6 +495,7 @@ async function runWalkForward() {
       test_pct: testPct / 100,
       iterations: iters,
       fee_rate: feeRate,
+      interval: _activeInterval || '15m',
     });
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
@@ -481,6 +511,7 @@ async function runWalkForward() {
     let done = false;
     while (!done) {
       await new Promise(r => setTimeout(r, 3000));
+      await loadLogs();
       try {
         const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
         status.textContent = `⏳ ${poll.progress?.msg || 'Running...'}`;
@@ -546,8 +577,8 @@ async function initBtPanel() {
     const tasks = allTasks.tasks || [];
 
     if (tasks.length > 0) {
-      // Sort: walk_forward first, then optimize; running before completed
-      const typeOrder = { 'walk_forward': 0, 'optimize': 1 };
+      // Sort: walk_forward first, then optimize, then backtest; running before completed
+      const typeOrder = { 'walk_forward': 0, 'optimize': 1, 'backtest': 2 };
       const stateOrder = { 'running': 0, 'completed': 1, 'error': 2 };
       tasks.sort((a, b) => {
         const td = (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9);
@@ -557,7 +588,8 @@ async function initBtPanel() {
 
       const task = tasks[0]; // most relevant task
       const isWfo = task.type === 'walk_forward';
-      const type  = isWfo ? 'wfo' : 'opt';
+      const isBt  = task.type === 'backtest';
+      const type  = isWfo ? 'wfo' : isBt ? 'bt' : 'opt';
       const botId = task.bot_id;
 
       // Select the correct bot in the panel selector
@@ -576,6 +608,10 @@ async function initBtPanel() {
             if (isWfo) {
               renderWFOResults(full.result);
               statusEl.textContent = `✓ Walk-Forward complete in ${full.result.duration_seconds}s (restored)`;
+            } else if (isBt) {
+              const r = full.result;
+              statusEl.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s (restored)`;
+              renderBacktestResults(r);
             } else {
               renderOptResults(full.result);
               statusEl.textContent = `✓ Optimization complete in ${full.result.duration_seconds}s (restored)`;
@@ -627,10 +663,12 @@ async function initBtPanel() {
 /** Resume polling a background task after page reload */
 async function _resumePoll(type, taskId) {
   const isWfo = type === 'wfo';
+  const isBt  = type === 'bt';
   const status = document.getElementById('bt-status');
   let done = false;
   while (!done) {
-    await new Promise(r => setTimeout(r, isWfo ? 3000 : 2000));
+    await new Promise(r => setTimeout(r, isWfo ? 3000 : 1500));
+    await loadLogs();
     try {
       const poll = await get(`${API}/backtest/status?task_id=${taskId}`);
       status.textContent = `⏳ ${poll.progress?.msg || 'Running...'} (resumed)`;
@@ -639,6 +677,10 @@ async function _resumePoll(type, taskId) {
         if (isWfo) {
           renderWFOResults(poll.result);
           status.textContent = `✓ Walk-Forward complete in ${poll.result.duration_seconds}s`;
+        } else if (isBt) {
+          const r = poll.result;
+          status.textContent = `✓ ${r.candles_processed} candles in ${r.duration_seconds}s (resumed)`;
+          renderBacktestResults(r);
         } else {
           renderOptResults(poll.result);
           status.textContent = `✓ Optimization complete in ${poll.result.duration_seconds}s`;

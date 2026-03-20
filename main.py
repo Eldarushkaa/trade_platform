@@ -105,11 +105,21 @@ async def lifespan(app: FastAPI):
     for bot_class in REGISTERED_BOTS:
         bot_manager.register(bot_class)
 
-    # 3. Start all bots
+    # 3. Start only bots that have live_enabled=True persisted in DB.
+    #    Default is False (all bots off) — user must explicitly enable in UI.
+    from db import repository as repo
+    live_started = 0
+    for bot_class in REGISTERED_BOTS:
+        bot_record = await repo.get_bot(bot_class.name)
+        if bot_record and bot_record.live_enabled:
+            await bot_manager.start_bot(bot_class.name)
+            live_started += 1
     if REGISTERED_BOTS:
-        await bot_manager.start_all()
-        logger.info(f"Started {len(REGISTERED_BOTS)} bot(s): "
-                     f"{', '.join(b.name for b in REGISTERED_BOTS)}")
+        logger.info(
+            f"Registered {len(REGISTERED_BOTS)} bot(s), "
+            f"{live_started} started (live_enabled=True): "
+            f"{', '.join(b.name for b in REGISTERED_BOTS)}"
+        )
     else:
         logger.info("No bots registered. Add bots to STRATEGY_CLASSES in main.py")
 

@@ -24,6 +24,41 @@ let _logErrorCount = 0;
 let _refreshInterval = null;
 let _refreshSeconds = 60;
 
+// ── Active candle interval ──────────────────────────────────────
+// Persisted in localStorage. All backtest/optimize/download calls use this.
+const _SUPPORTED_INTERVALS = ['1m', '5m', '15m', '1h'];
+const _INTERVAL_CANDLES_PER_DAY = { '1m': 1440, '5m': 288, '15m': 96, '1h': 24 };
+let _activeInterval = localStorage.getItem('activeInterval') || '15m';
+
+function setActiveInterval(iv) {
+  if (!_SUPPORTED_INTERVALS.includes(iv)) return;
+  _activeInterval = iv;
+  localStorage.setItem('activeInterval', iv);
+  // Update interval button active states
+  _SUPPORTED_INTERVALS.forEach(i => {
+    const btn = document.getElementById(`iv-btn-${i}`);
+    if (btn) btn.classList.toggle('active', i === iv);
+  });
+  // Update download button tooltips with dynamic candle counts
+  const dlMap = { 'dl-btn-1y': 365, 'dl-btn-3y': 1095, 'dl-btn-5y': 1825 };
+  Object.entries(dlMap).forEach(([id, days]) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.title = `Download ${candleCountLabel(days, iv)} (${days}d)`;
+  });
+  // Update test download button tooltip too
+  const testBtn = document.getElementById('bt-dl-test-btn');
+  if (testBtn) testBtn.title = `Download ${candleCountLabel(14, iv)} starting from selected date (held-out test window)`;
+  // Refresh data status for new interval
+  if (typeof loadDataStatus === 'function') loadDataStatus();
+}
+
+function candleCountLabel(days, interval) {
+  const perDay = _INTERVAL_CANDLES_PER_DAY[interval] || 96;
+  const count = Math.round(days * perDay);
+  const countStr = count >= 1000 ? `${(count/1000).toFixed(0)}k` : String(count);
+  return `${days}d × ${interval} = ${countStr} candles`;
+}
+
 // ── Timezone helpers ────────────────────────────────────────────
 const _moscowTZ = 'Europe/Moscow';
 
@@ -70,6 +105,15 @@ async function post(url) {
 async function put(url, body) {
   const r = await fetch(url, {
     method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { ok: r.ok, status: r.status, data: await r.json() };
+}
+
+async function patch(url, body) {
+  const r = await fetch(url, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });

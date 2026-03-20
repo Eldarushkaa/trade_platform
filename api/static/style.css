@@ -155,7 +155,39 @@ header h1 span { color: var(--accent); }
 .btn:hover { opacity: .8; }
 .btn-start { background: var(--green); color: #000; }
 .btn-stop  { background: var(--red);   color: #fff; }
-.bot-actions { margin-top: 10px; display: flex; gap: 8px; }
+.bot-actions { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ── Timeframe (interval) selector buttons ────────────────────── */
+.iv-btn {
+  background: var(--card); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 3px 8px; font-size: 11px; cursor: pointer; font-weight: 600;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.iv-btn:hover { border-color: var(--accent); color: var(--text); }
+.iv-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ── Live toggle (small pill switch) ─────────────────────────── */
+.live-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  cursor: pointer; user-select: none; margin-left: auto;
+}
+.live-toggle input { display: none; }
+.live-toggle-slider {
+  width: 28px; height: 15px; border-radius: 8px;
+  background: var(--border); position: relative;
+  transition: background .2s; flex-shrink: 0;
+}
+.live-toggle-slider::after {
+  content: ''; position: absolute;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: #fff; top: 2px; left: 2px;
+  transition: transform .2s;
+}
+.live-toggle input:checked + .live-toggle-slider { background: var(--green); }
+.live-toggle input:checked + .live-toggle-slider::after { transform: translateX(13px); }
+.live-toggle-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.live-toggle input:checked ~ .live-toggle-label { color: var(--green); }
 
 /* --- Main panel --- */
 .main-panel { min-width: 0; }

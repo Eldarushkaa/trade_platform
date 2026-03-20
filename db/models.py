@@ -19,6 +19,7 @@ class BotRecord:
     symbol: str                  # e.g. "BTCUSDT"
     status: str                  # "running" | "stopped" | "error"
     initial_balance: float
+    live_enabled: bool = False   # whether live/simulation feed is active for this bot
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
 
