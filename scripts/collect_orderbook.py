@@ -3,8 +3,8 @@
 Orderbook (DOM) Collector — standalone script.
 
 Fetches order-book depth snapshots from Binance Futures every 60 seconds
-for all configured symbols and stores them in the same SQLite database
-used by the main trade platform.
+for all configured symbols and stores them in its own dedicated SQLite
+database: ob_data.db (located in the project root).
 
 Run standalone:
     python scripts/collect_orderbook.py
@@ -22,8 +22,7 @@ Run as systemd service:
     [Install]
     WantedBy=multi-user.target
 
-Environment variables (optional, reads from ../.env):
-    DB_PATH           — SQLite file path  (default: trade_platform.db)
+Optional environment overrides (no .env required):
     DOM_INTERVAL      — seconds between snapshots (default: 60)
     DOM_DEPTH_LIMIT   — orderbook levels per side  (default: 50)
 """
@@ -45,14 +44,9 @@ import httpx
 # Resolve project root (one level up from scripts/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Try loading .env from project root
-try:
-    from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
-except ImportError:
-    pass
+# Dedicated database — never shares with the main trade_platform.db
+DB_PATH = str(PROJECT_ROOT / "ob_data.db")
 
-DB_PATH = os.getenv("DB_PATH", str(PROJECT_ROOT / "trade_platform.db"))
 INTERVAL_SECONDS = int(os.getenv("DOM_INTERVAL", "60"))
 DEPTH_LIMIT = int(os.getenv("DOM_DEPTH_LIMIT", "50"))
 
