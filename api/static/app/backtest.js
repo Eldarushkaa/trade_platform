@@ -137,8 +137,13 @@ async function loadDataStatus() {
 
 /**
  * Render year-shortcut buttons for the Opt/WFO date range row.
- * Buttons are labelled "Yr 1", "Yr 2", … up to the number of full years in the dataset.
- * Each button fills opt-start-date and opt-end-date with the matching 365-day window.
+ *
+ * Two rows:
+ *   From: [Yr 1] [Yr 2] … [Yr N]   → each sets opt-start-date to start of that year
+ *   To:   [Yr 1] [Yr 2] … [Yr N]   → each sets opt-end-date to END of that year
+ *
+ * Years count uses Math.ceil so a 4.8-year dataset shows 5 buttons (partial last year included).
+ * Clicking "From Yr 3" then "To Yr 5" produces the 3-5 range, etc.
  */
 function _renderYearShortcuts(oldestMs, newestMs) {
   const wrap = document.getElementById('opt-year-shortcuts');
@@ -147,53 +152,74 @@ function _renderYearShortcuts(oldestMs, newestMs) {
   if (!oldestMs || !newestMs) return;
 
   const totalDays = (newestMs - oldestMs) / 86400000;
-  const numYears = Math.floor(totalDays / 365);
+  const numYears = Math.ceil(totalDays / 365);
   if (numYears < 1) return;
 
-  const btnStyle = [
-    'background:rgba(108,99,255,0.12)',
-    'color:#a89fff',
-    'border:1px solid rgba(108,99,255,0.35)',
-    'border-radius:4px',
-    'padding:2px 7px',
-    'font-size:10px',
-    'cursor:pointer',
-    'white-space:nowrap',
-  ].join(';');
+  const toISODate = ms => new Date(ms).toISOString().slice(0, 10);
+  const msPerYear = 365 * 86400000;
+
+  // Year boundary helpers
+  const yearStart = y => oldestMs + (y - 1) * msPerYear;
+  const yearEnd   = y => Math.min(oldestMs + y * msPerYear, newestMs);
+
+  const fromStyle = 'background:rgba(0,180,100,0.12);color:#4ecb8d;border:1px solid rgba(0,180,100,0.3);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;white-space:nowrap';
+  const toStyle   = 'background:rgba(255,120,60,0.10);color:#ff9955;border:1px solid rgba(255,120,60,0.3);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;white-space:nowrap';
+  const mutedStyle= 'background:rgba(60,60,80,0.2);color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;white-space:nowrap';
+
+  // ── "From" row ──────────────────────────────────────────────
+  const fromRow = document.createElement('div');
+  fromRow.style.cssText = 'display:flex;align-items:center;gap:3px;flex-wrap:wrap';
+
+  const fromLabel = document.createElement('span');
+  fromLabel.style.cssText = 'font-size:9px;color:var(--muted);font-weight:600;white-space:nowrap;min-width:28px';
+  fromLabel.textContent = 'From:';
+  fromRow.appendChild(fromLabel);
 
   for (let y = 1; y <= numYears; y++) {
     const btn = document.createElement('button');
-    btn.style.cssText = btnStyle;
-    btn.title = `Set Opt/WFO range to year ${y} of the dataset`;
+    btn.style.cssText = fromStyle;
+    btn.title = `Set start date to beginning of Year ${y} (${toISODate(yearStart(y))})`;
     btn.textContent = `Yr ${y}`;
-    btn.onclick = () => setOptYear(y, oldestMs, newestMs);
-    wrap.appendChild(btn);
+    const _y = y;
+    btn.onclick = () => {
+      const el = document.getElementById('opt-start-date');
+      if (el) el.value = toISODate(yearStart(_y));
+    };
+    fromRow.appendChild(btn);
+  }
+  wrap.appendChild(fromRow);
+
+  // ── "To" row ────────────────────────────────────────────────
+  const toRow = document.createElement('div');
+  toRow.style.cssText = 'display:flex;align-items:center;gap:3px;flex-wrap:wrap;margin-top:3px';
+
+  const toLabel = document.createElement('span');
+  toLabel.style.cssText = 'font-size:9px;color:var(--muted);font-weight:600;white-space:nowrap;min-width:28px';
+  toLabel.textContent = 'To:';
+  toRow.appendChild(toLabel);
+
+  for (let y = 1; y <= numYears; y++) {
+    const btn = document.createElement('button');
+    btn.style.cssText = toStyle;
+    btn.title = `Set end date to end of Year ${y} (${toISODate(yearEnd(y))})`;
+    btn.textContent = `Yr ${y}`;
+    const _y = y;
+    btn.onclick = () => {
+      const el = document.getElementById('opt-end-date');
+      if (el) el.value = toISODate(yearEnd(_y));
+    };
+    toRow.appendChild(btn);
   }
 
-  // "All" shortcut
+  // "All" reset button in the To row
   const allBtn = document.createElement('button');
-  allBtn.style.cssText = btnStyle.replace('rgba(108,99,255,0.12)', 'rgba(60,60,80,0.2)').replace('#a89fff', 'var(--muted)');
+  allBtn.style.cssText = mutedStyle;
   allBtn.title = 'Clear Opt/WFO date range (use all data)';
-  allBtn.textContent = 'All';
+  allBtn.textContent = '✕ All';
   allBtn.onclick = clearOptDates;
-  wrap.appendChild(allBtn);
-}
+  toRow.appendChild(allBtn);
 
-/**
- * Set opt-start-date / opt-end-date to the Nth 365-day window from oldestMs.
- * Year 1 = oldest … oldest+365d, Year 2 = oldest+365d … oldest+730d, etc.
- */
-function setOptYear(yearNum, oldestMs, newestMs) {
-  const msPerYear = 365 * 86400000;
-  const startMs = oldestMs + (yearNum - 1) * msPerYear;
-  const endMs   = Math.min(oldestMs + yearNum * msPerYear, newestMs);
-
-  const toISODate = ms => new Date(ms).toISOString().slice(0, 10);
-
-  const startEl = document.getElementById('opt-start-date');
-  const endEl   = document.getElementById('opt-end-date');
-  if (startEl) startEl.value = toISODate(startMs);
-  if (endEl)   endEl.value   = toISODate(endMs);
+  wrap.appendChild(toRow);
 }
 
 /** Clear Opt/WFO date filters */
