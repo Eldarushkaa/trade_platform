@@ -44,20 +44,28 @@ from data.orderbook_feed import fetch_depth
 # ------------------------------------------------------------------
 # Import strategy classes
 # ------------------------------------------------------------------
-from strategies.rsi import RSIBot
-from strategies.donchian import DonchianBot
+from strategies import RSIBot, DonchianBot, DonchianNewBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
 # ------------------------------------------------------------------
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    # "SOLUSDT",
+]
 
-STRATEGY_CLASSES = [RSIBot, DonchianBot]
+STRATEGY_CLASSES = [
+    RSIBot,
+    DonchianBot,
+    DonchianNewBot,
+]
 
 # Build 6 bot classes: RSI + Donchian, each for 3 symbols
-REGISTERED_BOTS = (
-    [RSIBot.for_symbol(sym) for sym in SYMBOLS] +
-    [DonchianBot.for_symbol(sym) for sym in SYMBOLS]
+REGISTERED_BOTS = list(
+    bot.for_symbol(sym)
+    for sym in SYMBOLS
+    for bot in STRATEGY_CLASSES
 )
 
 # ------------------------------------------------------------------
