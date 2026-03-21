@@ -396,7 +396,6 @@ class VirtualPortfolio:
         else:
             self.usdt_balance -= fee_usdt
             self.total_fees_paid += fee_usdt
-        self.logger.debug(f"Fee deducted: {fee_usdt:.4f} USDT | Total fees: {self.total_fees_paid:.4f}")
 
     # ------------------------------------------------------------------
     # State queries

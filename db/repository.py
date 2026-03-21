@@ -418,7 +418,6 @@ async def save_bot_params(bot_id: str, params: dict) -> None:
         (bot_id, params_json, now),
     )
     await db.commit()
-    logger.debug(f"Saved params for '{bot_id}': {params}")
 
 
 # ------------------------------------------------------------------

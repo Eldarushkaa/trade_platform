@@ -57,10 +57,6 @@ async def fetch_depth(symbol: str) -> dict | None:
             logger.warning(f"fetch_depth: empty bids/asks for {symbol}")
             return None
 
-        logger.debug(
-            f"fetch_depth {symbol}: best_bid={bids[0][0]} best_ask={asks[0][0]} "
-            f"({len(bids)} bid levels, {len(asks)} ask levels)"
-        )
         return {"bids": bids, "asks": asks}
 
     except httpx.TimeoutException:

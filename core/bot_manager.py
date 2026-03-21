@@ -286,7 +286,6 @@ class BotManager:
         calls bot.on_candle(). The default on_candle() implementation
         forwards candle.close to on_price_update() for backward compat.
         """
-        logger.debug(f"Bot '{bot.name}' candle loop started")
         try:
             while bot.is_running:
                 try:
@@ -296,17 +295,13 @@ class BotManager:
                     )
                     await bot.on_candle(candle)
                 except asyncio.TimeoutError:
-                    logger.debug(
-                        f"Bot '{bot.name}': no candle received for 90s "
-                        f"(waiting for next 1-minute close)"
-                    )
+                    pass
                 except Exception as exc:
                     logger.error(
                         f"Bot '{bot.name}' error in on_candle: {exc}",
                         exc_info=True,
                     )
         except asyncio.CancelledError:
-            logger.debug(f"Bot '{bot.name}' candle loop cancelled")
             raise
 
     async def _snapshot_loop(self, bot_id: str) -> None:
@@ -321,13 +316,11 @@ class BotManager:
         try:
             # Stagger initial write across the full interval window.
             jitter = random.uniform(0, settings.snapshot_interval_seconds)
-            logger.debug(f"Snapshot loop '{bot_id}': initial delay {jitter:.1f}s")
             await asyncio.sleep(jitter)
             while True:
                 try:
                     if isinstance(self.engine, SimulationEngine):
                         await self.engine.save_snapshot(bot_id)
-                        logger.debug(f"Portfolio snapshot saved for '{bot_id}'")
                 except Exception as exc:
                     logger.error(f"Snapshot error for '{bot_id}': {exc}", exc_info=True)
                 await asyncio.sleep(settings.snapshot_interval_seconds)

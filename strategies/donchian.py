@@ -222,12 +222,12 @@ class DonchianBot(BaseStrategy):
         distance     = abs(close - self._ema_slow)
         distance_ok  = distance < self.EMA200_ATR_K * self._atr
 
-        self.logger.debug(
-            f"close={close:.2f}  EMA200={self._ema_slow:.2f}  "
-            f"high_N={high_N:.2f}  low_N={low_N:.2f}  "
-            f"exit_high={exit_high:.2f}  exit_low={exit_low:.2f}  "
-            f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}  dist_ok={distance_ok}"
-        )
+        # self.logger.debug(
+        #     f"close={close:.2f}  EMA200={self._ema_slow:.2f}  "
+        #     f"high_N={high_N:.2f}  low_N={low_N:.2f}  "
+        #     f"exit_high={exit_high:.2f}  exit_low={exit_low:.2f}  "
+        #     f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}  dist_ok={distance_ok}"
+        # )
 
         # --- 6. Position state ---
         position = await self.engine.get_balance(self.name, "POSITION")

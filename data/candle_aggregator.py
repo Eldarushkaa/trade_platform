@@ -120,9 +120,6 @@ class CandleAggregator:
     def subscribe(self, callback: CandleCallback) -> None:
         """Register an async callback to receive completed candles."""
         self._subscribers.append(callback)
-        logger.debug(
-            f"CandleAggregator: subscriber added ({len(self._subscribers)} total)"
-        )
 
     def unsubscribe(self, callback: CandleCallback) -> None:
         try:
@@ -165,7 +162,6 @@ class CandleAggregator:
             # --- Candle boundary crossed → close current candle ---
             close_time = current_index * self.interval_seconds
             completed = candle.to_candle(close_time=close_time)
-            logger.debug(f"Candle closed: {completed}")
 
             # Start fresh candle for new period (opens at current price)
             self._in_progress[symbol] = _InProgress(
@@ -205,7 +201,6 @@ class CandleAggregator:
         for symbol, candle in list(self._in_progress.items()):
             if candle.volume > 0:
                 completed = candle.to_candle(close_time=now)
-                logger.debug(f"CandleAggregator.flush(): emitting partial candle for {symbol}")
                 await self._notify(completed)
         self._in_progress.clear()
 

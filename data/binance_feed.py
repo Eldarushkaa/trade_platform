@@ -154,7 +154,5 @@ class BinanceFeed:
             price = float(price_str)
             self.cache.update(symbol, price)
 
-            logger.debug(f"Tick: {symbol} = {price:.4f}")
-
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
             logger.warning(f"BinanceFeed: failed to parse message: {exc} | raw={raw[:120]}")

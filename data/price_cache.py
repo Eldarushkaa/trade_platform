@@ -55,7 +55,6 @@ class PriceCache:
             callback: async def callback(symbol: str, price: float) -> None
         """
         self._subscribers.append(callback)
-        logger.debug(f"PriceCache: subscriber registered ({len(self._subscribers)} total)")
 
     def unsubscribe(self, callback: PriceSubscriber) -> None:
         """Remove a previously registered subscriber."""

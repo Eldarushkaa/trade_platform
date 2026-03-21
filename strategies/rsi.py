@@ -242,11 +242,11 @@ class RSIBot(BaseStrategy):
         vol_ratio = self._atr / self._ema_atr if self._ema_atr > 0 else 0.0
         vol_ok    = vol_ratio > self.VOL_RATIO_MIN
 
-        self.logger.debug(
-            f"close={close:.2f}  RSI={rsi:.1f}  "
-            f"EMA200={self._ema_slow:.2f}  dist_ok={distance_ok}  "
-            f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}  pos={position:.6f}"
-        )
+        # self.logger.debug(
+        #     f"close={close:.2f}  RSI={rsi:.1f}  "
+        #     f"EMA200={self._ema_slow:.2f}  dist_ok={distance_ok}  "
+        #     f"vol_ratio={vol_ratio:.2f}  vol_ok={vol_ok}  pos={position:.6f}"
+        # )
 
         # ------------------------------------------------------------------
         # EXIT LOGIC (проверяем до входа, независимо от фильтров)
