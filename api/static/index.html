@@ -218,6 +218,21 @@
       <span class="bt-status" id="bt-status"></span>
     </div>
 
+    <!-- Opt / WFO date range filter -->
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+      <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;white-space:nowrap">Opt / WFO range:</span>
+      <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)">
+        From
+        <input type="date" id="opt-start-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:11px" title="Start date for Optimize / Walk-Forward (leave blank = all data)" />
+      </label>
+      <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)">
+        To
+        <input type="date" id="opt-end-date" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 5px;font-size:11px" title="End date for Optimize / Walk-Forward (leave blank = all data)" />
+      </label>
+      <button onclick="clearOptDates()" style="background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer" title="Clear date filters">✕ Clear</button>
+      <div id="opt-year-shortcuts" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+    </div>
+
     <!-- WFO settings row (shown always, compact) -->
     <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:6px 0 2px;font-size:11px;color:var(--muted)">
       <span style="color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.05em">WALK-FORWARD:</span>

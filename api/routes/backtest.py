@@ -81,6 +81,8 @@ class OptimizeRequest(BaseModel):
     iterations: int = 200              # max optimization iterations (50/100/200/500/1000/2000/5000)
     fee_rate: float | None = None      # fee rate override, e.g. 0.0007 (0.07%); None → default
     interval: str = "15m"             # candle timeframe
+    start_date: str | None = None      # optional date range "YYYY-MM-DD" UTC — optimizer uses only this window
+    end_date: str | None = None        # optional end of optimizer window "YYYY-MM-DD" UTC
 
 
 class WalkForwardRequest(BaseModel):
@@ -90,6 +92,8 @@ class WalkForwardRequest(BaseModel):
     iterations: int = 100              # GA budget PER FOLD (not total!). Total = iterations * (n_folds+1)
     fee_rate: float | None = None      # fee rate override
     interval: str = "15m"             # candle timeframe
+    start_date: str | None = None      # optional date range "YYYY-MM-DD" UTC — WFO uses only this window
+    end_date: str | None = None        # optional end of WFO window "YYYY-MM-DD" UTC
 
 
 # ------------------------------------------------------------------
@@ -347,8 +351,63 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
     async def _run():
         try:
             import os
+            from datetime import datetime, timezone, timedelta
             cpu_count = os.cpu_count() or 2
             concurrency = min(2, max(1, cpu_count - 1))
+
+            # --- Date-range candle filtering ---
+            # If start_date / end_date given, fetch only that window + 300 pre-window
+            # warmup candles (to pre-heat EMA200/ATR without including in IS scoring).
+            _opt_candles: list | None = None
+            _opt_warmup: list | None = None
+            if req.start_date or req.end_date:
+                try:
+                    _start_ms: int | None = None
+                    _end_ms: int | None = None
+                    if req.start_date:
+                        _start_ms = int(
+                            datetime.strptime(req.start_date, "%Y-%m-%d")
+                            .replace(tzinfo=timezone.utc).timestamp() * 1000
+                        )
+                    if req.end_date:
+                        _end_ms = int(
+                            (datetime.strptime(req.end_date, "%Y-%m-%d")
+                             .replace(tzinfo=timezone.utc) + timedelta(days=1))
+                            .timestamp() * 1000
+                        ) - 1
+
+                    from db import repository as _repo
+                    _opt_candles = await _repo.get_historical_candles(
+                        symbol, interval=req.interval,
+                        start_ms=_start_ms, end_ms=_end_ms,
+                    )
+                    if not _opt_candles:
+                        _running_tasks[task_id]["done"] = True
+                        _running_tasks[task_id]["status"] = "error"
+                        _running_tasks[task_id]["error"] = (
+                            f"No candles found for {symbol} in the selected date range "
+                            f"({req.start_date or '…'} → {req.end_date or '…'})."
+                        )
+                        _running_tasks[task_id]["completed_at"] = time.monotonic()
+                        return
+
+                    # Fetch 300 candles immediately before the window for warmup
+                    if _start_ms is not None:
+                        _opt_warmup = await _repo.get_historical_candles(
+                            symbol, interval=req.interval,
+                            before_ms=_start_ms, limit=300,
+                        )
+                    logger.info(
+                        f"Optimize [{req.bot_id}]: date range filter applied — "
+                        f"{len(_opt_candles)} IS candles, {len(_opt_warmup or [])} warmup candles "
+                        f"({req.start_date or 'start'} → {req.end_date or 'end'})"
+                    )
+                except ValueError as date_err:
+                    _running_tasks[task_id]["done"] = True
+                    _running_tasks[task_id]["status"] = "error"
+                    _running_tasks[task_id]["error"] = f"Invalid date format: {date_err}"
+                    _running_tasks[task_id]["completed_at"] = time.monotonic()
+                    return
 
             result = await optimize_params(
                 bot_id=req.bot_id,
@@ -360,6 +419,8 @@ async def optimize_endpoint(request: Request, req: OptimizeRequest):
                 progress_callback=on_progress,
                 concurrency=concurrency,
                 interval=req.interval,
+                _candle_override=_opt_candles,
+                _warmup_override=_opt_warmup,
             )
             _running_tasks[task_id]["result"] = result.to_dict()
             _running_tasks[task_id]["done"] = True
@@ -447,8 +508,61 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
     async def _run():
         try:
             import os
+            from datetime import datetime, timezone, timedelta
             cpu_count = os.cpu_count() or 2
             concurrency = min(2, max(1, cpu_count - 1))
+
+            # --- Date-range candle filtering for WFO ---
+            _wfo_candles: list | None = None
+            _wfo_warmup: list | None = None
+            if req.start_date or req.end_date:
+                try:
+                    _start_ms: int | None = None
+                    _end_ms: int | None = None
+                    if req.start_date:
+                        _start_ms = int(
+                            datetime.strptime(req.start_date, "%Y-%m-%d")
+                            .replace(tzinfo=timezone.utc).timestamp() * 1000
+                        )
+                    if req.end_date:
+                        _end_ms = int(
+                            (datetime.strptime(req.end_date, "%Y-%m-%d")
+                             .replace(tzinfo=timezone.utc) + timedelta(days=1))
+                            .timestamp() * 1000
+                        ) - 1
+
+                    from db import repository as _repo
+                    _wfo_candles = await _repo.get_historical_candles(
+                        symbol, interval=req.interval,
+                        start_ms=_start_ms, end_ms=_end_ms,
+                    )
+                    if not _wfo_candles:
+                        _running_tasks[task_id]["done"] = True
+                        _running_tasks[task_id]["status"] = "error"
+                        _running_tasks[task_id]["error"] = (
+                            f"No candles found for {symbol} in the selected date range "
+                            f"({req.start_date or '…'} → {req.end_date or '…'})."
+                        )
+                        _running_tasks[task_id]["completed_at"] = time.monotonic()
+                        return
+
+                    # Fetch 300 candles immediately before the window for warmup
+                    if _start_ms is not None:
+                        _wfo_warmup = await _repo.get_historical_candles(
+                            symbol, interval=req.interval,
+                            before_ms=_start_ms, limit=300,
+                        )
+                    logger.info(
+                        f"WFO [{req.bot_id}]: date range filter applied — "
+                        f"{len(_wfo_candles)} candles, {len(_wfo_warmup or [])} warmup candles "
+                        f"({req.start_date or 'start'} → {req.end_date or 'end'})"
+                    )
+                except ValueError as date_err:
+                    _running_tasks[task_id]["done"] = True
+                    _running_tasks[task_id]["status"] = "error"
+                    _running_tasks[task_id]["error"] = f"Invalid date format: {date_err}"
+                    _running_tasks[task_id]["completed_at"] = time.monotonic()
+                    return
 
             async def on_fold(fold_dict: dict):
                 """Called after each fold completes — appends to partial_folds list."""
@@ -467,6 +581,8 @@ async def walk_forward_endpoint(request: Request, req: WalkForwardRequest):
                 fold_callback=on_fold,
                 concurrency=concurrency,
                 interval=req.interval,
+                _candle_override=_wfo_candles,
+                _warmup_override=_wfo_warmup,
             )
             _running_tasks[task_id]["result"] = result.to_dict()
             _running_tasks[task_id]["done"] = True

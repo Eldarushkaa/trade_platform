@@ -367,6 +367,7 @@ async def optimize_params(
     concurrency: int = 4,
     interval: str = "15m",
     _candle_override: list | None = None,
+    _warmup_override: list | None = None,
 ) -> OptimizationResult:
     """
     Find optimal parameters using Random Search + Local Refinement.
@@ -421,10 +422,15 @@ async def optimize_params(
         if not _cached_candles:
             raise ValueError(f"No historical data for {symbol} ({interval}). Download it first.")
 
-    # --- Warmup candles for workers: last 300 rows of IS data ---
-    # Workers use these to pre-heat EMA200, ATR, etc. before trading starts.
+    # --- Warmup candles for workers ---
+    # Pre-heats EMA200, ATR, etc. before the IS window starts.
+    # If _warmup_override is provided (e.g. candles before a date-range window),
+    # use it directly; otherwise fall back to last 300 rows of IS data.
     _warmup_count = 300
-    _warmup_for_workers = _cached_candles[-_warmup_count:] if len(_cached_candles) > _warmup_count else _cached_candles
+    if _warmup_override is not None:
+        _warmup_for_workers = _warmup_override
+    else:
+        _warmup_for_workers = _cached_candles[-_warmup_count:] if len(_cached_candles) > _warmup_count else _cached_candles
 
     # Resolve the original (non-for_symbol) base class for pickling in workers.
     _base_cls = strategy_class.__bases__[0] if strategy_class.__bases__ else strategy_class
@@ -841,6 +847,8 @@ async def walk_forward_optimize(
     fold_callback=None,
     concurrency: int = 4,
     interval: str = "15m",
+    _candle_override: list | None = None,
+    _warmup_override: list | None = None,
 ) -> "WalkForwardResult":
     """
     Walk-Forward Optimization with expanding training windows.
@@ -879,10 +887,15 @@ async def walk_forward_optimize(
 
     start_time = time.monotonic()
 
-    # --- Load all candles once ---
-    all_candles = await repo.get_historical_candles(symbol, interval=interval)
-    if not all_candles:
-        raise ValueError(f"No historical data for {symbol} ({interval}). Download it first.")
+    # --- Load all candles once (or use pre-fetched date-range override) ---
+    if _candle_override is not None:
+        all_candles = _candle_override
+        if not all_candles:
+            raise ValueError(f"Empty candle override provided for {symbol}.")
+    else:
+        all_candles = await repo.get_historical_candles(symbol, interval=interval)
+        if not all_candles:
+            raise ValueError(f"No historical data for {symbol} ({interval}). Download it first.")
 
     total = len(all_candles)
     fold_size = int(total * test_pct)
@@ -943,6 +956,11 @@ async def walk_forward_optimize(
             await _progress(f"Fold {_fn}/{n_folds}", pct, msg)
 
         # --- Optimize on train data ---
+        # For the very first folds in a date-range run, train_candles may not
+        # include enough history to warm up EMA200/ATR. Pass the pre-window
+        # warmup candles (_warmup_override) so workers can pre-heat indicators.
+        # For later folds train_candles[-300:] is used as warmup automatically.
+        _fold_warmup = _warmup_override if _warmup_override else None
         try:
             opt = await optimize_params(
                 bot_id=f"{bot_id}_wf{fold_num}",
@@ -956,6 +974,7 @@ async def walk_forward_optimize(
                 concurrency=concurrency,
                 interval=interval,
                 _candle_override=train_candles,  # internal: skip DB, use these candles
+                _warmup_override=_fold_warmup,
             )
         except Exception as e:
             logger.error(f"WFO fold {fold_num} optimization failed: {e}", exc_info=True)

@@ -222,10 +222,12 @@ async def get_data_status(symbols: list[str], interval: str = "15m") -> dict:
                 "end": datetime.fromtimestamp(
                     info["max_time"] / 1000, tz=timezone.utc
                 ).isoformat(),
+                "start_ms": info["min_time"],   # epoch ms — used by frontend year shortcuts
+                "end_ms":   info["max_time"],   # epoch ms — used by frontend year shortcuts
                 "days": round(
                     (info["max_time"] - info["min_time"]) / (1000 * 86400), 1
                 ),
             }
         else:
-            status[sym] = {"count": 0, "start": None, "end": None, "days": 0}
+            status[sym] = {"count": 0, "start": None, "end": None, "start_ms": None, "end_ms": None, "days": 0}
     return status

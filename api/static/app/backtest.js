@@ -63,6 +63,10 @@ function toggleBacktest() {
 
 // ── Data status ────────────────────────────────────────────────
 
+// Module-level: oldest/newest candle ms across all symbols (set by loadDataStatus)
+let _dataOldestMs = null;
+let _dataNewestMs = null;
+
 async function loadDataStatus() {
   try {
     const iv = _activeInterval || '15m';
@@ -77,13 +81,36 @@ async function loadDataStatus() {
       const coinCount = syms.length;
       let latestEnd = null;
       let maxDays = 0;
+      let oldestMs = null;
+      let newestMs = null;
       syms.forEach(([, v]) => {
         if (v.end) {
           const dt = new Date(v.end);
           if (!latestEnd || dt > latestEnd) latestEnd = dt;
         }
         if (v.days > maxDays) maxDays = v.days;
+        // Track oldest / newest across all symbols
+        if (v.start_ms != null) {
+          if (oldestMs === null || v.start_ms < oldestMs) oldestMs = v.start_ms;
+        }
+        if (v.end_ms != null) {
+          if (newestMs === null || v.end_ms > newestMs) newestMs = v.end_ms;
+        }
+        // Fallback: derive start_ms from end and days
+        if (oldestMs === null && v.end && v.days) {
+          const endDt = new Date(v.end);
+          const startDt = new Date(endDt.getTime() - v.days * 86400000);
+          oldestMs = startDt.getTime();
+        }
+        if (newestMs === null && v.end) {
+          newestMs = new Date(v.end).getTime();
+        }
       });
+
+      _dataOldestMs = oldestMs;
+      _dataNewestMs = newestMs;
+      _renderYearShortcuts(oldestMs, newestMs);
+
       const perCoin = coinCount > 0 ? Math.round(total / coinCount) : total;
       const dateStr = latestEnd
         ? `${latestEnd.toLocaleDateString('en-US', {month:'short', day:'numeric'})} ${String(latestEnd.getHours()).padStart(2,'0')}:${String(latestEnd.getMinutes()).padStart(2,'0')}`
@@ -101,8 +128,80 @@ async function loadDataStatus() {
       document.getElementById('bt-run-btn').disabled = true;
       document.getElementById('bt-opt-btn').disabled = true;
       document.getElementById('bt-wfo-btn').disabled = true;
+      _dataOldestMs = null;
+      _dataNewestMs = null;
+      _renderYearShortcuts(null, null);
     }
   } catch (e) { console.warn('loadDataStatus', e); }
+}
+
+/**
+ * Render year-shortcut buttons for the Opt/WFO date range row.
+ * Buttons are labelled "Yr 1", "Yr 2", … up to the number of full years in the dataset.
+ * Each button fills opt-start-date and opt-end-date with the matching 365-day window.
+ */
+function _renderYearShortcuts(oldestMs, newestMs) {
+  const wrap = document.getElementById('opt-year-shortcuts');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!oldestMs || !newestMs) return;
+
+  const totalDays = (newestMs - oldestMs) / 86400000;
+  const numYears = Math.floor(totalDays / 365);
+  if (numYears < 1) return;
+
+  const btnStyle = [
+    'background:rgba(108,99,255,0.12)',
+    'color:#a89fff',
+    'border:1px solid rgba(108,99,255,0.35)',
+    'border-radius:4px',
+    'padding:2px 7px',
+    'font-size:10px',
+    'cursor:pointer',
+    'white-space:nowrap',
+  ].join(';');
+
+  for (let y = 1; y <= numYears; y++) {
+    const btn = document.createElement('button');
+    btn.style.cssText = btnStyle;
+    btn.title = `Set Opt/WFO range to year ${y} of the dataset`;
+    btn.textContent = `Yr ${y}`;
+    btn.onclick = () => setOptYear(y, oldestMs, newestMs);
+    wrap.appendChild(btn);
+  }
+
+  // "All" shortcut
+  const allBtn = document.createElement('button');
+  allBtn.style.cssText = btnStyle.replace('rgba(108,99,255,0.12)', 'rgba(60,60,80,0.2)').replace('#a89fff', 'var(--muted)');
+  allBtn.title = 'Clear Opt/WFO date range (use all data)';
+  allBtn.textContent = 'All';
+  allBtn.onclick = clearOptDates;
+  wrap.appendChild(allBtn);
+}
+
+/**
+ * Set opt-start-date / opt-end-date to the Nth 365-day window from oldestMs.
+ * Year 1 = oldest … oldest+365d, Year 2 = oldest+365d … oldest+730d, etc.
+ */
+function setOptYear(yearNum, oldestMs, newestMs) {
+  const msPerYear = 365 * 86400000;
+  const startMs = oldestMs + (yearNum - 1) * msPerYear;
+  const endMs   = Math.min(oldestMs + yearNum * msPerYear, newestMs);
+
+  const toISODate = ms => new Date(ms).toISOString().slice(0, 10);
+
+  const startEl = document.getElementById('opt-start-date');
+  const endEl   = document.getElementById('opt-end-date');
+  if (startEl) startEl.value = toISODate(startMs);
+  if (endEl)   endEl.value   = toISODate(endMs);
+}
+
+/** Clear Opt/WFO date filters */
+function clearOptDates() {
+  const s = document.getElementById('opt-start-date');
+  const e = document.getElementById('opt-end-date');
+  if (s) s.value = '';
+  if (e) e.value = '';
 }
 
 // ── Data download ──────────────────────────────────────────────
@@ -404,8 +503,14 @@ async function runOptimize() {
   document.getElementById('bt-opt-results').style.display = 'none';
   document.getElementById('bt-wfo-results').style.display = 'none';
 
+  const optStartDate = (document.getElementById('opt-start-date') || {}).value || null;
+  const optEndDate   = (document.getElementById('opt-end-date')   || {}).value || null;
+  const optBody = { bot_id: botId, iterations: iters, fee_rate: feeRate, interval: _activeInterval || '15m' };
+  if (optStartDate) optBody.start_date = optStartDate;
+  if (optEndDate)   optBody.end_date   = optEndDate;
+
   try {
-    const startResp = await postJson(`${API}/backtest/optimize`, { bot_id: botId, iterations: iters, fee_rate: feeRate, interval: _activeInterval || '15m' });
+    const startResp = await postJson(`${API}/backtest/optimize`, optBody);
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
@@ -463,15 +568,21 @@ async function runWalkForward() {
   document.getElementById('bt-opt-results').style.display = 'none';
   document.getElementById('bt-wfo-results').style.display = 'none';
 
+  const wfoStartDate = (document.getElementById('opt-start-date') || {}).value || null;
+  const wfoEndDate   = (document.getElementById('opt-end-date')   || {}).value || null;
+  const wfoBody = {
+    bot_id: botId,
+    n_folds: folds,
+    test_pct: testPct / 100,
+    iterations: iters,
+    fee_rate: feeRate,
+    interval: _activeInterval || '15m',
+  };
+  if (wfoStartDate) wfoBody.start_date = wfoStartDate;
+  if (wfoEndDate)   wfoBody.end_date   = wfoEndDate;
+
   try {
-    const startResp = await postJson(`${API}/backtest/walk-forward`, {
-      bot_id: botId,
-      n_folds: folds,
-      test_pct: testPct / 100,
-      iterations: iters,
-      fee_rate: feeRate,
-      interval: _activeInterval || '15m',
-    });
+    const startResp = await postJson(`${API}/backtest/walk-forward`, wfoBody);
     if (!startResp.ok) {
       status.textContent = `✗ ${startResp.data.detail || 'Error'}`;
       btn.disabled = false;
