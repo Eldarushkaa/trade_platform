@@ -1,6 +1,6 @@
 # Trade Platform — Frontend Reference (`api/static/`)
 
-> Last updated: 2026-03  
+> Last updated: 2026-03-21
 > Stack: plain HTML + vanilla JS + Chart.js 4.4 (CDN), served as static files by FastAPI.  
 > No build tool, no bundler, no ES modules — all files are plain `<script>` globals.
 
@@ -60,6 +60,8 @@ Any module can read and write them freely (there is no module encapsulation).
 | `_historyData` | `{snaps, trades}\|null` | portfolio (`loadHistory`) | bots (re-render on toggle) |
 | `_globalStatsData` | `object\|null` | bots (`loadBots`) | bots (period toggle re-render) |
 | `_lastTestWindow` | `{start, end}\|null` | backtest (`downloadTestData`) | backtest (`fillTestDates`) |
+| `_dataOldestMs` | `number\|null` | backtest (`loadDataStatus`) | backtest (`_renderYearShortcuts`) |
+| `_dataNewestMs` | `number\|null` | backtest (`loadDataStatus`) | backtest (`_renderYearShortcuts`) |
 | `_logPanelOpen` | `bool` | logs (`toggleLogPanel`) | logs |
 | `_logErrorCount` | `number` | logs | (reserved) |
 | `_refreshInterval` | `number\|null` | main | main |
@@ -173,6 +175,21 @@ onBtBotChange()                ← saves selection to localStorage.bt_bot_id
   → fillTestDates()   — pre-fills from _lastTestWindow
 ```
 
+**Optimizer / WFO date range (inside backtest panel, above WFO settings):**
+```
+[Opt / WFO range:] [opt-start-date] [opt-end-date] [✕ Clear] [opt-year-shortcuts]
+  → clearOptDates()   — clears both opt-start-date and opt-end-date
+  → _renderYearShortcuts(oldestMs, newestMs)
+       — called by loadDataStatus() after tracking _dataOldestMs / _dataNewestMs
+       — renders TWO independent rows inside #opt-year-shortcuts:
+         * "From" row (green): Yr 1 … Yr N  → each sets only opt-start-date
+         * "To"   row (orange): Yr 1 … Yr N  → each sets only opt-end-date
+       — year count = Math.ceil(totalDays / 365)  (ceil so partial last year shown)
+       — yearStart(y) = oldestMs + (y-1) × 365d
+       — yearEnd(y)   = min(oldestMs + y × 365d, newestMs)
+       — allows composing arbitrary multi-year ranges, e.g. "From Yr 1 / To Yr 4"
+```
+
 **Run backtest flow:**
 ```
 runBacktest()
@@ -185,7 +202,8 @@ runBacktest()
 **Optimization flow:**
 ```
 runOptimize()
-  → POST /api/backtest/optimize  → {task_id}
+  → reads opt-start-date / opt-end-date (optional)
+  → POST /api/backtest/optimize  {bot_id, ..., start_date?, end_date?} → {task_id}
   → _saveBtTask('opt', taskId, botId)
   → polls GET /api/backtest/status?task_id=… every 2s
   → on completed → renderOptResults(r)
@@ -198,7 +216,8 @@ runOptimize()
 **Walk-Forward Optimization (WFO) flow:**
 ```
 runWalkForward()
-  → POST /api/backtest/walk-forward  {bot_id, n_folds, test_pct, iterations, fee_rate}
+  → reads opt-start-date / opt-end-date (optional)
+  → POST /api/backtest/walk-forward  {bot_id, n_folds, test_pct, iterations, fee_rate, start_date?, end_date?}
   → _saveBtTask('wfo', taskId, botId)
   → polls GET /api/backtest/status?task_id=… every 3s
   → on completed → renderWFOResults(r)
@@ -293,6 +312,8 @@ Key IDs that JS writes to or reads from:
 | `bt-data-info`, `bt-data-badge` | backtest | Candle count status text |
 | `bt-test-start-date` | backtest | Test window start date picker (in sidebar) |
 | `bt-start-date`, `bt-end-date` | backtest | Backtest date range pickers |
+| `opt-start-date`, `opt-end-date` | backtest | Optimizer / WFO date range pickers (separate from backtest range) |
+| `opt-year-shortcuts` | backtest | Container for year shortcut buttons (From row + To row, rendered by `_renderYearShortcuts`) |
 | `bt-run-btn`, `bt-opt-btn`, `bt-wfo-btn` | backtest | Action buttons (disabled if no bot/data) |
 | `bt-opt-iters` | backtest | Iteration count select (shared by Optimize + WFO) |
 | `bt-wfo-folds`, `bt-wfo-testpct` | backtest | WFO fold count and OOS% selectors |
@@ -354,6 +375,36 @@ BACKTEST ON TEST WINDOW
   [Use test window] → fillTestDates() → fills bt-start-date / bt-end-date
   Run Backtest → POST /backtest/run {bot_id, start_date, end_date}
                 → backend filters candles by epoch-ms range
+```
+
+**Optimizer / WFO date-range filtering:**
+
+```
+OPTIMIZER DATE RANGE (inside backtest panel, above WFO settings)
+  opt-start-date / opt-end-date pickers  (populated via year shortcuts or manually)
+  [✕ Clear] button → clearOptDates()
+
+  If dates are set:
+    runOptimize() → POST /backtest/optimize {bot_id, ..., start_date, end_date}
+    runWalkForward() → POST /backtest/walk-forward {bot_id, ..., start_date, end_date}
+
+  Backend (/api/routes/backtest.py):
+    date string → epoch ms
+    _opt_candles = get_historical_candles(symbol, interval, start_ms, end_ms)
+    _opt_warmup  = get_historical_candles(symbol, interval, before_ms=start_ms, limit=300)
+    optimize_params(..., _candle_override=_opt_candles, _warmup_override=_opt_warmup)
+
+  Warmup candles (300 rows before start_ms) are fetched separately to pre-heat
+  EMA200/ATR indicators without including those candles in the optimized window.
+
+YEAR SHORTCUTS
+  Populated when loadDataStatus() completes and data exists for selected symbol.
+  _renderYearShortcuts(oldestMs, newestMs):
+    - numYears = Math.ceil((newestMs - oldestMs) / 86400000 / 365)
+    - "From" row (green buttons): sets opt-start-date to start of year Y
+    - "To"   row (orange buttons): sets opt-end-date to end of year Y
+    - Allows any range like Yr1–Yr4 or Yr3–Yr5 by independent picking
+    - "✕ All" button calls clearOptDates()
 ```
 
 ---

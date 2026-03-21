@@ -45,8 +45,9 @@ trade_platform/
 │
 ├── strategies/                    # Signal logic only — no DB, no HTTP
 │   ├── __init__.py                # Exports active strategy classes
-│   ├── rsi_baseline.py            # Wilder RSI + EMA200 trend filter + ATR volatility filter
-│   └── example_rsi_bot.py         # Example: simple RSI strategy
+│   ├── rsi.py                     # Wilder RSI + EMA200 proximity + ATR volatility filter
+│   ├── donchian.py                # Donchian breakout (Turtle Trading) with binary entry filters
+│   └── donchian_new.py            # Donchian breakout v2 — scoring-based filters (distance_score × vol_score)
 │
 ├── db/                            # Persistence layer
 │   ├── database.py                # aiosqlite connection, WAL mode, schema + migrations
@@ -202,7 +203,7 @@ Converts raw price ticks → OHLCV candles:
 Downloads and stores kline history from Binance:
 - `SUPPORTED_INTERVALS` dict: `{'1m': {minutes:1, candles_per_day:1440}, ...}` — single source of truth
 - `download_klines(symbol, days, interval, start_date, progress_callback)` — streams klines page-by-page, saves to DB via `repo.save_historical_candles(rows, interval=interval)`; step size computed dynamically per interval
-- `get_data_status(symbols, interval)` — returns count + date range of stored candles per symbol for the given interval
+- `get_data_status(symbols, interval)` — returns count, date range, and `start_ms`/`end_ms` (epoch milliseconds) of stored candles per symbol for the given interval; `start_ms`/`end_ms` are `None` when no data exists
 
 ---
 
@@ -219,8 +220,8 @@ On-demand Binance Futures REST call for live VWAP fill pricing:
 ### Backtest & Optimizer — `core/backtest_engine.py`, `core/optimizer.py`
 
 - `run_backtest(bot_id, symbol, strategy_class, params, start_ms, end_ms, interval="15m")` — replays DB historical candles through a fresh `SimulationEngine(skip_db=True)` instance; fetches warmup candles before `start_ms` for indicator seeding; passes `interval` to `get_historical_candles()`; Sharpe annualized using interval-appropriate candles/year; each equity curve point includes `trend` field (`"bull"/"bear"/"warmup"`)
-- `optimize_params(..., interval="15m")` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); runs many backtests in parallel; passes `interval` to all `run_backtest()` calls; fitness = `Sharpe×0.40 + ProfitFactor×0.30 + Return×0.20 - Drawdown×0.20 + log(trades)×0.10`; hard gate: `if trade_count < 120: return -1000 + trade_count`
-- `walk_forward_optimize(..., interval="15m")` — expanding-window WFO: divides candles into N folds, GA-optimizes each IS window, evaluates on OOS window; `interval` propagated to all nested optimize_params() and run_backtest() calls; produces `WalkForwardResult` with per-fold metrics, WFE score, stitched OOS equity curve
+- `optimize_params(..., interval="15m", _candle_override=None, _warmup_override=None)` — genetic algorithm (tournament select, BLX-α crossover, adaptive mutation, elitism); `_candle_override` replaces the DB candle fetch (used for date-range filtering); `_warmup_override` replaces the warmup slice (pre-window candles for indicator seeding); passes `interval` to all `run_backtest()` calls; default fitness = `Sharpe×0.40 + ProfitFactor×0.30 + Return×0.20 - Drawdown×0.20 + sqrt(trades)×0.10`; hard gate: `if trade_count < 120: return -1000 + trade_count`; strategies can override `compute_fitness()` classmethod for custom objectives (e.g. `DonchianNewBot` uses `Return×0.40 - Drawdown×0.35 + PF×0.20 + sqrt(trades)×0.15`, hard gate `< 20 trades`)
+- `walk_forward_optimize(..., interval="15m", _candle_override=None, _warmup_override=None)` — expanding-window WFO: divides candles into N folds, GA-optimizes each IS window, evaluates on OOS window; `_candle_override` narrows the dataset to the user-selected date range; `_warmup_override` passed into each fold's `optimize_params()` call; `interval` propagated to all nested calls; produces `WalkForwardResult` with per-fold metrics, WFE score, stitched OOS equity curve
 - **Walk-Forward Efficiency (WFE)** = OOS return / IS return: >0.6 good generalisation, 0.3–0.6 moderate, <0.3 overfit
 
 ---
@@ -282,8 +283,8 @@ Additive migrations run on every startup (`PRAGMA table_info` check + `ALTER TAB
 | `POST` | `/api/backtest/download` | Download klines from Binance (`days` up to 1825, `interval`) |
 | `GET` | `/api/backtest/data-status?interval=15m` | Available candle counts per symbol for given interval |
 | `POST` | `/api/backtest/run` | Run a backtest (`interval`, optional `start_date`/`end_date`) |
-| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background task; `interval`) |
-| `POST` | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async, background task; `interval`) |
+| `POST` | `/api/backtest/optimize` | Start genetic optimization (async, background task; `interval`, optional `start_date`/`end_date`) |
+| `POST` | `/api/backtest/walk-forward` | Start Walk-Forward Optimization (async, background task; `interval`, optional `start_date`/`end_date`) |
 | `GET` | `/api/backtest/status` | Poll status of all or specific backtest/optimization tasks (TTL=1h) |
 | `GET` | `/api/logs` | Recent WARNING+ log lines |
 | `GET` | `/health` | Liveness check + mode/market info |

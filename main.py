@@ -16,12 +16,12 @@ Data flow:
         → BinanceFeed (raw aggTrade ticks)
             → PriceCache (latest price per symbol + pub/sub)
                 → BotManager.dispatch_price()   (updates engine price cache)
-                → CandleAggregator.on_tick()    (builds 5-min OHLC candles)
+                → CandleAggregator.on_tick()    (builds 15-min OHLC candles)
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (1 strategy × 3 coins = 3 bots):
-    rsi_btc, rsi_eth, rsi_sol  — RSI crossover + EMA proximity + vol + slope filters
+Bot instances (1 strategy × 2 coins = 2 bots):
+    donchian_btc, donchian_eth  — Donchian breakout (Turtle Trading), trend-following
 """
 import asyncio
 import logging
@@ -44,7 +44,7 @@ from data.orderbook_feed import fetch_depth
 # ------------------------------------------------------------------
 # Import strategy classes
 # ------------------------------------------------------------------
-from strategies import RSIBot, DonchianBot, DonchianNewBot
+from strategies import DonchianBot, DonchianStableBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
@@ -56,12 +56,11 @@ SYMBOLS = [
 ]
 
 STRATEGY_CLASSES = [
-    RSIBot,
     DonchianBot,
-    DonchianNewBot,
+    DonchianStableBot,
 ]
 
-# Build 6 bot classes: RSI + Donchian, each for 3 symbols
+# Build bot classes: strategies × symbols
 REGISTERED_BOTS = list(
     bot.for_symbol(sym)
     for sym in SYMBOLS
