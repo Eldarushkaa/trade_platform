@@ -45,7 +45,7 @@ import httpx
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Dedicated database — never shares with the main trade_platform.db
-DB_PATH = str(PROJECT_ROOT / "ob_data.db")
+DB_PATH = str(PROJECT_ROOT / "scripts/ob_data.db")
 
 INTERVAL_SECONDS = int(os.getenv("DOM_INTERVAL", "60"))
 DEPTH_LIMIT = int(os.getenv("DOM_DEPTH_LIMIT", "50"))
