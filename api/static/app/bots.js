@@ -41,8 +41,6 @@ async function loadBots() {
       if (side === 'LONG')  sideDot = '<span class="mini-side-dot long"></span>';
       else if (side === 'SHORT') sideDot = '<span class="mini-side-dot short"></span>';
 
-      const liveEnabled = !!bot.live_enabled;
-
       const card = document.createElement('div');
       card.className = 'bot-card' + (selectedBot === bot.name ? ' active' : '');
       card.dataset.name = bot.name;
@@ -62,11 +60,6 @@ async function loadBots() {
             ? `<button class="btn btn-stop"  onclick="controlBot('${bot.name}','stop');event.stopPropagation()">■ Stop</button>`
             : `<button class="btn btn-start" onclick="controlBot('${bot.name}','start');event.stopPropagation()">▶ Start</button>`
           }
-          <label class="live-toggle" title="${liveEnabled ? 'Live ON — bot will auto-start on server restart' : 'Live OFF — bot stays paused on restart'}" onclick="event.stopPropagation()">
-            <input type="checkbox" ${liveEnabled ? 'checked' : ''} onchange="toggleBotLive('${bot.name}', this.checked)" />
-            <span class="live-toggle-slider"></span>
-            <span class="live-toggle-label">${liveEnabled ? 'Live' : 'Off'}</span>
-          </label>
         </div>`;
       card.addEventListener('click', () => selectBot(bot.name));
       container.appendChild(card);
@@ -233,26 +226,6 @@ async function controlBot(name, action) {
   await post(`${API}/bots/${name}/${action}`);
   await loadBots();
   if (selectedBot === name) await loadBotDetail(name);
-}
-
-// ── Live enable/disable toggle ─────────────────────────────────
-async function toggleBotLive(name, enabled) {
-  try {
-    await patch(`${API}/bots/${name}/live`, { enabled });
-    // Update label without full reload for snappy UX
-    const card = document.querySelector(`.bot-card[data-name="${name}"]`);
-    if (card) {
-      const label = card.querySelector('.live-toggle-label');
-      if (label) label.textContent = enabled ? 'Live' : 'Off';
-      const toggle = card.querySelector('.live-toggle');
-      if (toggle) toggle.title = enabled
-        ? 'Live ON — bot will auto-start on server restart'
-        : 'Live OFF — bot stays paused on restart';
-    }
-  } catch (e) {
-    console.error('toggleBotLive error', e);
-    await loadBots(); // refresh on error to restore correct state
-  }
 }
 
 // ── Main panel: bot detail ─────────────────────────────────────

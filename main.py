@@ -104,15 +104,40 @@ async def lifespan(app: FastAPI):
     for bot_class in REGISTERED_BOTS:
         bot_manager.register(bot_class)
 
-    # 3. Start only bots that have live_enabled=True persisted in DB.
-    #    Default is False (all bots off) — user must explicitly enable in UI.
+    # 3. Restore state + start bots that have live_enabled=True persisted in DB.
+    #    - upsert_bot: creates DB record if missing (idempotent)
+    #    - _restore_balance_from_snapshot: reloads USDT balance + open position
+    #    - load_saved_params: reloads parameter overrides
+    #    - start_bot: only if live_enabled=True (default False — user must enable via UI)
     from db import repository as repo
+    from db.models import BotRecord
+    from datetime import datetime, timezone
     live_started = 0
     for bot_class in REGISTERED_BOTS:
+        bot = bot_manager.get_bot(bot_class.name)
+        # Ensure DB record exists (idempotent — does not overwrite live_enabled)
+        record = BotRecord(
+            id=bot_class.name,
+            symbol=bot.symbol,
+            status="stopped",
+            initial_balance=settings.initial_usdt_balance,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        await repo.upsert_bot(record)
+
+        # Restore portfolio balance + open position from last DB snapshot
+        await bot_manager._restore_balance_from_snapshot(bot_class.name)
+
+        # Reload saved parameter overrides
+        await bot_manager.load_saved_params(bot_class.name)
+
+        # Auto-start if user had it running before the restart
         bot_record = await repo.get_bot(bot_class.name)
         if bot_record and bot_record.live_enabled:
             await bot_manager.start_bot(bot_class.name)
             live_started += 1
+
     if REGISTERED_BOTS:
         logger.info(
             f"Registered {len(REGISTERED_BOTS)} bot(s), "

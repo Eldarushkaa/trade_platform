@@ -69,12 +69,13 @@ async def get_bot(request: Request, name: str):
 
 @router.post("/{name}/start")
 async def start_bot(request: Request, name: str):
-    """Start a registered bot."""
+    """Start a registered bot and persist live_enabled=True so it auto-starts on restart."""
     manager = _get_manager(request)
     if manager.get_bot(name) is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
     try:
         await manager.start_bot(name)
+        await repo.set_bot_live_enabled(name, True)
         return {"message": f"Bot '{name}' started"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -82,12 +83,13 @@ async def start_bot(request: Request, name: str):
 
 @router.post("/{name}/stop")
 async def stop_bot(request: Request, name: str):
-    """Stop a running bot."""
+    """Stop a running bot and persist live_enabled=False so it stays paused on restart."""
     manager = _get_manager(request)
     if manager.get_bot(name) is None:
         raise HTTPException(status_code=404, detail=f"Bot '{name}' not found")
     try:
         await manager.stop_bot(name)
+        await repo.set_bot_live_enabled(name, False)
         return {"message": f"Bot '{name}' stopped"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
