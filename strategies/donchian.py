@@ -121,14 +121,15 @@ class DonchianBot(BaseStrategy):
             return -1000.0 + trade_count
 
         pf = min(5.0,  max(0.0, profit_factor))
-        r  = max(-2.0, min(2.0, return_pct / 100.0))
+        r  = max(-2.0, min(3.0, return_pct / 100.0))
         dd = abs(max_dd) / 100.0
 
         return (
             r  * 0.40
             - dd * 0.35
             + pf * 0.20
-            + math.log(max(1, trade_count)) * 0.15
+            + sharpe * 0.01
+            + math.sqrt(max(1, trade_count)) * 0.15
         )
 
     PARAM_SCHEMA = {
@@ -163,6 +164,37 @@ class DonchianBot(BaseStrategy):
             "optimize": False,
         },
     }
+
+    # ------------------------------------------------------------------
+    # Warmup from historical data
+    # ------------------------------------------------------------------
+
+    def prewarm_candles(self, candles: list[dict]) -> None:
+        """
+        Feed historical candle dicts through indicator state WITHOUT triggering
+        any trading logic or order placement. Call this before the bot starts
+        live trading so EMA200, ATR, and channel history are already seeded.
+
+        Each dict must have keys: 'open', 'high', 'low', 'close'.
+        Typically called by BotManager with the last ~300 15m candles from DB.
+        """
+        for c in candles:
+            high  = float(c["high"])
+            low   = float(c["low"])
+            close = float(c["close"])
+            self._update_ema_slow(close)
+            self._update_atr(high, low, close)
+            self._append_history(high, low)
+
+        ema_ready = self._ema_slow is not None
+        atr_ready = self._atr is not None
+        self.logger.info(
+            f"Prewarm done: {len(candles)} candles fed | "
+            f"EMA{self.EMA_SLOW_PERIOD}={'ready' if ema_ready else 'NOT READY'} "
+            f"({'%.2f' % self._ema_slow if ema_ready else '—'}) | "
+            f"ATR={'ready' if atr_ready else 'NOT READY'} | "
+            f"history={len(self._high_buf)} bars"
+        )
 
     # ------------------------------------------------------------------
     # Init

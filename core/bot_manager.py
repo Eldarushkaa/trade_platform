@@ -107,6 +107,45 @@ class BotManager:
                     logger.debug(f"Could not clear stale params for '{bot_id}': {clear_exc}")
 
     # ------------------------------------------------------------------
+    # Indicator warmup from historical data
+    # ------------------------------------------------------------------
+
+    async def prewarm_bot(self, bot_id: str, interval: str = "15m") -> None:
+        """
+        Seed a bot's indicators (EMA200, ATR, channel history) from the last
+        300 historical candles stored in the DB — so it doesn't need to wait
+        for 200+ live candles before it can trade.
+
+        Only works for bots that expose a ``prewarm_candles(candles)`` method
+        (currently DonchianBot and DonchianStableBot). Silently skips others.
+
+        Must be called BEFORE start_bot() so the queue is not yet running.
+        """
+        import time as _time
+        bot = self._bots.get(bot_id)
+        if bot is None or not hasattr(bot, "prewarm_candles"):
+            return
+
+        # Fetch the last 300 candles before "now" using the efficient
+        # before_ms+limit path in the repository (returns DESC LIMIT, then reversed).
+        now_ms = int(_time.time() * 1000)
+        candles = await repo.get_historical_candles(
+            symbol=bot.symbol,
+            interval=interval,
+            before_ms=now_ms,
+            limit=300,
+        )
+
+        if not candles:
+            logger.warning(
+                f"Prewarm skipped for '{bot_id}': no {interval} historical data "
+                f"for {bot.symbol}. Download data first."
+            )
+            return
+
+        bot.prewarm_candles(candles)
+
+    # ------------------------------------------------------------------
     # Start / Stop
     # ------------------------------------------------------------------
 

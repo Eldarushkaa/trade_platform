@@ -142,6 +142,9 @@ async def lifespan(app: FastAPI):
         # Auto-start if user had it running before the restart
         bot_record = await repo.get_bot(bot_class.name)
         if bot_record and bot_record.live_enabled:
+            # Seed indicators from historical data so the bot can trade immediately
+            # instead of waiting 200+ candles for EMA200 to warm up
+            await bot_manager.prewarm_bot(bot_class.name, interval="1h")
             await bot_manager.start_bot(bot_class.name)
             live_started += 1
 
