@@ -138,7 +138,7 @@ class DonchianBot(BaseStrategy):
             "description": "Donchian LONG entry channel period (breakout lookback up, excl. current candle)",
         },
         "N_SHORT": {
-            "type": "int", "default": 42, "min": 20, "max": 60,
+            "type": "int", "default": 42, "min": 20, "max": 80,
             "description": "Donchian SHORT entry channel period (breakout lookback down, excl. current candle)",
         },
         "M_LONG": {
