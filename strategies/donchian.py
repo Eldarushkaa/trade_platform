@@ -241,7 +241,7 @@ class DonchianBot(BaseStrategy):
             return
 
         n_long  = self.N_LONG
-        n_short = 1.5 * self.N_LONG
+        n_short = int(1.5 * self.N_LONG)
         m_long  = self.M_LONG
         m_short = self.M_LONG - 5
 
