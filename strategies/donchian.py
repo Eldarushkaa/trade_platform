@@ -121,15 +121,14 @@ class DonchianBot(BaseStrategy):
             return -1000.0 + trade_count
 
         pf = min(5.0,  max(0.0, profit_factor))
-        r  = max(-2.0, min(3.0, return_pct / 100.0))
+        r  = max(-2.0, min(2.5, return_pct / 100.0))
         dd = abs(max_dd) / 100.0
 
         return (
             r  * 0.40
             - dd * 0.35
             + pf * 0.20
-            + sharpe * 0.01
-            + math.sqrt(max(1, trade_count)) * 0.15
+            + math.log(max(1, trade_count)) * 0.15
         )
 
     PARAM_SCHEMA = {
@@ -140,6 +139,7 @@ class DonchianBot(BaseStrategy):
         "N_SHORT": {
             "type": "int", "default": 42, "min": 20, "max": 80,
             "description": "Donchian SHORT entry channel period (breakout lookback down, excl. current candle)",
+            "optimize": False,
         },
         "M_LONG": {
             "type": "int", "default": 23, "min": 10, "max": 30,
@@ -148,6 +148,7 @@ class DonchianBot(BaseStrategy):
         "M_SHORT": {
             "type": "int", "default": 23, "min": 10, "max": 30,
             "description": "Donchian SHORT exit channel period (Turtle exit lookback, excl. current candle)",
+            "optimize": False,
         },
         "EMA200_ATR_K": {
             "type": "float", "default": 3.8437, "min": 1.0, "max": 4.0,
@@ -240,9 +241,9 @@ class DonchianBot(BaseStrategy):
             return
 
         n_long  = self.N_LONG
-        n_short = self.N_SHORT
+        n_short = 1.5 * self.N_LONG
         m_long  = self.M_LONG
-        m_short = self.M_SHORT
+        m_short = self.M_LONG - 5
 
         # Need at least max(N_LONG, N_SHORT) bars of history BEFORE current candle
         n_min = max(n_long, n_short)
