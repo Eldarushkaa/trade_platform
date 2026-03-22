@@ -1,5 +1,6 @@
 """
 Donchian Breakout Bot — классическая трендовая система (Turtle Trading), trend-following.
+Асимметричные периоды каналов: N и M разделены на long/short для независимой оптимизации.
 
 Работает на 15-МИНУТНЫХ СВЕЧАХ. USDT-маржинальные бессрочные фьючерсы с плечом.
 
@@ -12,12 +13,12 @@ Donchian Breakout Bot — классическая трендовая систе
     low_N  = min(low[i-N  : i])   # минимум N свечей до текущей
 
 Вход:
-    LONG:  close > high_N  (пробой максимума вверх)
-    SHORT: close < low_N   (пробой минимума вниз)
+    LONG:  close > max(high[i-N_LONG  : i])   (пробой максимума вверх)
+    SHORT: close < min(low[i-N_SHORT  : i])   (пробой минимума вниз)
 
 Выход (Turtle / Donchian exit):
-    exit_low  = min(low[i-M  : i])   # выход из LONG когда close < exit_low
-    exit_high = max(high[i-M : i])   # выход из SHORT когда close > exit_high
+    exit_low  = min(low[i-M_LONG   : i])   # выход из LONG  когда close < exit_low
+    exit_high = max(high[i-M_SHORT : i])   # выход из SHORT когда close > exit_high
 
 Фильтры (вход):
   1. Volatility: vol_ratio = ATR / EMA(ATR) > VOL_RATIO_MIN
@@ -32,19 +33,21 @@ Donchian Breakout Bot — классическая трендовая систе
      возврат после экстремального отклонения).
 
 Оптимизируемые параметры:
-    N_PERIOD     20–60   Период канала входа (breakout lookback)
-    M_PERIOD     10–30   Период канала выхода (exit lookback)
+    N_LONG       20–60   Период входного канала LONG  (breakout lookback вверх)
+    N_SHORT      20–60   Период входного канала SHORT (breakout lookback вниз)
+    M_LONG       10–30   Период выходного канала LONG  (Turtle exit lookback)
+    M_SHORT      10–30   Период выходного канала SHORT (Turtle exit lookback)
     EMA200_ATR_K 1.0–4.0 Порог расстояния от EMA200 в единицах ATR
 
 Настраиваемые в UI (не оптимизируются):
-    VOL_RATIO_MIN  = 1.0   Мин. ATR/EMA_ATR для входа
-    TRADE_FRACTION = 1.0   Доля баланса на сделку
+    VOL_RATIO_MIN  = 1.1976  Мин. ATR/EMA_ATR для входа (оптимальное значение)
+    TRADE_FRACTION = 1.0     Доля баланса на сделку
 
 Фиксированные:
     EMA_SLOW_PERIOD = 200  EMA200 как тренд-якорь и proximity-фильтр
     ATR_PERIOD      = 14   Wilder ATR
     EMA_ATR_PERIOD  = 20   EMA(ATR) для baseline волатильности
-    HISTORY_MAX     = 80   Размер буфера OHLC истории (≥ max N + запас)
+    HISTORY_MAX     = 80   Размер буфера OHLC истории (≥ max(N_LONG, N_SHORT) + запас)
 
 Warmup:
     Торговля начинается когда EMA200 готова (200 свечей) + ATR готов + накоплена история.
@@ -76,16 +79,18 @@ class DonchianBot(BaseStrategy):
     EMA_SLOW_PERIOD = 200  # EMA200 как тренд-якорь (proximity-фильтр)
     ATR_PERIOD      = 14   # Wilder ATR
     EMA_ATR_PERIOD  = 20   # EMA(ATR) — baseline для vol_ratio
-    HISTORY_MAX     = 80   # Глубина буфера OHLC истории (≥ max N_PERIOD)
+    HISTORY_MAX     = 80   # Глубина буфера OHLC истории (≥ max(N_LONG, N_SHORT))
 
-    # --- Оптимизируемые параметры ---
-    N_PERIOD     = 20   # Breakout lookback (вход)
-    M_PERIOD     = 10   # Exit lookback (выход)
-    EMA200_ATR_K = 2.0  # Proximity filter: entry blocked when abs(close-EMA200) > k*ATR
+    # --- Оптимизируемые параметры (оптимальные значения как defaults) ---
+    N_LONG       = 42       # Breakout lookback для LONG входа
+    N_SHORT      = 42       # Breakout lookback для SHORT входа
+    M_LONG       = 23       # Exit lookback для LONG позиции
+    M_SHORT      = 23       # Exit lookback для SHORT позиции
+    EMA200_ATR_K = 3.8437   # Proximity filter: entry blocked when abs(close-EMA200) > k*ATR
 
     # --- Настраиваемые в UI (не оптимизируются) ---
-    VOL_RATIO_MIN  = 1.0   # Мин. ATR/EMA_ATR для входа
-    TRADE_FRACTION = 1.0   # Доля баланса на сделку
+    VOL_RATIO_MIN  = 1.1976  # Мин. ATR/EMA_ATR для входа
+    TRADE_FRACTION = 1.0     # Доля баланса на сделку
 
     # ------------------------------------------------------------------
     # Fitness overrides — trend-following objectives differ from RSI
@@ -127,21 +132,30 @@ class DonchianBot(BaseStrategy):
         )
 
     PARAM_SCHEMA = {
-        "N_PERIOD": {
-            "type": "int", "default": 20, "min": 20, "max": 60,
-            "description": "Donchian entry channel period (breakout lookback, excl. current candle)",
+        "N_LONG": {
+            "type": "int", "default": 42, "min": 20, "max": 60,
+            "description": "Donchian LONG entry channel period (breakout lookback up, excl. current candle)",
         },
-        "M_PERIOD": {
-            "type": "int", "default": 10, "min": 10, "max": 30,
-            "description": "Donchian exit channel period (Turtle exit lookback, excl. current candle)",
+        "N_SHORT": {
+            "type": "int", "default": 42, "min": 20, "max": 60,
+            "description": "Donchian SHORT entry channel period (breakout lookback down, excl. current candle)",
+        },
+        "M_LONG": {
+            "type": "int", "default": 23, "min": 10, "max": 30,
+            "description": "Donchian LONG exit channel period (Turtle exit lookback, excl. current candle)",
+        },
+        "M_SHORT": {
+            "type": "int", "default": 23, "min": 10, "max": 30,
+            "description": "Donchian SHORT exit channel period (Turtle exit lookback, excl. current candle)",
         },
         "EMA200_ATR_K": {
-            "type": "float", "default": 2.0, "min": 1.0, "max": 4.0,
+            "type": "float", "default": 3.8437, "min": 1.0, "max": 4.0,
             "description": "EMA200 proximity filter: entry blocked when abs(close-EMA200) > k*ATR",
         },
         "VOL_RATIO_MIN": {
-            "type": "float", "default": 1.0, "min": 0.5, "max": 2.0,
+            "type": "float", "default": 1.1976, "min": 0.5, "max": 2.0,
             "description": "Volatility filter: entry blocked when ATR/EMA_ATR < threshold",
+            "optimize": False,
         },
         "TRADE_FRACTION": {
             "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
@@ -193,25 +207,29 @@ class DonchianBot(BaseStrategy):
             self._append_history(high, low)
             return
 
-        n = self.N_PERIOD
-        m = self.M_PERIOD
+        n_long  = self.N_LONG
+        n_short = self.N_SHORT
+        m_long  = self.M_LONG
+        m_short = self.M_SHORT
 
-        # Need at least N bars of history BEFORE current candle
-        if len(self._high_buf) < n:
+        # Need at least max(N_LONG, N_SHORT) bars of history BEFORE current candle
+        n_min = max(n_long, n_short)
+        if len(self._high_buf) < n_min:
             self._append_history(high, low)
             return
 
-        # --- 4. Compute Donchian channels (history excludes current candle) ---
-        high_N = max(self._high_buf[-n:])
-        low_N  = min(self._low_buf[-n:])
+        # --- 4. Compute Donchian entry channels (history excludes current candle) ---
+        high_N = max(self._high_buf[-n_long:])
+        low_N  = min(self._low_buf[-n_short:])
 
-        # Exit channel requires M bars too
-        if len(self._high_buf) < m:
+        # Exit channels require max(M_LONG, M_SHORT) bars too
+        m_min = max(m_long, m_short)
+        if len(self._high_buf) < m_min:
             self._append_history(high, low)
             return
 
-        exit_high = max(self._high_buf[-m:])
-        exit_low  = min(self._low_buf[-m:])
+        exit_high = max(self._high_buf[-m_short:])
+        exit_low  = min(self._low_buf[-m_long:])
 
         # --- 5. Filters ---
         # Volatility: trade only when ATR > EMA(ATR) * VOL_RATIO_MIN
@@ -254,7 +272,7 @@ class DonchianBot(BaseStrategy):
             if close > high_N:
                 result = await self._open_position(
                     close, "BUY",
-                    N=n, high_N=f"{high_N:.2f}",
+                    N=n_long, high_N=f"{high_N:.2f}",
                     EMA200=f"{self._ema_slow:.2f}",
                     dist=f"{distance:.4f}",
                     vol=f"{vol_ratio:.2f}"
@@ -263,13 +281,13 @@ class DonchianBot(BaseStrategy):
                     self.logger.info(
                         f"LONG breakout: close={close:.2f} > high_N={high_N:.2f}  "
                         f"EMA200={self._ema_slow:.2f}  dist={distance:.2f}  "
-                        f"(N={n}, vol={vol_ratio:.2f})"
+                        f"(N_LONG={n_long}, vol={vol_ratio:.2f})"
                     )
 
             elif close < low_N:
                 result = await self._open_position(
                     close, "SELL",
-                    N=n, low_N=f"{low_N:.2f}",
+                    N=n_short, low_N=f"{low_N:.2f}",
                     EMA200=f"{self._ema_slow:.2f}",
                     dist=f"{distance:.4f}",
                     vol=f"{vol_ratio:.2f}"
@@ -278,7 +296,7 @@ class DonchianBot(BaseStrategy):
                     self.logger.info(
                         f"SHORT breakout: close={close:.2f} < low_N={low_N:.2f}  "
                         f"EMA200={self._ema_slow:.2f}  dist={distance:.2f}  "
-                        f"(N={n}, vol={vol_ratio:.2f})"
+                        f"(N_SHORT={n_short}, vol={vol_ratio:.2f})"
                     )
 
         # --- 9. Append current candle to history AFTER all logic ---
