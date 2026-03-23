@@ -52,7 +52,7 @@ from strategies import DonchianBot, DonchianStableBot
 SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
-    # "SOLUSDT",
+    "SOLUSDT",
 ]
 
 STRATEGY_CLASSES = [
