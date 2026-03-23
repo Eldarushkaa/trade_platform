@@ -157,7 +157,7 @@ class DonchianBot(BaseStrategy):
         "VOL_RATIO_MIN": {
             "type": "float", "default": 1.1976, "min": 0.5, "max": 2.0,
             "description": "Volatility filter: entry blocked when ATR/EMA_ATR < threshold",
-            "optimize": False,
+            # "optimize": False,
         },
         "TRADE_FRACTION": {
             "type": "float", "default": 1.0, "min": 0.10, "max": 1.0,
