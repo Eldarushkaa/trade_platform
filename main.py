@@ -20,8 +20,10 @@ Data flow:
                     → BotManager.dispatch_candle() (queues candle to bots)
                         → Bot.on_candle(candle)     (strategy logic fires here)
 
-Bot instances (1 strategy × 2 coins = 2 bots):
-    donchian_btc, donchian_eth  — Donchian breakout (Turtle Trading), trend-following
+Bot instances:
+    donchian_btc, donchian_eth        — Donchian breakout (Turtle Trading), trend-following, 15m
+    donchian_stable_btc, _eth         — Donchian fixed-params stable, 15m
+    smom_eth                          — Short Momentum breakout, 5m, SHORT only
 """
 import asyncio
 import logging
@@ -44,7 +46,7 @@ from data.orderbook_feed import fetch_depth
 # ------------------------------------------------------------------
 # Import strategy classes
 # ------------------------------------------------------------------
-from strategies import DonchianBot, DonchianStableBot
+from strategies import DonchianBot, DonchianStableBot, ShortMomentumBot
 
 # ------------------------------------------------------------------
 # Configuration: coins to trade and strategies to run
@@ -60,12 +62,17 @@ STRATEGY_CLASSES = [
     DonchianStableBot,
 ]
 
-# Build bot classes: strategies × symbols
+# ShortMomentumBot торгует только ETHUSDT на 5m — регистрируем отдельно
+MOMENTUM_BOTS = [
+    ShortMomentumBot.for_symbol("ETHUSDT"),
+]
+
+# Build bot classes: strategies × symbols (15m bots)
 REGISTERED_BOTS = list(
     bot.for_symbol(sym)
     for sym in SYMBOLS
     for bot in STRATEGY_CLASSES
-)
+) + MOMENTUM_BOTS
 
 # ------------------------------------------------------------------
 # Configure logging

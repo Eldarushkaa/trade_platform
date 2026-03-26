@@ -115,6 +115,7 @@ def _worker_evaluate_params(params: dict) -> dict:
             "win_rate": bt.win_rate,
             "profit_factor": bt.profit_factor,
             "trade_count": bt.trade_count,
+            "total_candles": len(candle_rows),
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -504,6 +505,7 @@ async def optimize_params(
                 ind.fitness = strategy_class.compute_fitness(
                     res["sharpe"], res["return_pct"], res["max_dd"],
                     res["trade_count"], res.get("profit_factor", 1.0),
+                    res.get("total_candles", 0),
                 )
             else:
                 logger.warning(f"Eval failed: {res.get('error')}")
