@@ -100,6 +100,7 @@ class DonchianStableBot(BaseStrategy):
         max_dd: float,
         trade_count: int,
         profit_factor: float = 1.0,
+        total_candles: int = 0,
     ) -> float:
         """
         Trend-following IS fitness for Donchian breakout.
@@ -296,12 +297,11 @@ class DonchianStableBot(BaseStrategy):
         затем обновляется по стандартной формуле EMA (k = 2/201).
         Торговля заблокирована пока EMA200 не готова.
         """
-        self._ema_warmup.append(close)
-        n = len(self._ema_warmup)
         k = 2.0 / (self.EMA_SLOW_PERIOD + 1)
 
         if self._ema_slow is None:
-            if n >= self.EMA_SLOW_PERIOD:
+            self._ema_warmup.append(close)
+            if len(self._ema_warmup) >= self.EMA_SLOW_PERIOD:
                 self._ema_slow = sum(self._ema_warmup[:self.EMA_SLOW_PERIOD]) / self.EMA_SLOW_PERIOD
                 self._ema_warmup.clear()
                 self.logger.info(f"EMA{self.EMA_SLOW_PERIOD}={self._ema_slow:.2f} готов — торговля разрешена")

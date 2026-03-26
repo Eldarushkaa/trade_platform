@@ -78,6 +78,7 @@ class BaseStrategy(ABC):
         max_dd: float,
         trade_count: int,
         profit_factor: float = 1.0,
+        total_candles: int = 0,
     ) -> float:
         """
         Per-candidate fitness used during IS optimization.
